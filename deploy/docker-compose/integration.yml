@@ -1,0 +1,240 @@
+# =============================================================================
+# saas-foundation 集成测试栈 — 在 dev.yml 基础上加入 4 个 foundation 服务
+#
+# 启动：  cd deploy/docker-compose
+#         cp .env.example .env
+#         docker compose -f dev.yml -f integration.yml up -d
+# 跑测试： docker compose -f dev.yml -f integration.yml run --rm integration-runner
+# 完整清理：docker compose -f dev.yml -f integration.yml down -v
+# =============================================================================
+
+name: saas-foundation-integration
+
+services:
+  # ===========================================================================
+  # foundation-identity — 身份服务   (port 8001)
+  # ===========================================================================
+  identity:
+    build:
+      context: ../../packages/identity
+      dockerfile: Dockerfile
+    container_name: foundation-identity
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      IDENTITY_ENV: dev
+      IDENTITY_LOG_LEVEL: INFO
+      IDENTITY_LOG_FORMAT: console
+      IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      IDENTITY_KEYCLOAK_URL: http://keycloak:8080
+      IDENTITY_KEYCLOAK_REALM: foundation
+      IDENTITY_KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+      IDENTITY_VAULT_URL: http://vault:8200
+      IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      IDENTITY_OTEL_ENABLED: "true"
+      IDENTITY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      IDENTITY_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
+    ports:
+      - "${PORT_IDENTITY:-8001}:8001"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8001/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-authz — 授权服务     (port 8002)
+  # ===========================================================================
+  authz:
+    build:
+      context: ../../packages/authz
+      dockerfile: Dockerfile
+    container_name: foundation-authz
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    environment:
+      AUTHZ_ENV: dev
+      AUTHZ_LOG_LEVEL: INFO
+      AUTHZ_LOG_FORMAT: console
+      AUTHZ_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUTHZ_OPA_URL: http://opa:8181/v1
+      AUTHZ_OTEL_ENABLED: "true"
+      AUTHZ_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_AUTHZ:-8002}:8002"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8002/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-org — 组织服务       (port 8003)
+  # ===========================================================================
+  org:
+    build:
+      context: ../../packages/org
+      dockerfile: Dockerfile
+    container_name: foundation-org
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ORG_ENV: dev
+      ORG_LOG_LEVEL: INFO
+      ORG_LOG_FORMAT: console
+      ORG_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      ORG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      ORG_OTEL_ENABLED: "true"
+      ORG_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_ORG:-8003}:8003"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8003/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-crypto — 密码学服务  (port 8004)
+  # ===========================================================================
+  crypto:
+    build:
+      context: ../../packages/crypto
+      dockerfile: Dockerfile
+    container_name: foundation-crypto
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      CRYPTO_ENV: dev
+      CRYPTO_LOG_LEVEL: INFO
+      CRYPTO_LOG_FORMAT: console
+      CRYPTO_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      CRYPTO_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_VAULT_URL: http://vault:8200
+      CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      CRYPTO_OTEL_ENABLED: "true"
+      CRYPTO_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      CRYPTO_PROVIDER: vault
+    ports:
+      - "${PORT_CRYPTO:-8004}:8004"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8004/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # migration-runner — 跑所有 service 的 Alembic 迁移（一次性 job）
+  # ===========================================================================
+  migration-runner:
+    build:
+      context: ../../packages/identity
+      dockerfile: Dockerfile
+    container_name: foundation-migration-runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      ORG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_VAULT_URL: http://vault:8200
+      CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Running Identity migrations ==="
+        cd /app/identity && poetry run alembic upgrade head
+        echo "=== Running Authz migrations ==="
+        cd /app/authz && poetry run alembic upgrade head
+        echo "=== Running Org migrations ==="
+        cd /app/org && poetry run alembic upgrade head
+        echo "=== Running Crypto migrations ==="
+        cd /app/crypto && poetry run alembic upgrade head
+        echo "=== All migrations complete ==="
+    networks: [foundation]
+    volumes:
+      - ../../packages/identity/migrations:/app/identity/migrations:ro
+      - ../../packages/authz/migrations:/app/authz/migrations:ro
+      - ../../packages/org/migrations:/app/org/migrations:ro
+      - ../../packages/crypto/migrations:/app/crypto/migrations:ro
+      - ./init/vault/transit-init.sh:/app/init/vault-transit.sh:ro
+
+  # ===========================================================================
+  # vault-init — 初始化 Vault transit secrets engine
+  # ===========================================================================
+  vault-init:
+    image: hashicorp/vault:${VAULT_VERSION:-1.17}
+    container_name: foundation-vault-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Initialising Vault transit engine ==="
+        vault secrets enable transit || true
+        echo "=== Vault transit ready ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # integration-runner — 跑 pytest 集成测试（一次性 job）
+  # ===========================================================================
+  integration-runner:
+    build:
+      context: ../../
+      dockerfile: tests/integration/Dockerfile
+    container_name: foundation-integration-runner
+    depends_on:
+      identity:
+        condition: service_healthy
+      authz:
+        condition: service_healthy
+      org:
+        condition: service_healthy
+      crypto:
+        condition: service_healthy
+    environment:
+      FOUNDATION_IDENTITY_URL: http://identity:8001/api/identity/v1
+      FOUNDATION_AUTHZ_URL: http://authz:8002/api/authz/v1
+      FOUNDATION_ORG_URL: http://org:8003/api/org/v1
+      FOUNDATION_CRYPTO_URL: http://crypto:8004/api/crypto/v1
+      FOUNDATION_TENANT_ID: tnt_01J5DEV0000000000000000AA
+      FOUNDATION_USER_ID: usr_01J5INT000000000000TEST1
+      FOUNDATION_ACTOR: SERVICE
+      FOUNDATION_VAULT_URL: http://vault:8200
+      FOUNDATION_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      FOUNDATION_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+    volumes:
+      - ../../tests/integration:/app/tests:ro
+    command: ["pytest", "/app/tests", "-v", "--tb=short", "--timeout=60"]
+    networks: [foundation]

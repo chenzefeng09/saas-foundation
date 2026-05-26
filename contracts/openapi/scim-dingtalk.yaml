@@ -1,0 +1,414 @@
+# =============================================================================
+# SCIM Server + DingTalk Adapter API — scim-dingtalk-v1
+# =============================================================================
+# 标准 SCIM 2.0 server（RFC 7643/7644） + 钉钉反向适配（钉钉无标准 SCIM）
+# 是 identity-v1 §9 SCIM 扩展的实际 API surface
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: SCIM Server + DingTalk Adapter API
+  version: 1.0.0
+  description: |
+    SCIM 2.0 server endpoints（与 RFC 7643/7644 兼容）+ 钉钉企业版反向适配。
+    详见 [docs/design/scim-dingtalk-v1.md](../../docs/design/scim-dingtalk-v1.md)。
+
+servers:
+  - url: https://api.example.com/scim/v2
+  - url: http://localhost:8012/scim/v2
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: scim-users
+    description: SCIM /Users endpoint
+  - name: scim-groups
+    description: SCIM /Groups endpoint
+  - name: scim-bulk
+    description: 批量
+  - name: dingtalk
+    description: 钉钉适配器（反向轮询 + webhook 接收）
+  - name: health
+
+paths:
+
+  /v1/healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /v1/ServiceProviderConfig:
+    get:
+      tags: [scim-users]
+      summary: SCIM Service Provider Config（RFC 7644 §5）
+      operationId: getServiceProviderConfig
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /v1/Schemas:
+    get:
+      tags: [scim-users]
+      summary: 列 SCIM schemas
+      operationId: listScimSchemas
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /v1/Users:
+    get:
+      tags: [scim-users]
+      summary: SCIM 列用户
+      operationId: scimListUsers
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string, example: 'userName eq "alice@example.com"' }
+        - name: startIndex
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: count
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimListResponse' }
+    post:
+      tags: [scim-users]
+      summary: SCIM 创建用户
+      operationId: scimCreateUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema: { $ref: '#/components/schemas/ScimUser' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimUser' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /v1/Users/{scim_id}:
+    parameters:
+      - name: scim_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [scim-users]
+      operationId: scimGetUser
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimUser' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    put:
+      tags: [scim-users]
+      operationId: scimReplaceUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema: { $ref: '#/components/schemas/ScimUser' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimUser' }
+    patch:
+      tags: [scim-users]
+      operationId: scimPatchUser
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema: { $ref: '#/components/schemas/ScimPatchOp' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimUser' }
+    delete:
+      tags: [scim-users]
+      operationId: scimDeleteUser
+      responses:
+        '204': { description: ok }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /v1/Groups:
+    get:
+      tags: [scim-groups]
+      operationId: scimListGroups
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string }
+        - name: startIndex
+          in: query
+          schema: { type: integer }
+        - name: count
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimListResponse' }
+    post:
+      tags: [scim-groups]
+      operationId: scimCreateGroup
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema: { $ref: '#/components/schemas/ScimGroup' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/scim+json:
+              schema: { $ref: '#/components/schemas/ScimGroup' }
+
+  /v1/Bulk:
+    post:
+      tags: [scim-bulk]
+      operationId: scimBulk
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: ok
+          content:
+            application/scim+json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  # --------------------------- DingTalk adapter (internal admin endpoints) --
+  /v1/dingtalk/sync:trigger:
+    post:
+      tags: [dingtalk]
+      summary: 手动触发钉钉全量同步（定时任务也会跑）
+      operationId: triggerDingtalkSync
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, mode]
+              properties:
+                tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+                mode: { type: string, enum: [FULL, INCREMENTAL] }
+      responses:
+        '202':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sync_run_id: { type: string }
+
+  /v1/dingtalk/sync-runs/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [dingtalk]
+      operationId: getDingtalkSyncRun
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DingtalkSyncRun' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /v1/dingtalk/webhook:
+    post:
+      tags: [dingtalk]
+      summary: 接收钉钉 webhook（员工变更通知）
+      operationId: receiveDingtalkWebhook
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged: { type: boolean }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    ScimListResponse:
+      type: object
+      required: [schemas, totalResults]
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        totalResults: { type: integer }
+        itemsPerPage: { type: integer }
+        startIndex: { type: integer }
+        Resources:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ScimUser:
+      type: object
+      required: [schemas, userName]
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        id: { type: string }
+        externalId: { type: string, nullable: true }
+        userName: { type: string }
+        name:
+          type: object
+          properties:
+            familyName: { type: string }
+            givenName: { type: string }
+            formatted: { type: string }
+        displayName: { type: string }
+        emails:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string, format: email }
+              primary: { type: boolean }
+              type: { type: string }
+        phoneNumbers:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              type: { type: string }
+        active: { type: boolean }
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              display: { type: string }
+              $ref: { type: string }
+        meta:
+          type: object
+          additionalProperties: true
+
+    ScimGroup:
+      type: object
+      required: [schemas, displayName]
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        id: { type: string }
+        displayName: { type: string }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              display: { type: string }
+              type: { type: string, enum: [User, Group] }
+        meta:
+          type: object
+          additionalProperties: true
+
+    ScimPatchOp:
+      type: object
+      required: [schemas, Operations]
+      properties:
+        schemas:
+          type: array
+          items: { type: string, enum: ['urn:ietf:params:scim:api:messages:2.0:PatchOp'] }
+        Operations:
+          type: array
+          items:
+            type: object
+            required: [op]
+            properties:
+              op: { type: string, enum: [add, remove, replace, ADD, REMOVE, REPLACE] }
+              path: { type: string }
+              value: {}
+
+    DingtalkSyncRun:
+      type: object
+      required: [id, tenant_id, mode, status, started_at]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        mode: { type: string, enum: [FULL, INCREMENTAL] }
+        status: { type: string, enum: [RUNNING, COMPLETED, FAILED, PARTIAL] }
+        users_synced: { type: integer }
+        users_disabled: { type: integer }
+        groups_synced: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              dingtalk_id: { type: string }
+              error_code: { type: string }
+              detail: { type: string }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }

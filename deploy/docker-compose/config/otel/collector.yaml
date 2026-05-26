@@ -1,0 +1,81 @@
+# =============================================================================
+# OTel Collector — saas-foundation 本地开发
+# 接收 OTLP gRPC/HTTP，分发到 Jaeger（trace）和 ClickHouse（生产规划）
+# 本地开发简化为只走 Jaeger；生产用 ClickHouse exporter
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://localhost:*"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # 强制注入 service 标识
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: dev
+        action: insert
+
+  # 过滤掉过于嘈杂的健康检查 span
+  filter/healthz:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["http.target"] == "/healthz"'
+        - 'attributes["http.target"] == "/readyz"'
+        - 'attributes["http.target"] == "/metrics"'
+
+exporters:
+  # Trace → Jaeger（本地观察）
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Log/Metric → Prometheus / Loki 后续接入
+  debug:
+    verbosity: basic
+
+  # ClickHouse exporter（生产用；本地注释掉避免冷启动失败）
+  # clickhouse:
+  #   endpoint: tcp://clickhouse:9000?dial_timeout=10s
+  #   database: audit
+  #   logs_table_name: otel_logs
+  #   traces_table_name: otel_traces
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/healthz, resource, batch]
+      exporters: [otlp/jaeger, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info

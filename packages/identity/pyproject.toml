@@ -1,0 +1,153 @@
+[tool.poetry]
+name = "foundation-identity"
+version = "1.0.0a1"
+description = "SaaS Foundation — Identity Service (sessions / users / MFA / SSO / SCIM / policies)"
+authors = ["SaaS Foundation Team <foundation@example.com>"]
+readme = "README.md"
+license = "Proprietary"
+packages = [{ include = "foundation_identity", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+# Web 框架
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+pydantic = { extras = ["email"], version = "^2.9.0" }
+pydantic-settings = "^2.6.0"
+
+# DB
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+alembic = "^1.14.0"
+greenlet = "^3.1.0"  # required by sqlalchemy async on macOS arm64
+
+# Cache / Session
+redis = { extras = ["hiredis"], version = "^5.2.0" }
+
+# HTTP client
+httpx = { extras = ["http2"], version = "^0.27.0" }
+
+# JWT / Crypto
+python-jose = { extras = ["cryptography"], version = "^3.3.0" }
+argon2-cffi = "^23.1.0"
+
+# Observability
+opentelemetry-api = "^1.28.0"
+opentelemetry-sdk = "^1.28.0"
+opentelemetry-instrumentation-fastapi = "^0.49b0"
+opentelemetry-instrumentation-sqlalchemy = "^0.49b0"
+opentelemetry-instrumentation-httpx = "^0.49b0"
+opentelemetry-exporter-otlp = "^1.28.0"
+structlog = "^24.4.0"
+
+# Outbox / events
+ulid-py = "^1.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+pytest-cov = "^6.0.0"
+ruff = "^0.7.0"
+mypy = "^1.13.0"
+respx = "^0.21.1"               # httpx mocking
+testcontainers = { extras = ["postgres"], version = "^4.8.0" }
+
+# -----------------------------------------------------------------------------
+# Tooling
+# -----------------------------------------------------------------------------
+[tool.poetry.scripts]
+foundation-identity = "foundation_identity.main:run"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+# -----------------------------------------------------------------------------
+# Source（镜像源；CN 开发体验）。生产构建建议改回 PyPI 官方源 + 校验 hash。
+# -----------------------------------------------------------------------------
+[[tool.poetry.source]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+priority = "primary"
+
+# -----------------------------------------------------------------------------
+# Ruff（lint + format）
+# -----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",      # pycodestyle + pyflakes
+  "I",                 # isort
+  "B",                 # bugbear
+  "UP",                # pyupgrade
+  "ASYNC",             # async best practices
+  "S",                 # bandit security
+  "C4",                # comprehensions
+  "PT",                # pytest
+  "RUF",               # ruff-specific
+]
+ignore = [
+  "S101",              # allow assert in tests
+  "B008",              # FastAPI Depends() in default args is the pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = ["S", "PT011"]
+"migrations/**/*" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# -----------------------------------------------------------------------------
+# MyPy
+# -----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["jose.*", "argon2.*", "ulid.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+# -----------------------------------------------------------------------------
+# Pytest
+# -----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--cov=foundation_identity",
+  "--cov-report=term-missing",
+  "--cov-fail-under=60",       # 早期门禁；A-M5 提到 80
+]
+markers = [
+  "unit: 纯单元测试",
+  "integration: 需要 Postgres / Keycloak",
+  "e2e: 端到端跨服务",
+]
+
+# -----------------------------------------------------------------------------
+# Coverage
+# -----------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src/foundation_identity"]
+omit = [
+  "*/migrations/*",
+  "*/__main__.py",
+]
+branch = true

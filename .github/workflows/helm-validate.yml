@@ -1,0 +1,74 @@
+# =============================================================================
+# Helm chart 校验
+#   - lint
+#   - 三档 profile render（small/medium/large）通过
+#   - kubeconform 校验渲染结果
+#   - kube-linter 安全 best-practice 检查
+# =============================================================================
+
+name: Helm Validate
+
+on:
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm-validate.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/helm/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-render:
+    name: Lint + Render + Validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [small, medium, large]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with: { version: "v3.15.0" }
+
+      - name: Helm dependency update
+        working-directory: deploy/helm/foundation
+        run: helm dependency update
+
+      - name: Helm lint
+        working-directory: deploy/helm/foundation
+        run: helm lint . -f values-${{ matrix.profile }}.yaml
+
+      - name: Helm template
+        working-directory: deploy/helm/foundation
+        run: |
+          helm template foundation . \
+            -f values-${{ matrix.profile }}.yaml \
+            --namespace foundation \
+            > /tmp/render-${{ matrix.profile }}.yaml
+          echo "Rendered $(grep -c '^---' /tmp/render-${{ matrix.profile }}.yaml) documents"
+
+      - name: kubeconform
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          args: -strict -ignore-missing-schemas -summary /tmp/render-${{ matrix.profile }}.yaml
+
+      - name: kube-linter
+        uses: stackrox/kube-linter-action@v1.0.5
+        continue-on-error: ${{ matrix.profile == 'small' }}   # small 容忍 best-practice 警告
+        with:
+          directory: /tmp/render-${{ matrix.profile }}.yaml
+          config: tools/ci/kube-linter.yaml
+
+      - name: Upload render artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-render-${{ matrix.profile }}-${{ github.sha }}
+          path: /tmp/render-${{ matrix.profile }}.yaml
+          retention-days: 7

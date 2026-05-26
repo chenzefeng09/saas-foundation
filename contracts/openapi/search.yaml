@@ -1,0 +1,237 @@
+# =============================================================================
+# Search Service API — search-v1
+# =============================================================================
+# OpenSearch + per-tenant alias + ACL filter 三层注入
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Search Service API
+  version: 1.0.0
+  description: |
+    搜索：业务调 `/index` 灌入，调 `/query` 检索。ACL 过滤强制注入：
+    1) SDK 自动 + tenant_id
+    2) alias filter 限定 tenant
+    3) 业务层 re-check
+    详见 [docs/design/search-v1.md](../../docs/design/search-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/search/v1
+  - url: http://localhost:8010/api/search/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: index
+  - name: query
+  - name: schemas
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /index/{resource_type}:
+    parameters:
+      - name: resource_type
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [index]
+      summary: 入库（业务用 SDK 通常走 outbox 异步）
+      operationId: indexDocument
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IndexRequest' }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doc_id: { type: string }
+                  shard: { type: string }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /index/{resource_type}/{doc_id}:
+    parameters:
+      - name: resource_type
+        in: path
+        required: true
+        schema: { type: string }
+      - name: doc_id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [index]
+      summary: 删除文档（lifecycle 联动）
+      operationId: deleteDocument
+      responses:
+        '204': { description: ok }
+
+  /query:
+    post:
+      tags: [query]
+      summary: 检索（ACL filter 自动注入）
+      operationId: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QueryRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+
+  /schemas:
+    get:
+      tags: [schemas]
+      summary: 列已注册可搜资源类型
+      operationId: listSearchSchemas
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SearchSchema' }
+    post:
+      tags: [schemas]
+      summary: 注册新可搜资源（业务模块启动调）
+      operationId: registerSearchSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchSchema' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchSchema' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    IndexRequest:
+      type: object
+      required: [doc_id, body]
+      properties:
+        doc_id: { type: string }
+        body:
+          type: object
+          additionalProperties: true
+        acl:
+          type: object
+          properties:
+            owner_user_id: { type: string }
+            visible_to_user_ids:
+              type: array
+              items: { type: string }
+            visible_to_team_ids:
+              type: array
+              items: { type: string }
+            visible_to_role_names:
+              type: array
+              items: { type: string }
+            sensitivity_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+
+    QueryRequest:
+      type: object
+      required: [resource_types, q]
+      properties:
+        resource_types:
+          type: array
+          items: { type: string }
+        q:
+          type: string
+          description: 查询语句（DSL 或自然语言）
+        filter:
+          type: object
+          additionalProperties: true
+        sort:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        page_size: { type: integer, default: 20, maximum: 100 }
+        cursor: { type: string }
+        highlight: { type: boolean, default: false }
+
+    QueryResponse:
+      type: object
+      required: [hits, total, took_ms]
+      properties:
+        hits:
+          type: array
+          items:
+            type: object
+            properties:
+              resource_type: { type: string }
+              doc_id: { type: string }
+              score: { type: number }
+              body:
+                type: object
+                additionalProperties: true
+              highlights:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: { type: string }
+        total: { type: integer }
+        next_cursor: { type: string, nullable: true }
+        took_ms: { type: integer }
+        acl_filtered_count:
+          type: integer
+          description: 命中但因 ACL 被过滤的文档数（debug）
+
+    SearchSchema:
+      type: object
+      required: [resource_type, owner_service, fields]
+      properties:
+        resource_type: { type: string }
+        owner_service: { type: string }
+        index_name_pattern:
+          type: string
+          example: '<tenant_id>_<resource_type>_v1'
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              type: { type: string, enum: [TEXT, KEYWORD, INTEGER, FLOAT, DATE, BOOLEAN, VECTOR] }
+              analyzer: { type: string, nullable: true }
+              acl_field: { type: boolean, default: false }
+        version: { type: integer, default: 1 }

@@ -1,0 +1,118 @@
+# =============================================================================
+# medium profile — 企业私有化 / 3-10 节点 / 100-500 用户 / HA
+#
+# 特点：
+#   - 业务 service 多副本（3+）
+#   - Postgres Patroni 1 主 2 从
+#   - Redis Sentinel 3 节点
+#   - ClickHouse Replicated 3 节点
+#   - OpenSearch 3 master + 3 data
+#   - Vault Raft 3 节点（生产模式）
+#   - mTLS 开启
+#   - HPA 开启
+# =============================================================================
+
+global:
+  profile: medium
+  ingress:
+    enabled: true
+    className: nginx
+    tls: true
+  mtls:
+    enabled: true
+  complianceModes:
+    - pipl
+    - equal_protection_3
+
+postgresql:
+  enabled: false   # medium 通常用 CloudNativePG / Crunchy Operator
+  # 改用客户外置 DB 时：
+  # global.database.host: pg-primary.your-domain
+  # global.database.port: 5432
+
+redis:
+  enabled: true
+  architecture: replication
+  sentinel:
+    enabled: true
+    quorum: 2
+  replica:
+    replicaCount: 2
+
+keycloak:
+  enabled: true
+  replicaCount: 2
+  production: true
+  cache: ispn
+
+clickhouse:
+  enabled: true
+  shards: 1
+  replicaCount: 3
+  zookeeper:
+    enabled: true
+    replicaCount: 3
+  persistence:
+    size: 200Gi
+
+opensearch:
+  enabled: true
+  replicas: 3
+  masterCount: 3
+  persistence:
+    size: 100Gi
+
+vault:
+  enabled: true
+  server:
+    ha:
+      enabled: true
+      replicas: 3
+      raft:
+        enabled: true
+
+minio:
+  enabled: true
+  mode: distributed
+  replicas: 4
+  persistence:
+    size: 200Gi
+
+# Service 副本 + 资源底线
+_serviceDefaults: &serviceDefaults
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: 1,    memory: 1Gi }
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+
+services:
+  identity:        { <<: *serviceDefaults }
+  authz:           { <<: *serviceDefaults }
+  org:             { <<: *serviceDefaults }
+  billing:         { <<: *serviceDefaults }
+  audit:           { <<: *serviceDefaults }
+  lifecycle:       { <<: *serviceDefaults }
+  notification:    { <<: *serviceDefaults }
+  search:          { <<: *serviceDefaults }
+  apiPlatform:     { <<: *serviceDefaults }
+  llmGateway:      { <<: *serviceDefaults }
+  featureFlag:     { <<: *serviceDefaults }
+  classification:  { <<: *serviceDefaults }
+  dlp:             { <<: *serviceDefaults }
+  crypto:          { <<: *serviceDefaults }
+  compliance:      { <<: *serviceDefaults }
+  pam:             { <<: *serviceDefaults }
+  dataProtection:  { <<: *serviceDefaults }
+  securityOps:     { <<: *serviceDefaults }

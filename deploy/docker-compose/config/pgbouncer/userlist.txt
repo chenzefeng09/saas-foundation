@@ -1,0 +1,10 @@
+; PgBouncer userlist — 本地开发用明文，生产用 scram-sha-256 哈希
+; 格式：用户名 密码（用引号包裹）
+;
+; ⚠️ 本文件仅本地开发；生产用 K8s External Secrets 注入
+
+"app_user"          "app_user_change_me"
+"app_admin"         "app_admin_change_me"
+"app_migrator"      "app_migrator_change_me"
+"app_observability" "app_obs_change_me"
+"pgbouncer_admin"   "pgbouncer_admin_change_me"

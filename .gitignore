@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+.npm
+.pnpm-store/
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+.env
+.env.local
+*.local
+secrets/
+*.pem
+*.key
+*.crt
+
+# Generated artifacts
+generated/
+openapi-generated/
+*.tar
+*.tar.gz
+
+# Helm
+charts/*/charts/
+charts/*/Chart.lock
+
+# Logs
+*.log
+logs/
+
+# Database
+*.sqlite
+*.db

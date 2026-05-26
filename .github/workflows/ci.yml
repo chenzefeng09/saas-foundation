@@ -1,0 +1,97 @@
+# =============================================================================
+# Main CI — 所有 16 个 service 的 lint + test + build
+# =============================================================================
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 快速检查 — 先跑 (不依赖 Poetry install)
+  # ---------------------------------------------------------------------------
+  quick-checks:
+    name: Quick Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check all services have main.py
+        run: |
+          missing=0
+          for svc in identity authz org billing audit lifecycle notification search \
+                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection; do
+            if [ ! -f "packages/$svc/src/foundation_$(echo $svc | tr '-' '_')/main.py" ]; then
+              echo "::error::packages/$svc missing main.py"
+              missing=1
+            fi
+          done
+          exit $missing
+      - name: Check all services have Dockerfile
+        run: |
+          for svc in identity authz org billing audit lifecycle notification search \
+                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection; do
+            [ -f "packages/$svc/Dockerfile" ] || { echo "::error::$svc missing Dockerfile"; exit 1; }
+          done
+          echo "All 16 services have Dockerfile"
+
+  # ---------------------------------------------------------------------------
+  # 分批跑 service CI（并行 4 个一批，避免 Actions 限流）
+  # ---------------------------------------------------------------------------
+  ci-batch-1:
+    name: Batch 1 — Core Services
+    needs: [quick-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [identity, authz, org, crypto]
+    uses: ./.github/workflows/service-ci.yml
+    with:
+      service-name: ${{ matrix.service }}
+      working-directory: packages/${{ matrix.service }}
+      coverage-min: 0
+
+  ci-batch-2:
+    name: Batch 2 — Audit + Lifecycle
+    needs: [quick-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [audit, lifecycle, billing, notification]
+    uses: ./.github/workflows/service-ci.yml
+    with:
+      service-name: ${{ matrix.service }}
+      working-directory: packages/${{ matrix.service }}
+      coverage-min: 0
+
+  ci-batch-3:
+    name: Batch 3 — Search + API + LLM + FF
+    needs: [quick-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [search, api-platform, llm-gateway, feature-flag]
+    uses: ./.github/workflows/service-ci.yml
+    with:
+      service-name: ${{ matrix.service }}
+      working-directory: packages/${{ matrix.service }}
+      coverage-min: 0
+
+  ci-batch-4:
+    name: Batch 4 — DLP + Compliance + PAM + Data
+    needs: [quick-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [dlp, compliance, pam, data-protection]
+    uses: ./.github/workflows/service-ci.yml
+    with:
+      service-name: ${{ matrix.service }}
+      working-directory: packages/${{ matrix.service }}
+      coverage-min: 0

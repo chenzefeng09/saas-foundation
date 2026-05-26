@@ -1,0 +1,377 @@
+# =============================================================================
+# Notification Service API — notification-v1
+# =============================================================================
+# 通道：EMAIL / WEBHOOK / WEBSOCKET / DINGTALK / FEISHU / WECOM / SMS / IN_APP
+# Outbox + 重试 + DLQ + 订阅 + 静默时段 + 摘要
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Notification Service API
+  version: 1.0.0
+  description: |
+    通知中心：多通道适配、模板 i18n、订阅、静默、digest。
+    详见 [docs/design/notification-v1.md](../../docs/design/notification-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/notification/v1
+  - url: http://localhost:8009/api/notification/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: messages
+  - name: templates
+  - name: subscriptions
+  - name: channels
+  - name: dlq
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /messages:
+    post:
+      tags: [messages]
+      summary: 发送通知（异步）
+      operationId: sendNotification
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendRequest' }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+    get:
+      tags: [messages]
+      operationId: listMessages
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.recipient_id
+          in: query
+          schema: { type: string }
+        - name: filter.event_type
+          in: query
+          schema: { type: string }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [QUEUED, SENT, FAILED, DLQ, ACKED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Message' }
+
+  /messages/{message_id}:
+    parameters:
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [messages]
+      operationId: getMessage
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /templates:
+    get:
+      tags: [templates]
+      operationId: listTemplates
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Template' }
+    post:
+      tags: [templates]
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Template' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Template' }
+
+  /subscriptions:
+    get:
+      tags: [subscriptions]
+      operationId: listSubscriptions
+      parameters:
+        - name: filter.user_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Subscription' }
+    post:
+      tags: [subscriptions]
+      operationId: createSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSubscriptionRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+
+  /subscriptions/{sub_id}:
+    parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [subscriptions]
+      operationId: deleteSubscription
+      responses:
+        '204': { description: ok }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /channels:
+    get:
+      tags: [channels]
+      summary: 列租户可用通道
+      operationId: listChannels
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Channel' }
+
+  /channels/{channel}:test:
+    parameters:
+      - name: channel
+        in: path
+        required: true
+        schema: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+    post:
+      tags: [channels]
+      summary: 发测试消息
+      operationId: testChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipient]
+              properties:
+                recipient: { type: string }
+      responses:
+        '202':
+          description: 已发
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message_id: { type: string }
+
+  /dlq:
+    get:
+      tags: [dlq]
+      operationId: listDeadLetters
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Message' }
+
+  /dlq/{message_id}/replay:
+    parameters:
+      - name: message_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [dlq]
+      operationId: replayDeadLetter
+      responses:
+        '202': { description: 已重投 }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    SendRequest:
+      type: object
+      required: [event_type, recipients]
+      properties:
+        event_type:
+          type: string
+          description: 四段式事件名（驱动模板与订阅路由）
+          example: foundation.identity.user.frozen
+        recipients:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [USER, TEAM, ROLE, EXPLICIT] }
+              id: { type: string }
+              channel_override:
+                type: string
+                enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP]
+        context:
+          type: object
+          additionalProperties: true
+          description: 模板渲染变量
+        priority: { type: string, enum: [P1, P2, P3, P4], default: P3 }
+        locale_hint: { type: string }
+
+    Message:
+      type: object
+      required: [id, event_type, channel, recipient, status, created_at]
+      properties:
+        id: { type: string }
+        event_type: { type: string }
+        template_id: { type: string, nullable: true }
+        channel: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+        recipient: { type: string }
+        subject: { type: string, nullable: true }
+        body_preview: { type: string }
+        status: { type: string, enum: [QUEUED, SENT, FAILED, DLQ, ACKED] }
+        attempt_count: { type: integer }
+        last_attempt_at: { type: string, format: date-time, nullable: true }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Template:
+      type: object
+      required: [id, name, channel, locale, subject, body_template]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        event_type: { type: string }
+        channel: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+        locale: { type: string, example: zh-CN }
+        subject: { type: string }
+        body_template:
+          type: string
+          description: Jinja2
+        version: { type: integer, default: 1 }
+        created_at: { type: string, format: date-time }
+
+    Subscription:
+      type: object
+      required: [id, subject_type, subject_id, event_type_pattern, channel, enabled]
+      properties:
+        id: { type: string }
+        subject_type: { type: string, enum: [USER, TEAM, ROLE] }
+        subject_id: { type: string }
+        event_type_pattern:
+          type: string
+          example: foundation.identity.user.*
+        channel: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+        recipient_override: { type: string, nullable: true }
+        quiet_hours:
+          type: object
+          nullable: true
+          properties:
+            start: { type: string, example: '22:00' }
+            end: { type: string, example: '08:00' }
+            timezone: { type: string, example: Asia/Shanghai }
+        digest_period_minutes: { type: integer, nullable: true, description: 大于 0 → 攒包发 }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    CreateSubscriptionRequest:
+      type: object
+      required: [subject_type, subject_id, event_type_pattern, channel]
+      properties:
+        subject_type: { type: string, enum: [USER, TEAM, ROLE] }
+        subject_id: { type: string }
+        event_type_pattern: { type: string }
+        channel: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+        recipient_override: { type: string }
+        quiet_hours: { type: object, additionalProperties: true }
+        digest_period_minutes: { type: integer }
+
+    Channel:
+      type: object
+      required: [name, enabled]
+      properties:
+        name: { type: string, enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP] }
+        enabled: { type: boolean }
+        description: { type: string }
+        config_sanitized:
+          type: object
+          additionalProperties: true
+          description: 不含密钥；仅渠道元数据

@@ -1,0 +1,467 @@
+# =============================================================================
+# Crypto Service API — crypto-v1
+# =============================================================================
+# 密码学抽象层（国际算法 + 国密 SM2/3/4）+ HSM/KMS 集成
+# 关键 SDK 命名约定（crypto-v1 已声明，被 lifecycle / data-protection / dlp 调用）：
+#   - crypto.kek_mark_for_destruction(kek_id, reason)
+#   - crypto.kek_destroy(kek_id)
+#   - crypto.kek_abort_destruction(kek_id, reason)
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Crypto Service API
+  version: 1.0.0
+  description: |
+    密码学抽象层：encrypt / decrypt / sign / verify / kek 生命周期。
+    后端：HashiCorp Vault transit（默认） / TASS HSM / 江南天安 HSM / AWS KMS / 阿里云 KMS。
+    算法：AES-256-GCM / RSA-4096 / ECDSA-P256 / SHA-256 / SM4-GCM / SM2 / SM3。
+    详见 [docs/design/crypto-v1.md](../../docs/design/crypto-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/crypto/v1
+  - url: http://localhost:8004/api/crypto/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: keys
+    description: KEK 生命周期
+  - name: data
+    description: 加密 / 解密（信封加密）
+  - name: signing
+    description: 签名 / 验签
+  - name: algorithms
+    description: 算法套件
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Keys -----------------------------------------
+  /keks:
+    get:
+      tags: [keys]
+      summary: 列租户的 KEK
+      operationId: listKeks
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.purpose
+          in: query
+          schema: { type: string, example: pii }
+        - name: filter.algorithm
+          in: query
+          schema: { type: string }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [ACTIVE, ROTATING, MARKED_FOR_DESTRUCTION, DESTROYED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Kek' }
+    post:
+      tags: [keys]
+      summary: 生成新 KEK
+      operationId: createKek
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateKekRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kek' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /keks/{kek_id}:
+    parameters:
+      - name: kek_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^kek_[0-9A-Z]{26}$' }
+    get:
+      tags: [keys]
+      operationId: getKek
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kek' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /keks/{kek_id}/rotate:
+    parameters:
+      - name: kek_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [keys]
+      summary: 轮换 KEK（生成新 version，旧 version 仍可解密旧 DEK）
+      operationId: rotateKek
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kek' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /keks/{kek_id}/mark-for-destruction:
+    parameters:
+      - name: kek_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [keys]
+      summary: 标记销毁（销毁前一定走此步骤，进入冷静期）
+      description: 公共 SDK 名 `crypto.kek_mark_for_destruction`，被 lifecycle / data-protection 销毁流程调用
+      operationId: markKekForDestruction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10 }
+                cooldown_hours:
+                  type: integer
+                  minimum: 24
+                  maximum: 720
+                  default: 168
+                  description: 冷静期，超时自动 destroy（默认 7 天）
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kek' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /keks/{kek_id}/destroy:
+    parameters:
+      - name: kek_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [keys]
+      summary: 立即销毁（密钥销毁 = 数据销毁的快速通道）
+      description: |
+        公共 SDK 名 `crypto.kek_destroy`。
+        必须先 `mark-for-destruction` 进入冷静期；冷静期内或之后才能调用。
+        销毁后所有用此 KEK 加密的密文不可恢复，且不可逆。
+      operationId: destroyKek
+      responses:
+        '204': { description: 已销毁 }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: 状态非 MARKED_FOR_DESTRUCTION
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  /keks/{kek_id}/abort-destruction:
+    parameters:
+      - name: kek_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [keys]
+      summary: 撤回销毁（冷静期内可撤）
+      description: 公共 SDK 名 `crypto.kek_abort_destruction`
+      operationId: abortKekDestruction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Kek' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  # --------------------------- Encrypt / Decrypt ----------------------------
+  /encrypt:
+    post:
+      tags: [data]
+      summary: 加密（信封加密；本接口返回密文 + 密文头）
+      operationId: encryptData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EncryptRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EncryptResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '413': { $ref: './_common.yaml#/components/responses/PayloadTooLarge' }
+
+  /decrypt:
+    post:
+      tags: [data]
+      summary: 解密
+      operationId: decryptData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecryptRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecryptResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Sign / Verify --------------------------------
+  /sign:
+    post:
+      tags: [signing]
+      summary: 签名（用于审计 hash chain / 销毁证明 / bundle 签名）
+      operationId: signData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SignResponse' }
+
+  /verify:
+    post:
+      tags: [signing]
+      summary: 验签
+      operationId: verifySignature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+                  algorithm: { type: string }
+                  signed_at: { type: string, format: date-time, nullable: true }
+
+  # --------------------------- Algorithms -----------------------------------
+  /algorithms:
+    get:
+      tags: [algorithms]
+      summary: 列出当前部署支持的算法套件（依赖租户合规模式）
+      operationId: listAlgorithms
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Algorithm' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    Kek:
+      type: object
+      required: [id, tenant_id, purpose, algorithm, status, current_version, created_at]
+      properties:
+        id: { type: string, pattern: '^kek_[0-9A-Z]{26}$' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        purpose:
+          type: string
+          example: pii
+          description: 业务用途；同 purpose 共享 KEK（如 pii / audit_chain / pseudonymize）
+        algorithm:
+          type: string
+          enum: [AES_256_GCM, SM4_GCM, RSA_4096, ECDSA_P256, SM2, ED25519]
+        backend:
+          type: string
+          enum: [VAULT, TASS_HSM, JNTA_HSM, AWS_KMS, ALIYUN_KMS]
+          description: 实际承载后端
+        status:
+          type: string
+          enum: [ACTIVE, ROTATING, MARKED_FOR_DESTRUCTION, DESTROYED]
+        current_version: { type: integer }
+        rotation_period_days: { type: integer, default: 90 }
+        marked_for_destruction_at: { type: string, format: date-time, nullable: true }
+        cooldown_ends_at: { type: string, format: date-time, nullable: true }
+        destroyed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CreateKekRequest:
+      type: object
+      required: [purpose, algorithm]
+      properties:
+        purpose: { type: string }
+        algorithm:
+          type: string
+          enum: [AES_256_GCM, SM4_GCM, RSA_4096, ECDSA_P256, SM2, ED25519]
+        backend:
+          type: string
+          enum: [VAULT, TASS_HSM, JNTA_HSM, AWS_KMS, ALIYUN_KMS]
+          description: 缺省按租户合规模式 + 部署 profile 自动选
+        rotation_period_days: { type: integer, default: 90 }
+
+    EncryptRequest:
+      type: object
+      required: [kek_id, plaintext_b64]
+      properties:
+        kek_id: { type: string }
+        plaintext_b64:
+          type: string
+          format: byte
+          description: 单次最大 4MiB；大数据走 stream 接口（v1.1）
+        aad_b64:
+          type: string
+          format: byte
+          description: Additional Authenticated Data（GCM 模式）
+
+    EncryptResponse:
+      type: object
+      required: [ciphertext_b64, kek_id, kek_version, algorithm]
+      properties:
+        ciphertext_b64: { type: string, format: byte }
+        kek_id: { type: string }
+        kek_version: { type: integer }
+        algorithm: { type: string }
+        encrypted_at: { type: string, format: date-time }
+
+    DecryptRequest:
+      type: object
+      required: [ciphertext_b64, kek_id]
+      properties:
+        ciphertext_b64: { type: string, format: byte }
+        kek_id: { type: string }
+        kek_version:
+          type: integer
+          nullable: true
+          description: 不指定则用密文头里记录的版本
+        aad_b64: { type: string, format: byte }
+
+    DecryptResponse:
+      type: object
+      required: [plaintext_b64]
+      properties:
+        plaintext_b64: { type: string, format: byte }
+        kek_version_used: { type: integer }
+
+    SignRequest:
+      type: object
+      required: [kek_id, payload_b64]
+      properties:
+        kek_id: { type: string }
+        payload_b64: { type: string, format: byte }
+        algorithm:
+          type: string
+          enum: [ECDSA_P256_SHA256, SM2_SM3, RSA_PSS_SHA256, ED25519]
+          description: 缺省按 KEK algorithm 决定
+
+    SignResponse:
+      type: object
+      required: [signature_b64, algorithm, kek_id, kek_version]
+      properties:
+        signature_b64: { type: string, format: byte }
+        algorithm: { type: string }
+        kek_id: { type: string }
+        kek_version: { type: integer }
+        signed_at: { type: string, format: date-time }
+
+    VerifyRequest:
+      type: object
+      required: [kek_id, payload_b64, signature_b64]
+      properties:
+        kek_id: { type: string }
+        payload_b64: { type: string, format: byte }
+        signature_b64: { type: string, format: byte }
+        algorithm:
+          type: string
+          enum: [ECDSA_P256_SHA256, SM2_SM3, RSA_PSS_SHA256, ED25519]
+
+    Algorithm:
+      type: object
+      required: [name, kind, available]
+      properties:
+        name: { type: string }
+        kind:
+          type: string
+          enum: [SYMMETRIC, ASYMMETRIC, SIGNING, HASH, KDF]
+        available: { type: boolean }
+        backends:
+          type: array
+          items:
+            type: string
+            enum: [VAULT, TASS_HSM, JNTA_HSM, AWS_KMS, ALIYUN_KMS, TONGSUO, GMSSL, OPENSSL]
+        compliance_modes:
+          type: array
+          items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+          description: 在哪些合规模式下被推荐 / 强制

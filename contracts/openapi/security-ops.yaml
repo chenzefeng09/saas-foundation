@@ -1,0 +1,864 @@
+# =============================================================================
+# Security Operations Service API — A-M5 合集
+# =============================================================================
+# 涵盖：ha-fault-injection-v1（chaos）+ penetration-test-scope-v1（pentest）
+#       + security-ops-ci-v1（scan / vulnerability / sbom / incident）
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Security Operations Service API
+  version: 1.0.0
+  description: |
+    安全运营：故障注入 / 渗透测试跟踪 / SSDLC 扫描结果 / 漏洞 SLA / SBOM / 应急响应。
+    详见 [docs/design/ha-fault-injection-v1.md](../../docs/design/ha-fault-injection-v1.md)
+    + [penetration-test-scope-v1.md](../../docs/design/penetration-test-scope-v1.md)
+    + [security-ops-ci-v1.md](../../docs/design/security-ops-ci-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/security-ops/v1
+  - url: http://localhost:8019/api/security-ops/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: chaos
+    description: 故障注入演练
+  - name: pentest-engagements
+  - name: pentest-findings
+  - name: scans
+    description: CI 扫描结果（SAST/SCA/DAST/Secret/License/IaC/IMAGE_VULN）
+  - name: vulnerabilities
+    description: 统一漏洞跟踪
+  - name: sbom
+  - name: incidents
+    description: 应急响应
+  - name: drills
+    description: 演练 / 桌面 / 红蓝
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # ============================== Chaos =====================================
+  /chaos/scenarios:
+    get:
+      tags: [chaos]
+      operationId: listChaosScenarios
+      parameters:
+        - name: filter.category
+          in: query
+          schema: { type: string, enum: [POD, NODE, NETWORK, STATEFUL] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChaosScenario' }
+
+  /chaos/runs:
+    get:
+      tags: [chaos]
+      operationId: listChaosRuns
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema:
+            type: string
+            enum:
+              - SCHEDULED
+              - STEADY_STATE_CHECK
+              - ABORTED_PRECHECK
+              - INJECTING
+              - MONITORING
+              - ROLLED_BACK_AUTO
+              - RECOVERING
+              - POST_VERIFY
+              - SUCCESS
+              - FAILED
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ChaosRun' }
+    post:
+      tags: [chaos]
+      summary: 触发演练
+      operationId: triggerChaosRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TriggerChaosRequest' }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChaosRun' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '412':
+          description: 稳态基线不满足
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  /chaos/runs/{run_id}:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [chaos]
+      operationId: getChaosRun
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChaosRun' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /chaos/runs/{run_id}/abort:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [chaos]
+      operationId: abortChaosRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChaosRun' }
+
+  /chaos/runs/{run_id}/report:
+    parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [chaos]
+      summary: 下载演练报告 PDF
+      operationId: downloadChaosReport
+      responses:
+        '200':
+          description: ok
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  # ============================== Pentest ===================================
+  /pentest/engagements:
+    get:
+      tags: [pentest-engagements]
+      operationId: listPentestEngagements
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [PLANNED, IN_PROGRESS, FIXING, COMPLETED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PentestEngagement' }
+    post:
+      tags: [pentest-engagements]
+      operationId: createPentestEngagement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PentestEngagement' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PentestEngagement' }
+
+  /pentest/engagements/{eng_id}/findings:
+    parameters:
+      - name: eng_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [pentest-findings]
+      summary: vendor 批量提交 findings
+      operationId: importPentestFindings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [findings]
+              properties:
+                findings:
+                  type: array
+                  items: { $ref: '#/components/schemas/PentestFinding' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported_count: { type: integer }
+
+  /pentest/findings:
+    get:
+      tags: [pentest-findings]
+      operationId: listPentestFindings
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.severity
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/Severity' }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [OPEN, TRIAGED, IN_FIX, AWAITING_RETEST, CLOSED, RISK_ACCEPTED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PentestFinding' }
+
+  # ============================== Scans (CI) ================================
+  /scans/runs:
+    get:
+      tags: [scans]
+      operationId: listScanRuns
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.type
+          in: query
+          schema: { type: string, enum: [SAST, SCA, DAST, IMAGE_VULN, IAC, SECRET, LICENSE] }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [RUNNING, PASSED, FAILED, ERRORED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ScanRun' }
+    post:
+      tags: [scans]
+      summary: CI 上报扫描结果
+      operationId: reportScanRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScanRun' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scan_id: { type: string }
+                  vulnerabilities_opened: { type: integer }
+
+  # ============================== Vulnerabilities ===========================
+  /vulnerabilities:
+    get:
+      tags: [vulnerabilities]
+      operationId: listVulnerabilities
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.severity
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/Severity' }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [OPEN, TRIAGED, IN_FIX, AWAITING_VERIFY, CLOSED, RISK_ACCEPTED, EXEMPTED] }
+        - name: filter.package_affected
+          in: query
+          schema: { type: string }
+        - name: filter.source
+          in: query
+          schema: { type: string, enum: [SAST, SCA, PENTEST, CVE_MONITOR, CUSTOMER_REPORT] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Vulnerability' }
+
+  /vulnerabilities/{vuln_id}:
+    parameters:
+      - name: vuln_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [vulnerabilities]
+      operationId: getVulnerability
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vulnerability' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    patch:
+      tags: [vulnerabilities]
+      operationId: updateVulnerability
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/Vulnerability' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Vulnerability' }
+
+  /vulnerabilities/{vuln_id}/risk-accept:
+    parameters:
+      - name: vuln_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [vulnerabilities]
+      operationId: requestRiskAcceptance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rationale, mitigations]
+              properties:
+                rationale: { type: string, minLength: 20 }
+                mitigations:
+                  type: array
+                  items: { type: string }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '202':
+          description: ok（已提 CTO 审批）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval_id: { type: string }
+
+  /vulnerabilities/sla-dashboard:
+    get:
+      tags: [vulnerabilities]
+      operationId: getSlaDashboard
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overdue_by_severity:
+                    type: object
+                    additionalProperties: { type: integer }
+                  by_owner:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      additionalProperties: { type: integer }
+                  mttr_days:
+                    type: object
+                    additionalProperties: { type: number }
+
+  # ============================== SBOM ======================================
+  /sbom/images/{image_ref}:
+    parameters:
+      - name: image_ref
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [sbom]
+      operationId: getSbomForImage
+      responses:
+        '200':
+          description: ok（CycloneDX）
+          content:
+            application/vnd.cyclonedx+json:
+              schema:
+                type: object
+                additionalProperties: true
+            application/spdx+json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /sbom/watch:
+    get:
+      tags: [sbom]
+      operationId: listSbomWatches
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SbomWatch' }
+    post:
+      tags: [sbom]
+      operationId: registerSbomWatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_ref]
+              properties:
+                image_ref: { type: string }
+                notify:
+                  type: array
+                  items: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SbomWatch' }
+
+  # ============================== Incidents =================================
+  /incidents:
+    get:
+      tags: [incidents]
+      operationId: listIncidents
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.severity
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/Severity' }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [DETECTED, INVESTIGATING, CONTAINED, RESOLVED, POST_MORTEM] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Incident' }
+    post:
+      tags: [incidents]
+      summary: 宣告事件
+      operationId: declareIncident
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeclareIncidentRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+
+  /incidents/{inc_id}:
+    parameters:
+      - name: inc_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [incidents]
+      operationId: getIncident
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    patch:
+      tags: [incidents]
+      operationId: updateIncident
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/Incident' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+
+  /incidents/{inc_id}/resolve:
+    parameters:
+      - name: inc_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [incidents]
+      operationId: resolveIncident
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [root_cause, pir_s3_key]
+              properties:
+                root_cause: { type: string, minLength: 20 }
+                pir_s3_key: { type: string, description: PIR PDF }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+
+  # ============================== Drills ====================================
+  /drills:
+    get:
+      tags: [drills]
+      operationId: listDrills
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.kind
+          in: query
+          schema: { type: string, enum: [TABLETOP, PLAYBOOK_DRILL, RED_BLUE_TEAM] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Drill' }
+    post:
+      tags: [drills]
+      operationId: scheduleDrill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Drill' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Drill' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    # ----- Chaos -----
+    ChaosScenario:
+      type: object
+      required: [id, category, description, risk_level]
+      properties:
+        id: { type: string, example: POD_KILL_PRIMARY_DB }
+        category: { type: string, enum: [POD, NODE, NETWORK, STATEFUL] }
+        description: { type: string }
+        cr_template_path: { type: string }
+        default_slo: { type: string }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH] }
+        applicable_profiles:
+          type: array
+          items: { type: string, enum: [small, medium, large] }
+
+    ChaosRun:
+      type: object
+      required: [id, tenant_id, scenario_id, status, triggered_at]
+      properties:
+        id: { type: string, pattern: '^chaosrun_[0-9A-Z]{26}$' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        scenario_id: { type: string }
+        status:
+          type: string
+          enum:
+            - SCHEDULED
+            - STEADY_STATE_CHECK
+            - ABORTED_PRECHECK
+            - INJECTING
+            - MONITORING
+            - ROLLED_BACK_AUTO
+            - RECOVERING
+            - POST_VERIFY
+            - SUCCESS
+            - FAILED
+        triggered_by: { type: string }
+        triggered_at: { type: string, format: date-time }
+        steady_state_passed: { type: boolean, nullable: true }
+        injected_at: { type: string, format: date-time, nullable: true }
+        rolled_back_at: { type: string, format: date-time, nullable: true }
+        rollback_reason: { type: string, nullable: true }
+        recovery_completed_at: { type: string, format: date-time, nullable: true }
+        slo_violations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        blast_radius:
+          type: object
+          additionalProperties: true
+        report_s3_key: { type: string, nullable: true }
+        approval_id: { type: string, nullable: true }
+
+    TriggerChaosRequest:
+      type: object
+      required: [scenario_id]
+      properties:
+        scenario_id: { type: string }
+        steady_state: { type: string }
+        blast_radius:
+          type: object
+          additionalProperties: true
+        rollback_on_violation: { type: boolean, default: true }
+        notify:
+          type: array
+          items: { type: string }
+
+    # ----- Pentest -----
+    PentestEngagement:
+      type: object
+      required: [id, name, vendor, scope_assets, start_at, end_at, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vendor: { type: string }
+        sow_s3_key: { type: string }
+        scope_assets:
+          type: array
+          items: { type: string }
+        start_at: { type: string, format: date-time }
+        end_at: { type: string, format: date-time }
+        status: { type: string, enum: [PLANNED, IN_PROGRESS, FIXING, COMPLETED] }
+        final_report_s3_key: { type: string, nullable: true }
+        retest_letter_s3_key: { type: string, nullable: true }
+
+    PentestFinding:
+      type: object
+      required: [id, engagement_id, title, severity, affected_asset, status, reported_at, due_at]
+      properties:
+        id: { type: string }
+        engagement_id: { type: string }
+        title: { type: string }
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        cvss_vector: { type: string, nullable: true }
+        cvss_score: { type: number, nullable: true }
+        owasp_mapping:
+          type: array
+          items: { type: string }
+        affected_asset: { type: string }
+        description_md: { type: string }
+        repro_steps_md: { type: string }
+        status: { type: string, enum: [OPEN, TRIAGED, IN_FIX, AWAITING_RETEST, CLOSED, RISK_ACCEPTED] }
+        reported_at: { type: string, format: date-time }
+        due_at: { type: string, format: date-time }
+        fixed_at: { type: string, format: date-time, nullable: true }
+        retested_at: { type: string, format: date-time, nullable: true }
+        retest_passed: { type: boolean, nullable: true }
+        fix_pr_url: { type: string, nullable: true }
+        risk_acceptance_id: { type: string, nullable: true }
+
+    # ----- Scans / Vulnerabilities -----
+    ScanRun:
+      type: object
+      required: [id, type, tool, target, started_at, status, findings_count]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [SAST, SCA, DAST, IMAGE_VULN, IAC, SECRET, LICENSE] }
+        tool: { type: string }
+        target: { type: string }
+        commit_sha: { type: string, nullable: true }
+        pipeline_id: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [RUNNING, PASSED, FAILED, ERRORED] }
+        sarif_s3_key: { type: string, nullable: true }
+        findings_count:
+          type: object
+          additionalProperties: { type: integer }
+
+    Vulnerability:
+      type: object
+      required: [id, source, title, severity, status, found_at, due_at]
+      properties:
+        id: { type: string }
+        source: { type: string, enum: [SAST, SCA, PENTEST, CVE_MONITOR, CUSTOMER_REPORT] }
+        source_ref: { type: string, nullable: true, description: '当 source=PENTEST 时关联 pentest_finding.id；source IN (SAST,SCA,IMAGE_VULN) 时关联 scan_run.id + SARIF result index' }
+        cve_id: { type: string, nullable: true }
+        title: { type: string }
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        cvss_score: { type: number, nullable: true }
+        package_affected: { type: string, nullable: true }
+        status: { type: string, enum: [OPEN, TRIAGED, IN_FIX, AWAITING_VERIFY, CLOSED, RISK_ACCEPTED, EXEMPTED] }
+        found_at: { type: string, format: date-time }
+        due_at: { type: string, format: date-time }
+        assignee: { type: string, nullable: true }
+        fix_pr_url: { type: string, nullable: true }
+        closed_at: { type: string, format: date-time, nullable: true }
+        exception_id: { type: string, nullable: true }
+        risk_acceptance_id: { type: string, nullable: true }
+        notes_md: { type: string, nullable: true }
+
+    # ----- SBOM -----
+    SbomWatch:
+      type: object
+      required: [image_ref, registered_at]
+      properties:
+        image_ref: { type: string }
+        registered_at: { type: string, format: date-time }
+        last_scanned_at: { type: string, format: date-time, nullable: true }
+        notify:
+          type: array
+          items: { type: string }
+        new_cves_count: { type: integer }
+
+    # ----- Incidents -----
+    Incident:
+      type: object
+      required: [id, severity, category, title, detected_at, reported_by, status]
+      properties:
+        id: { type: string, pattern: '^inc_[0-9A-Z]{26}$' }
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        category: { type: string, enum: [DATA_BREACH, RANSOMWARE, DDOS, INSIDER, OUTAGE, OTHER] }
+        title: { type: string }
+        detected_at: { type: string, format: date-time }
+        reported_by: { type: string }
+        ic: { type: string, nullable: true }
+        status: { type: string, enum: [DETECTED, INVESTIGATING, CONTAINED, RESOLVED, POST_MORTEM] }
+        containment_at: { type: string, format: date-time, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        pir_s3_key: { type: string, nullable: true }
+        customers_notified: { type: boolean, nullable: true }
+        regulators_notified: { type: boolean, nullable: true }
+        affected_tenants:
+          type: array
+          items: { type: string }
+
+    DeclareIncidentRequest:
+      type: object
+      required: [severity, category, title]
+      properties:
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        category: { type: string, enum: [DATA_BREACH, RANSOMWARE, DDOS, INSIDER, OUTAGE, OTHER] }
+        title: { type: string }
+        ic: { type: string }
+        affected_tenants:
+          type: array
+          items: { type: string }
+
+    # ----- Drills -----
+    Drill:
+      type: object
+      required: [id, kind, scheduled_at, status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [TABLETOP, PLAYBOOK_DRILL, RED_BLUE_TEAM] }
+        scheduled_at: { type: string, format: date-time }
+        status: { type: string, enum: [SCHEDULED, RUNNING, COMPLETED, CANCELED] }
+        completed_at: { type: string, format: date-time, nullable: true }
+        pir_s3_key: { type: string, nullable: true }
+        participants:
+          type: array
+          items: { type: string }
+        scenario_runbook: { type: string }

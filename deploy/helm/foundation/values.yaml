@@ -1,0 +1,211 @@
+# =============================================================================
+# Foundation umbrella chart — 默认值（small profile 基线）
+#
+# 三档 profile 通过专用 values 文件覆盖：
+#   helm install foundation . -f values-small.yaml
+#   helm install foundation . -f values-medium.yaml -f values-prod-secrets.yaml
+#   helm install foundation . -f values-large.yaml
+#
+# 任何 service 的 values 必须支持 profile 占位（详见 _service-template/values.yaml）
+# =============================================================================
+
+global:
+  # 部署形态：small | medium | large
+  profile: small
+
+  # 镜像拉取
+  imageRegistry: registry.example.com/saas-foundation
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  # 域名 / Ingress
+  ingress:
+    enabled: true
+    className: nginx
+    host: foundation.local
+    tls: false
+    annotations: {}
+
+  # mTLS（生产强烈建议开）
+  mtls:
+    enabled: false
+
+  # 合规模式（影响默认密码策略、保留期、加密算法等）
+  complianceModes:
+    - pipl
+
+  # 数据驻留
+  dataResidency: cn-only
+
+  # 时区
+  timezone: Asia/Shanghai
+
+  # 全局 nodeSelector / tolerations / affinity（service 可覆盖）
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # 第三方组件配置（service 通过 .Values.global.* 读）
+  database:
+    host: foundation-pgbouncer
+    port: 6432
+    name: foundation
+    sslMode: prefer
+    # 凭据从 Vault / External Secrets 注入；本地开发用 secret
+    existingSecret: foundation-db-credentials
+  redis:
+    host: foundation-redis-master
+    port: 6379
+    existingSecret: foundation-redis-credentials
+  keycloak:
+    url: http://foundation-keycloak/auth
+    realm: foundation
+  clickhouse:
+    host: foundation-clickhouse
+    port: 9000
+    database: audit
+    existingSecret: foundation-clickhouse-credentials
+  opensearch:
+    host: foundation-opensearch
+    port: 9200
+    existingSecret: foundation-opensearch-credentials
+  vault:
+    addr: http://foundation-vault:8200
+    role: foundation-services
+  s3:
+    endpoint: http://foundation-minio:9000
+    region: cn-default
+    bucket: foundation
+    existingSecret: foundation-s3-credentials
+  otelCollector:
+    endpoint: http://foundation-otel-collector:4317
+  opa:
+    url: http://foundation-opa:8181
+
+# =============================================================================
+# 第三方依赖开关（按 profile 启停）
+# =============================================================================
+# small profile 默认全开（自包含）
+# medium/large 通常关闭，用客户已有/共享集群
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: ""  # set in secrets
+    database: foundation
+  primary:
+    persistence:
+      size: 20Gi
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+  master:
+    persistence:
+      size: 8Gi
+
+keycloak:
+  enabled: true
+  auth:
+    adminUser: admin
+    existingSecret: foundation-keycloak-admin-credentials
+
+clickhouse:
+  enabled: true
+  shards: 1
+  replicaCount: 1
+  persistence:
+    size: 50Gi
+
+opensearch:
+  enabled: true
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 20Gi
+
+vault:
+  enabled: true
+  server:
+    dev:
+      enabled: true  # ⚠️ small only；medium+ 关闭并用 raft
+
+minio:
+  enabled: true
+  mode: standalone
+  persistence:
+    size: 50Gi
+
+otel-collector:
+  enabled: true
+  mode: deployment
+
+opa:
+  enabled: true
+
+# =============================================================================
+# Service 列表 — 每个 service 一段
+# 共 18 个 service；启动时间长，可按需 enabled: false 分批上
+# =============================================================================
+services:
+  identity:
+    enabled: true
+    image:
+      repository: foundation/identity
+      tag: ""  # default to .Chart.AppVersion
+    replicaCount: 1
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    autoscaling:
+      enabled: false  # small profile
+
+  authz:
+    enabled: true
+    image:
+      repository: foundation/authz
+    replicaCount: 1
+
+  org:
+    enabled: true
+  billing:
+    enabled: true
+  audit:
+    enabled: true
+  lifecycle:
+    enabled: true
+  notification:
+    enabled: true
+  search:
+    enabled: true
+  apiPlatform:
+    enabled: true
+  llmGateway:
+    enabled: true
+  featureFlag:
+    enabled: true
+  classification:
+    enabled: true
+  dlp:
+    enabled: true
+  crypto:
+    enabled: true
+  compliance:
+    enabled: true
+  pam:
+    enabled: true
+  dataProtection:
+    enabled: true
+  securityOps:
+    enabled: true
+
+# =============================================================================
+# 管理控制台前端
+# =============================================================================
+adminConsole:
+  enabled: true
+  image:
+    repository: foundation/admin-console
+  replicaCount: 1
+  ingress:
+    path: /admin

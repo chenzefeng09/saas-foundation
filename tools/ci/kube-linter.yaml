@@ -1,0 +1,35 @@
+# kube-linter 配置 — 对渲染后的 Helm 输出做安全/最佳实践检查
+# medium/large profile 严格执行；small profile 容忍部分警告
+
+customChecks: []
+
+checks:
+  doNotAutoAddDefaults: false
+  exclude:
+    # 容忍 small profile 的某些设置
+    - "default-service-account"          # 我们显式建了 SA，false positive
+    - "unset-cpu-requirements"           # values 已配
+    - "unset-memory-requirements"        # values 已配
+  include:
+    - "privileged-container"
+    - "run-as-non-root"
+    - "no-read-only-root-fs"
+    - "no-rolling-update-strategy"
+    - "writable-host-mount"
+    - "host-network"
+    - "host-pid"
+    - "host-ipc"
+    - "dangling-service"
+    - "deprecated-service-account-field"
+    - "drop-net-raw-capability"
+    - "no-anti-affinity"                 # 仅 large/medium 关注
+    - "no-extensions-v1beta"
+    - "no-liveness-probe"
+    - "no-readiness-probe"
+    - "non-existent-service-account"
+    - "privilege-escalation-container"
+    - "required-annotation-email"
+    - "sensitive-host-mounts"
+    - "ssh-port"
+    - "unsafe-proc-mount"
+    - "unsafe-sysctls"

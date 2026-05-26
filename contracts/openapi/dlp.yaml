@@ -1,0 +1,449 @@
+# =============================================================================
+# DLP + Classification Service API — dlp-classification-v1
+# =============================================================================
+# 5 级分级（L1-L5）+ 用户 clearance + 下载/上传/外发/复制 4 点 enforce + scanner
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: DLP + Classification Service API
+  version: 1.0.0
+  description: |
+    资源分级（L1_PUBLIC → L5_SECRET） + 用户密级 + DLP 拦截 + 扫描器。
+    详见 [docs/design/dlp-classification-v1.md](../../docs/design/dlp-classification-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/dlp/v1
+  - url: http://localhost:8007/api/dlp/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: labels
+    description: 资源等级标签
+  - name: clearances
+    description: 用户密级
+  - name: check
+    description: DLP 检查（download / upload / external_send / copy）
+  - name: rules
+    description: DLP 规则与敏感词样本
+  - name: scanner
+    description: 异步扫描任务
+  - name: incidents
+    description: DLP 拦截事件
+  - name: downgrade
+    description: 等级降级审批（4 眼）
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Labels ---------------------------------------
+  /labels/{resource_type}/{resource_id}:
+    parameters:
+      - name: resource_type
+        in: path
+        required: true
+        schema: { type: string }
+      - name: resource_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [labels]
+      operationId: getResourceLabel
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceLabel' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    put:
+      tags: [labels]
+      operationId: setResourceLabel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [level, source]
+              properties:
+                level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                source:
+                  type: string
+                  enum: [USER, SCANNER, IMPORTED, INHERITED]
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceLabel' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Clearances -----------------------------------
+  /clearances/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    get:
+      tags: [clearances]
+      operationId: getUserClearance
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserClearance' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    put:
+      tags: [clearances]
+      operationId: setUserClearance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [level]
+              properties:
+                level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                approved_by_id: { type: string }
+                valid_until: { type: string, format: date-time, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserClearance' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Check ----------------------------------------
+  /check:
+    post:
+      tags: [check]
+      summary: DLP 检查（业务下载 / 上传 / 外发前必经）
+      operationId: dlpCheck
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DlpCheckRequest' }
+      responses:
+        '200':
+          description: 允许
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DlpCheckResponse' }
+        '403':
+          description: 被 DLP 拒绝（FOUNDATION.DLP.POLICY.*）
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  # --------------------------- Rules ----------------------------------------
+  /rules:
+    get:
+      tags: [rules]
+      operationId: listDlpRules
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DlpRule' }
+    post:
+      tags: [rules]
+      operationId: createDlpRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DlpRule' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DlpRule' }
+
+  # --------------------------- Scanner --------------------------------------
+  /scanner/jobs:
+    post:
+      tags: [scanner]
+      summary: 入扫描队列（异步）
+      operationId: enqueueScannerJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, resource_id]
+              properties:
+                resource_type: { type: string }
+                resource_id: { type: string }
+                priority: { type: integer, minimum: 1, maximum: 10, default: 5 }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string }
+
+  /scanner/jobs/{job_id}:
+    parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [scanner]
+      operationId: getScannerJob
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScannerJob' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- Incidents ------------------------------------
+  /incidents:
+    get:
+      tags: [incidents]
+      operationId: listDlpIncidents
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.type
+          in: query
+          schema:
+            type: string
+            enum: [UNAUTHORIZED_READ, DOWNLOAD_BLOCKED, EXTERNAL_SEND_BLOCKED, SCAN_MATCH_L4PLUS, UPLOAD_BLOCKED]
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [OPEN, RESOLVED, FALSE_POSITIVE] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DlpIncident' }
+
+  # --------------------------- Downgrade ------------------------------------
+  /downgrade-requests:
+    post:
+      tags: [downgrade]
+      summary: 申请资源降级（L4→L3 / L5→L4）；强制 4 眼审批
+      operationId: requestDowngrade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, resource_id, target_level, reason]
+              properties:
+                resource_type: { type: string }
+                resource_id: { type: string }
+                target_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                reason: { type: string, minLength: 20 }
+      responses:
+        '201':
+          description: 已入审批
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DowngradeRequest' }
+
+  /downgrade-requests/{req_id}/approve:
+    parameters:
+      - name: req_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [downgrade]
+      operationId: approveDowngrade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DowngradeRequest' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    ResourceLabel:
+      type: object
+      required: [resource_type, resource_id, level, source, set_at]
+      properties:
+        resource_type: { type: string }
+        resource_id: { type: string }
+        level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        source: { type: string, enum: [USER, SCANNER, IMPORTED, INHERITED] }
+        set_by: { type: string }
+        reason: { type: string, nullable: true }
+        set_at: { type: string, format: date-time }
+        last_scanned_at: { type: string, format: date-time, nullable: true }
+
+    UserClearance:
+      type: object
+      required: [user_id, level, granted_at]
+      properties:
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        approved_by_id: { type: string }
+        granted_at: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time, nullable: true }
+
+    DlpCheckRequest:
+      type: object
+      required: [action, resource_type, resource_id]
+      properties:
+        action:
+          type: string
+          enum: [READ, DOWNLOAD, EXTERNAL_SEND, UPLOAD, COPY, PRINT]
+        resource_type: { type: string }
+        resource_id: { type: string }
+        target:
+          type: object
+          properties:
+            recipient: { type: string }
+            destination: { type: string }
+
+    DlpCheckResponse:
+      type: object
+      required: [allowed]
+      properties:
+        allowed: { type: boolean }
+        watermark:
+          type: object
+          nullable: true
+          properties:
+            text: { type: string }
+            position: { type: string, enum: [CENTER, DIAGONAL, FOOTER] }
+        applied_rules:
+          type: array
+          items: { type: string }
+
+    DlpRule:
+      type: object
+      required: [id, name, action_pattern, condition, effect]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        action_pattern: { type: string, example: 'EXTERNAL_SEND|DOWNLOAD' }
+        condition:
+          type: object
+          description: '条件 DSL，含 sensitivity / user_clearance / time / ip / recipient_domain 等'
+        effect: { type: string, enum: [ALLOW, DENY, ALLOW_WITH_WATERMARK, REQUIRE_APPROVAL] }
+        priority: { type: integer, default: 100 }
+        enabled: { type: boolean, default: true }
+        created_at: { type: string, format: date-time }
+
+    ScannerJob:
+      type: object
+      required: [id, resource_type, resource_id, status, enqueued_at]
+      properties:
+        id: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        status: { type: string, enum: [QUEUED, SCANNING, COMPLETED, FAILED] }
+        priority: { type: integer }
+        enqueued_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        matched_rules:
+          type: array
+          items: { type: string }
+        recommended_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        error: { type: string, nullable: true }
+
+    DlpIncident:
+      type: object
+      required: [id, type, user_id, resource_id, occurred_at, status]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [UNAUTHORIZED_READ, DOWNLOAD_BLOCKED, EXTERNAL_SEND_BLOCKED, SCAN_MATCH_L4PLUS, UPLOAD_BLOCKED]
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        rule_id: { type: string, nullable: true }
+        occurred_at: { type: string, format: date-time }
+        status: { type: string, enum: [OPEN, RESOLVED, FALSE_POSITIVE] }
+        resolved_by: { type: string, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+
+    DowngradeRequest:
+      type: object
+      required: [id, resource_id, target_level, requested_by, status, created_at]
+      properties:
+        id: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        current_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        target_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        reason: { type: string }
+        requested_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        approvers_required: { type: integer, default: 2 }
+        approvals:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              decision: { type: string, enum: [APPROVE, REJECT] }
+              at: { type: string, format: date-time }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED] }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }

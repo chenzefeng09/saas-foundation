@@ -1,0 +1,231 @@
+# =============================================================================
+# Security scan — SAST / SCA / Secret / License / Container / SBOM
+# 每个 PR + push to main 都跑；Critical/High 阻断合并
+# 详见 docs/CONVENTIONS.md §10.2 + docs/errors.md §SSDLC
+# =============================================================================
+
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 18 * * 1"  # 每周一夜里跑全量
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # ===========================================================================
+  # 1) Semgrep — SAST
+  # ===========================================================================
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        env:
+          SEMGREP_RULES: >-
+            p/python
+            p/fastapi
+            p/owasp-top-ten
+            p/jwt
+            p/secrets
+            p/sql-injection
+            tools/ci/semgrep-rules.yaml
+        run: |
+          semgrep --config "${SEMGREP_RULES}" \
+            --severity=ERROR --severity=WARNING \
+            --error \
+            --sarif --output=semgrep.sarif \
+            --exclude='tests/' --exclude='_template/' \
+            .
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+
+  # ===========================================================================
+  # 2) Trivy — SCA + Container scan + Misconfig
+  # ===========================================================================
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem SCA
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: "1"
+
+      - name: Trivy misconfig (helm/k8s/docker)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: "0"   # Misconfig 只警告，不阻断
+
+      - name: Upload Trivy SARIFs
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .
+
+  # ===========================================================================
+  # 3) Gitleaks — Secret scan
+  # ===========================================================================
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 全 history
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        with:
+          config-path: tools/ci/gitleaks.toml
+
+  # ===========================================================================
+  # 4) License scan — 黑白名单（详见 docs/CONVENTIONS.md §10.2）
+  # ===========================================================================
+  license:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install pip-licenses + cyclonedx
+        run: |
+          pip install pip-licenses cyclonedx-bom
+      - name: Scan each package
+        run: |
+          shopt -s nullglob
+          fail=0
+          for pkg in packages/*/; do
+            name=$(basename "$pkg")
+            echo "::group::License scan: $name"
+            cd "$pkg"
+            if [ -f pyproject.toml ]; then
+              pip install poetry -q
+              poetry install --no-root --only main -q
+              poetry run pip-licenses \
+                --fail-on="GPL;AGPL;LGPL-2.0;LGPL-2.1;LGPL-3.0" \
+                --allow-only="MIT;Apache;Apache-2.0;BSD;BSD-2-Clause;BSD-3-Clause;ISC;MPL-2.0;Python Software Foundation License;Public Domain" \
+                --format=markdown --output-file=../../license-report-$name.md \
+                || fail=1
+            fi
+            cd - > /dev/null
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Upload license reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-reports
+          path: license-report-*.md
+
+  # ===========================================================================
+  # 5) SBOM generation (CycloneDX)
+  # ===========================================================================
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+      - name: Generate SBOM
+        run: |
+          syft dir:. \
+            -o cyclonedx-json=sbom.cdx.json \
+            -o spdx-json=sbom.spdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: |
+            sbom.cdx.json
+            sbom.spdx.json
+          retention-days: 90
+
+      - name: Grype CVE scan against SBOM
+        uses: anchore/scan-action@v4
+        with:
+          sbom: sbom.cdx.json
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
+
+  # ===========================================================================
+  # 6) Forbidden imports — 业务层不能直接 import 开源组件
+  # ===========================================================================
+  forbidden-imports:
+    name: Forbidden Imports
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check business code does not import foundation backends
+        run: |
+          # 业务 service（packages/*/src/foundation_<svc>/services/）禁止直接 import 这些
+          # 必须经底座 SDK 收口
+          FORBIDDEN_PATTERN='from\s+(keycloak|litellm|clickhouse_driver|opensearchpy|hvac|unleash_client)|import\s+(keycloak|litellm|clickhouse_driver|opensearchpy|hvac|unleash_client)'
+          if find packages -type f -name '*.py' -path '*/services/*' -exec grep -lE "$FORBIDDEN_PATTERN" {} + 2>/dev/null; then
+            echo "::error::Business service code must not import third-party backends directly. Use foundation SDK."
+            exit 1
+          fi
+          echo "OK"
+
+  # ===========================================================================
+  # 7) SET LOCAL / BYPASSRLS / superuser misuse scan
+  # ===========================================================================
+  rls-policy-scan:
+    name: RLS Misuse Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan
+        run: |
+          # 业务代码出现 SET LOCAL / BYPASSRLS 视为危险
+          if grep -RnE '(SET\s+LOCAL\s+app\.|BYPASSRLS|SUPERUSER)' \
+              --include='*.py' \
+              --exclude-dir='_template' \
+              --exclude-dir='adapters' \
+              --exclude-dir='foundation_common' \
+              packages/; then
+            echo "::error::SET LOCAL / BYPASSRLS / SUPERUSER must only appear in adapters or foundation_common."
+            exit 1
+          fi
+          echo "OK"

@@ -1,0 +1,46 @@
+# saas-foundation YAML lint 规则
+#
+# 默认从 default 开始放宽几条对人眼可读性更重要的规则：
+#   - 列表/字典内对齐用空格（让 service 列表可对齐扫读）
+#   - 行长度不限（OpenAPI / helm values 经常长）
+#   - 跳过 helm/k8s/spectral 等 Go-template 文件
+#
+# 强约束保留：缩进必须 2 空格、document 必须能 parse、禁止重复 key、禁尾空格。
+
+extends: default
+
+rules:
+  line-length: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  document-start: disable
+  document-end: disable
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off']
+    check-keys: false
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+    check-multi-line-strings: false
+  colons:
+    max-spaces-after: -1  # 允许对齐多空格（service 列表）
+  commas:
+    max-spaces-after: -1  # 允许对齐
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+  trailing-spaces: enable
+  empty-lines:
+    max-end: 1
+  new-line-at-end-of-file: enable
+  key-duplicates: enable
+
+ignore: |
+  .git/
+  node_modules/
+  dist/
+  # Helm templates (Go template syntax breaks YAML parse)
+  deploy/helm/_service-template/templates/
+  deploy/helm/foundation/templates/

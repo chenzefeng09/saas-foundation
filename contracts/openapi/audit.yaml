@@ -1,0 +1,350 @@
+# =============================================================================
+# Audit Service API — audit-v1
+# =============================================================================
+# 不可篡改审计：OTel → ClickHouse → S3 WORM；hash chain + SM2/ECDSA 签名 + TSA
+# 配套设计：docs/design/audit-v1.md
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Audit Service API
+  version: 1.0.0
+  description: |
+    审计服务：事件写入（业务用 SDK 走异步 outbox）、查询、导出、完整性校验。
+    详见 [docs/design/audit-v1.md](../../docs/design/audit-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/audit/v1
+  - url: http://localhost:8005/api/audit/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: events
+    description: 审计事件写入与查询
+  - name: chain
+    description: Hash chain 完整性
+  - name: export
+    description: 审计导出（CSV/PDF + 数字签名）
+  - name: schemas
+    description: 事件 schema 注册
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /events:
+    get:
+      tags: [events]
+      summary: 查询审计事件
+      operationId: queryAuditEvents
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.event_type
+          in: query
+          schema: { type: string, example: 'foundation.identity.user.frozen' }
+        - name: filter.actor_id
+          in: query
+          schema: { type: string }
+        - name: filter.resource_id
+          in: query
+          schema: { type: string }
+        - name: filter.severity
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/Severity' }
+        - name: time_start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: time_end
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AuditEvent' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+    post:
+      tags: [events]
+      summary: 直接写入审计事件（业务通常用 SDK + outbox）
+      operationId: writeAuditEvent
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WriteAuditEventRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEvent' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /events/{event_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/AuditEventId' }
+    get:
+      tags: [events]
+      operationId: getAuditEvent
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEvent' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /chain/verify:
+    post:
+      tags: [chain]
+      summary: 校验 hash chain 区段完整性
+      operationId: verifyChainRange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [time_start, time_end]
+              properties:
+                time_start: { type: string, format: date-time }
+                time_end: { type: string, format: date-time }
+                shard: { type: string, description: 分片维度（tenant_id / global） }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid, events_checked]
+                properties:
+                  valid: { type: boolean }
+                  events_checked: { type: integer }
+                  first_break_event_id: { type: string, nullable: true }
+                  merkle_root: { type: string }
+                  signatures_verified: { type: integer }
+                  tsa_verified: { type: integer }
+
+  /export:
+    post:
+      tags: [export]
+      summary: 导出审计（CSV / PDF + 数字签名）
+      operationId: exportAudit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportRequest' }
+      responses:
+        '202':
+          description: 异步任务已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [export_id]
+                properties:
+                  export_id: { type: string }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /export/{export_id}:
+    parameters:
+      - name: export_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [export]
+      operationId: getExportStatus
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [export_id, status]
+                properties:
+                  export_id: { type: string }
+                  status:
+                    type: string
+                    enum: [QUEUED, RUNNING, READY, FAILED]
+                  download_url: { type: string, format: uri, nullable: true }
+                  signature_url: { type: string, format: uri, nullable: true }
+                  expires_at: { type: string, format: date-time, nullable: true }
+
+  /schemas:
+    get:
+      tags: [schemas]
+      summary: 列已注册事件 schema
+      operationId: listEventSchemas
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EventSchema' }
+    post:
+      tags: [schemas]
+      summary: 注册新事件 schema（业务模块启动时调）
+      operationId: registerEventSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventSchema' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventSchema' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    AuditEvent:
+      type: object
+      required: [id, tenant_id, event_type, severity, actor, resource, action, occurred_at, hash, prev_hash]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/AuditEventId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        event_type:
+          type: string
+          example: 'foundation.identity.user.frozen'
+          description: 四段式 `foundation.<service>.<entity>.<action>`
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        actor:
+          type: object
+          properties:
+            type: { type: string, enum: [USER, SERVICE, SYSTEM, EXTERNAL] }
+            id: { type: string }
+            ip: { type: string, nullable: true }
+            user_agent: { type: string, nullable: true }
+        resource:
+          type: object
+          properties:
+            type: { type: string }
+            id: { type: string }
+            classification: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        action: { type: string }
+        outcome:
+          type: string
+          enum: [SUCCESS, FAILURE, PARTIAL]
+        payload:
+          type: object
+          additionalProperties: true
+          description: 业务字段；PII 自动脱敏
+        occurred_at: { type: string, format: date-time }
+        recorded_at: { type: string, format: date-time }
+        # 完整性
+        hash:
+          type: string
+          description: SHA-256(prev_hash + canonical(event))
+        prev_hash: { type: string }
+        signature:
+          type: string
+          description: ECDSA P-256 / SM2 签名（base64）
+        tsa_token:
+          type: string
+          nullable: true
+          description: RFC 3161 TSA token（合规模式开启）
+        # 追溯
+        request_id: { type: string, nullable: true }
+        trace_id: { type: string, nullable: true }
+
+    WriteAuditEventRequest:
+      type: object
+      required: [event_type, actor, action]
+      properties:
+        event_type: { type: string }
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        actor:
+          type: object
+          properties:
+            type: { type: string, enum: [USER, SERVICE, SYSTEM, EXTERNAL] }
+            id: { type: string }
+        resource:
+          type: object
+          properties:
+            type: { type: string }
+            id: { type: string }
+            classification: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        action: { type: string }
+        outcome: { type: string, enum: [SUCCESS, FAILURE, PARTIAL] }
+        payload:
+          type: object
+          additionalProperties: true
+        occurred_at: { type: string, format: date-time }
+
+    ExportRequest:
+      type: object
+      required: [format, time_start, time_end]
+      properties:
+        format: { type: string, enum: [CSV, PDF, NDJSON] }
+        time_start: { type: string, format: date-time }
+        time_end: { type: string, format: date-time }
+        filter:
+          type: object
+          additionalProperties: true
+        include_signatures:
+          type: boolean
+          default: true
+        purpose:
+          type: string
+          enum: [REGULATORY_AUDIT, INTERNAL_AUDIT, INCIDENT, LEGAL_DISCOVERY]
+          description: 出口理由（强制；审计自身入审）
+
+    EventSchema:
+      type: object
+      required: [event_type, version, owner_service, payload_schema]
+      properties:
+        event_type: { type: string }
+        version: { type: integer, default: 1 }
+        owner_service: { type: string }
+        description: { type: string }
+        payload_schema:
+          type: object
+          description: JSON Schema draft 2020-12
+        required_audit:
+          type: boolean
+          description: true → 业务必须发，缺则告警
+        retention_days:
+          type: integer
+          description: 缺则取合规模式默认

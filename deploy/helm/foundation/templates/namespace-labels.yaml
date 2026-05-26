@@ -1,0 +1,13 @@
+{{- /*
+  PodSecurity admission + observability/ingress 标签
+  让 service NetworkPolicy 能精准定位
+*/ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    foundation.example.com/role: foundation
+    pod-security.kubernetes.io/enforce: {{ ternary "restricted" "baseline" (eq .Values.global.profile "large") | quote }}
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

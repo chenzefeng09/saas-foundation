@@ -1,0 +1,92 @@
+# =============================================================================
+# small profile — POC / 单节点 K3s / ≤50 用户
+#
+# 特点：
+#   - 所有第三方依赖内嵌（自包含）
+#   - 1 副本无 HA
+#   - 资源底线：8C / 32G / 500GB（单节点）
+#   - 不开 mTLS、不开 autoscaling
+#
+# 安装：
+#   helm install foundation . -f values-small.yaml \
+#       --set global.ingress.host=foundation.your.domain \
+#       --set-file secrets=secrets.yaml
+# =============================================================================
+
+global:
+  profile: small
+  ingress:
+    enabled: true
+    className: traefik   # K3s 默认
+    tls: false
+  mtls:
+    enabled: false
+
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      size: 20Gi
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits:   { cpu: 2,    memory: 4Gi }
+
+redis:
+  enabled: true
+  architecture: standalone
+
+keycloak:
+  enabled: true
+  replicaCount: 1
+  production: false   # dev mode 容忍
+  proxy: edge
+
+clickhouse:
+  enabled: true
+  shards: 1
+  replicaCount: 1
+  persistence:
+    size: 30Gi
+  resources:
+    requests: { cpu: 200m, memory: 1Gi }
+
+opensearch:
+  enabled: true
+  replicas: 1
+  singleNode: true
+  resources:
+    requests: { cpu: 200m, memory: 1Gi }
+
+vault:
+  enabled: true
+  server:
+    dev:
+      enabled: true
+      devRootToken: dev-root-token-change-me
+
+minio:
+  enabled: true
+  mode: standalone
+  persistence:
+    size: 30Gi
+
+# 所有 service 默认 1 副本、无自动伸缩
+services:
+  identity:        { replicaCount: 1, autoscaling: { enabled: false } }
+  authz:           { replicaCount: 1, autoscaling: { enabled: false } }
+  org:             { replicaCount: 1, autoscaling: { enabled: false } }
+  billing:         { replicaCount: 1, autoscaling: { enabled: false } }
+  audit:           { replicaCount: 1, autoscaling: { enabled: false } }
+  lifecycle:       { replicaCount: 1, autoscaling: { enabled: false } }
+  notification:    { replicaCount: 1, autoscaling: { enabled: false } }
+  search:          { replicaCount: 1, autoscaling: { enabled: false } }
+  apiPlatform:     { replicaCount: 1, autoscaling: { enabled: false } }
+  llmGateway:      { replicaCount: 1, autoscaling: { enabled: false } }
+  featureFlag:     { replicaCount: 1, autoscaling: { enabled: false } }
+  classification:  { replicaCount: 1, autoscaling: { enabled: false } }
+  dlp:             { replicaCount: 1, autoscaling: { enabled: false } }
+  crypto:          { replicaCount: 1, autoscaling: { enabled: false } }
+  compliance:      { replicaCount: 1, autoscaling: { enabled: false } }
+  pam:             { replicaCount: 1, autoscaling: { enabled: false } }
+  dataProtection:  { replicaCount: 1, autoscaling: { enabled: false } }
+  securityOps:     { replicaCount: 1, autoscaling: { enabled: false } }

@@ -1,0 +1,105 @@
+[tool.poetry]
+name = "foundation-authz"
+version = "1.0.0a1"
+description = "SaaS Foundation — Authorization Service (RBAC + OPA(ABAC) dual-track)"
+authors = ["SaaS Foundation Team <foundation@example.com>"]
+readme = "README.md"
+license = "Proprietary"
+packages = [{ include = "foundation_authz", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+pydantic = { extras = ["email"], version = "^2.9.0" }
+pydantic-settings = "^2.6.0"
+
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+alembic = "^1.14.0"
+greenlet = "^3.1.0"
+
+redis = { extras = ["hiredis"], version = "^5.2.0" }
+httpx = { extras = ["http2"], version = "^0.27.0" }
+
+opentelemetry-api = "^1.28.0"
+opentelemetry-sdk = "^1.28.0"
+opentelemetry-instrumentation-fastapi = "^0.49b0"
+opentelemetry-instrumentation-sqlalchemy = "^0.49b0"
+opentelemetry-instrumentation-httpx = "^0.49b0"
+opentelemetry-exporter-otlp = "^1.28.0"
+structlog = "^24.4.0"
+
+ulid-py = "^1.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+pytest-cov = "^6.0.0"
+ruff = "^0.7.0"
+mypy = "^1.13.0"
+respx = "^0.21.1"
+testcontainers = { extras = ["postgres"], version = "^4.8.0" }
+
+[tool.poetry.scripts]
+foundation-authz = "foundation_authz.main:run"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+priority = "primary"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E","F","W","I","B","UP","ASYNC","S","C4","PT","RUF"]
+ignore = ["S101","B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = ["S","PT011"]
+"migrations/**/*" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["ulid.*","testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+  "-ra","--strict-markers","--strict-config",
+  "--cov=foundation_authz","--cov-report=term-missing",
+  "--cov-fail-under=60",
+]
+markers = [
+  "unit: 纯单元测试",
+  "integration: 需要 Postgres / OPA",
+  "e2e: 端到端跨服务",
+]
+
+[tool.coverage.run]
+source = ["src/foundation_authz"]
+omit = ["*/migrations/*","*/__main__.py"]
+branch = true

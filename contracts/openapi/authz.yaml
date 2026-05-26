@@ -1,0 +1,495 @@
+# =============================================================================
+# Authorization Service API — authz-v1
+# =============================================================================
+# 配套设计：docs/design/authz-v1.md + docs/design/opa-bundle-v1.md
+# 核心：RBAC（90% 场景） + OPA(ABAC)（复杂策略）
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Authorization Service API
+  version: 1.0.0
+  description: |
+    授权服务：RBAC + OPA(ABAC) 双轨。性能敏感路径（`/check`）同步走 gRPC，
+    本 spec 暴露 REST 镜像端点供前端 / 调试用。详见 [docs/design/authz-v1.md](../../docs/design/authz-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/authz/v1
+  - url: http://localhost:8002/api/authz/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: check
+    description: 权限检查（同步）
+  - name: roles
+    description: 角色 CRUD
+  - name: permissions
+    description: 权限定义
+  - name: bindings
+    description: 角色绑定（user/team/ou ↔ role）
+  - name: policies
+    description: OPA ABAC 策略管理
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Check ----------------------------------------
+  /check:
+    post:
+      tags: [check]
+      summary: 权限检查（单条）
+      description: |
+        SDK 内部走 gRPC；REST 端点用于调试 / 前端 UI 试算。
+        先匹配 RBAC，命中 `policy_required` 标记的资源走 OPA。
+      operationId: checkPermission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckRequest' }
+      responses:
+        '200':
+          description: 检查结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResponse' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+
+  /check:batch:
+    post:
+      tags: [check]
+      summary: 批量权限检查
+      operationId: batchCheckPermission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checks]
+              properties:
+                checks:
+                  type: array
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/CheckRequest' }
+      responses:
+        '200':
+          description: 批量结果（顺序对应）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/CheckResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+
+  /list-accessible-ids:
+    post:
+      tags: [check]
+      summary: 列出用户对某 resource_type 有权限的 ID 集合（搜索过滤用）
+      operationId: listAccessibleIds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, resource_type, action]
+              properties:
+                user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+                resource_type: { type: string }
+                action: { type: string }
+                max: { type: integer, default: 10000, maximum: 100000 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ids, complete]
+                properties:
+                  ids:
+                    type: array
+                    items: { type: string }
+                  complete:
+                    type: boolean
+                    description: false 表示超 max 截断，需走 OPA 兜底
+
+  # --------------------------- Roles ----------------------------------------
+  /roles:
+    get:
+      tags: [roles]
+      operationId: listRoles
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Role' }
+    post:
+      tags: [roles]
+      operationId: createRole
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoleRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /roles/{role_id}:
+    parameters:
+      - name: role_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/RoleId' }
+    get:
+      tags: [roles]
+      operationId: getRole
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    patch:
+      tags: [roles]
+      operationId: updateRole
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateRoleRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    delete:
+      tags: [roles]
+      operationId: deleteRole
+      responses:
+        '204': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409':
+          description: 角色仍有 binding；先解绑
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  # --------------------------- Permissions ----------------------------------
+  /permissions:
+    get:
+      tags: [permissions]
+      summary: 列底座 + 业务层注册的权限定义
+      operationId: listPermissions
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Permission' }
+
+  # --------------------------- Bindings -------------------------------------
+  /bindings:
+    get:
+      tags: [bindings]
+      operationId: listBindings
+      parameters:
+        - name: filter.subject_type
+          in: query
+          schema: { type: string, enum: [USER, TEAM, ORG_UNIT] }
+        - name: filter.subject_id
+          in: query
+          schema: { type: string }
+        - name: filter.role_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/RoleId' }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/RoleBinding' }
+    post:
+      tags: [bindings]
+      operationId: createBinding
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBindingRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleBinding' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /bindings/{binding_id}:
+    parameters:
+      - name: binding_id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [bindings]
+      operationId: deleteBinding
+      responses:
+        '204': { description: ok }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- OPA Policies ---------------------------------
+  /policies:
+    get:
+      tags: [policies]
+      summary: 列租户的 OPA policies
+      operationId: listPolicies
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Policy' }
+    post:
+      tags: [policies]
+      summary: 上传 / 更新 OPA Rego 策略
+      operationId: upsertPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpsertPolicyRequest' }
+      responses:
+        '201':
+          description: 已入 bundle 待发布
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /policies/{policy_id}/simulate:
+    parameters:
+      - name: policy_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [policies]
+      summary: 干跑（不影响生产）
+      operationId: simulatePolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckRequest' }
+      responses:
+        '200':
+          description: 模拟决策
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CheckResponse' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+    CheckRequest:
+      type: object
+      required: [user_id, action, resource_type]
+      properties:
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        action: { type: string, example: 'document:read' }
+        resource_type: { type: string, example: 'document' }
+        resource_id: { type: string }
+        context:
+          type: object
+          additionalProperties: true
+          description: ABAC 上下文（ip / time / device / classification）
+
+    CheckResponse:
+      type: object
+      required: [allowed, decision_path]
+      properties:
+        allowed: { type: boolean }
+        decision_path:
+          type: string
+          enum: [RBAC_HIT, OPA_HIT, DEFAULT_DENY]
+        matched_role:
+          type: string
+          nullable: true
+        matched_policy:
+          type: string
+          nullable: true
+        latency_ms: { type: number }
+
+    Role:
+      type: object
+      required: [id, tenant_id, name, scope, permissions, created_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/RoleId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        name: { type: string, pattern: '^[A-Z][A-Z0-9_]*$' }
+        description: { type: string, nullable: true }
+        scope:
+          type: string
+          enum: [TENANT, ORG_UNIT, TEAM, RESOURCE]
+        permissions:
+          type: array
+          items: { type: string }
+        is_system: { type: boolean, description: 系统内置不可改 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateRoleRequest:
+      type: object
+      required: [name, scope, permissions]
+      properties:
+        name: { type: string, pattern: '^[A-Z][A-Z0-9_]*$' }
+        description: { type: string }
+        scope: { type: string, enum: [TENANT, ORG_UNIT, TEAM, RESOURCE] }
+        permissions:
+          type: array
+          items: { type: string }
+
+    UpdateRoleRequest:
+      type: object
+      properties:
+        description: { type: string, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+
+    Permission:
+      type: object
+      required: [name, description, requires_policy]
+      properties:
+        name: { type: string, example: 'document:read' }
+        description: { type: string }
+        owner_service: { type: string, example: 'identity' }
+        requires_policy: { type: boolean, description: true → 必走 OPA }
+
+    RoleBinding:
+      type: object
+      required: [id, tenant_id, subject_type, subject_id, role_id, granted_at]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        subject_type: { type: string, enum: [USER, TEAM, ORG_UNIT] }
+        subject_id: { type: string }
+        role_id: { $ref: './_common.yaml#/components/schemas/RoleId' }
+        scope_resource_id:
+          type: string
+          nullable: true
+          description: 角色 scope 限制到某资源
+        granted_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        granted_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: JIT 提权用；到期自动 revoke（与 pam-v1 联动）
+        reason: { type: string, nullable: true }
+
+    CreateBindingRequest:
+      type: object
+      required: [subject_type, subject_id, role_id]
+      properties:
+        subject_type: { type: string, enum: [USER, TEAM, ORG_UNIT] }
+        subject_id: { type: string }
+        role_id: { $ref: './_common.yaml#/components/schemas/RoleId' }
+        scope_resource_id: { type: string }
+        expires_at: { type: string, format: date-time }
+        reason: { type: string }
+
+    Policy:
+      type: object
+      required: [id, name, rego, status, version, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        rego: { type: string, description: Rego 源码 }
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE, DEPRECATED]
+        version: { type: integer }
+        rollout_stage:
+          type: string
+          enum: [SHADOW, CANARY_10, CANARY_50, FULL]
+          description: opa-bundle-v1 灰度阶段
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UpsertPolicyRequest:
+      type: object
+      required: [name, rego]
+      properties:
+        name: { type: string }
+        rego: { type: string }
+        rollout_stage:
+          type: string
+          enum: [SHADOW, CANARY_10, CANARY_50, FULL]
+          default: SHADOW

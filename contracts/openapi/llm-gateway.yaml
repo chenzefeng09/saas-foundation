@@ -1,0 +1,454 @@
+# =============================================================================
+# LLM Gateway Service API — llm-gateway-v1
+# =============================================================================
+# LiteLLM 封装 + 双协议（OpenAI-compatible + Anthropic Messages-compatible）
+# + 能力探测 + 配额 + 跨境 + DLP 前置 + fallback
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: LLM Gateway Service API
+  version: 1.0.0
+  description: |
+    LLM 网关：唯一模型出口。
+    详见 [docs/design/llm-gateway-v1.md](../../docs/design/llm-gateway-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/llm-gateway/v1
+  - url: http://localhost:8018/api/llm-gateway/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: chat
+    description: OpenAI-compatible /chat/completions
+  - name: messages
+    description: Anthropic-compatible /messages
+  - name: providers
+    description: Provider endpoints 管理
+  - name: virtual-keys
+    description: 租户虚拟 key
+  - name: capabilities
+    description: 能力探测
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /chat/completions:
+    post:
+      tags: [chat]
+      summary: OpenAI-compatible chat completion（含 SSE 流式）
+      operationId: chatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatCompletionRequest' }
+      responses:
+        '200':
+          description: ok
+          headers:
+            X-LLM-Provider:
+              schema: { type: string }
+            X-LLM-Model-Degradation:
+              schema: { type: string }
+              description: 模型降级标记（cap fallback）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatCompletionResponse' }
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE chunks（OpenAI 格式）
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '403':
+          description: DLP / 跨境 / 配额阻断
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
+        '502': { $ref: './_common.yaml#/components/responses/BadGateway' }
+        '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
+        '504': { $ref: './_common.yaml#/components/responses/GatewayTimeout' }
+
+  /messages:
+    post:
+      tags: [messages]
+      summary: Anthropic-compatible messages（含 SSE 流式）
+      operationId: createMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnthropicMessagesRequest' }
+      responses:
+        '200':
+          description: ok
+          headers:
+            X-LLM-Provider:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnthropicMessagesResponse' }
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE chunks（Anthropic 格式）
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
+
+  /models:
+    get:
+      tags: [providers]
+      summary: 列租户可用模型
+      operationId: listModels
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Model' }
+
+  /providers:
+    get:
+      tags: [providers]
+      operationId: listProviders
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Provider' }
+    post:
+      tags: [providers]
+      operationId: registerProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterProviderRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /providers/{provider_id}:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [providers]
+      operationId: deleteProvider
+      responses:
+        '204': { description: ok }
+
+  /providers/{provider_id}/probe:
+    parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [capabilities]
+      summary: 触发能力探测（function calling / streaming / context / parallel）
+      operationId: probeProvider
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilityProbeReport' }
+
+  /virtual-keys:
+    get:
+      tags: [virtual-keys]
+      operationId: listVirtualKeys
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VirtualKey' }
+    post:
+      tags: [virtual-keys]
+      operationId: createVirtualKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, providers_allowed]
+              properties:
+                name: { type: string }
+                providers_allowed:
+                  type: array
+                  items: { type: string }
+                models_allowed:
+                  type: array
+                  items: { type: string }
+                token_quota_monthly: { type: integer }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '201':
+          description: ok（含明文 token 仅 1 次可见）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateVirtualKeyResponse' }
+
+  /virtual-keys/{key_id}:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [virtual-keys]
+      operationId: revokeVirtualKey
+      responses:
+        '204': { description: ok }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model: { type: string }
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role: { type: string, enum: [system, user, assistant, tool] }
+              content: {}
+        temperature: { type: number }
+        max_tokens: { type: integer }
+        stream: { type: boolean, default: false }
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice: {}
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+
+    ChatCompletionResponse:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { type: string, enum: [chat.completion] }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message:
+                type: object
+                additionalProperties: true
+              finish_reason: { type: string }
+        usage:
+          type: object
+          properties:
+            prompt_tokens: { type: integer }
+            completion_tokens: { type: integer }
+            total_tokens: { type: integer }
+
+    AnthropicMessagesRequest:
+      type: object
+      required: [model, messages, max_tokens]
+      properties:
+        model: { type: string }
+        max_tokens: { type: integer }
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role: { type: string, enum: [user, assistant] }
+              content: {}
+        system: {}
+        temperature: { type: number }
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tool_choice:
+          type: object
+          additionalProperties: true
+        stream: { type: boolean, default: false }
+        stop_sequences:
+          type: array
+          items: { type: string }
+
+    AnthropicMessagesResponse:
+      type: object
+      required: [id, type, role, content, model, stop_reason, usage]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [message] }
+        role: { type: string, enum: [assistant] }
+        content:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        model: { type: string }
+        stop_reason: { type: string }
+        stop_sequence: { type: string, nullable: true }
+        usage:
+          type: object
+          properties:
+            input_tokens: { type: integer }
+            output_tokens: { type: integer }
+
+    Model:
+      type: object
+      required: [id, provider_id, protocol, context_window]
+      properties:
+        id: { type: string }
+        provider_id: { type: string }
+        protocol: { type: string, enum: [OPENAI, ANTHROPIC] }
+        context_window: { type: integer }
+        max_output_tokens: { type: integer }
+        capabilities:
+          type: object
+          properties:
+            function_calling: { type: boolean }
+            streaming: { type: boolean }
+            parallel_tool_calls: { type: boolean }
+            vision: { type: boolean }
+            thinking_blocks: { type: boolean }
+        recommended: { type: boolean }
+
+    Provider:
+      type: object
+      required: [id, kind, name, status]
+      properties:
+        id: { type: string }
+        kind:
+          type: string
+          enum: [ANTHROPIC, OPENAI, AZURE_OPENAI, BEDROCK, VERTEX, VLLM, LLAMA_CPP, OLLAMA, QWEN, DEEPSEEK]
+        name: { type: string }
+        endpoint: { type: string, format: uri }
+        protocol: { type: string, enum: [OPENAI, ANTHROPIC] }
+        models_available:
+          type: array
+          items: { type: string }
+        cross_border:
+          type: object
+          properties:
+            occurs: { type: boolean }
+            destination_country: { type: string }
+            safeguards:
+              type: array
+              items: { type: string }
+        training_opt_out: { type: boolean, description: '必为 true；底座默认拒绝允许训练的 provider' }
+        status: { type: string, enum: [ACTIVE, DEGRADED, DISABLED, PROBING] }
+        last_probe_at: { type: string, format: date-time, nullable: true }
+
+    RegisterProviderRequest:
+      type: object
+      required: [kind, name, endpoint, protocol, api_key_secret_ref]
+      properties:
+        kind: { type: string, enum: [ANTHROPIC, OPENAI, AZURE_OPENAI, BEDROCK, VERTEX, VLLM, LLAMA_CPP, OLLAMA, QWEN, DEEPSEEK] }
+        name: { type: string }
+        endpoint: { type: string, format: uri }
+        protocol: { type: string, enum: [OPENAI, ANTHROPIC] }
+        api_key_secret_ref:
+          type: string
+          description: Vault path（不传明文）
+        cross_border:
+          type: object
+          additionalProperties: true
+        training_opt_out: { type: boolean }
+
+    CapabilityProbeReport:
+      type: object
+      required: [provider_id, probed_at, passed]
+      properties:
+        provider_id: { type: string }
+        probed_at: { type: string, format: date-time }
+        passed: { type: boolean }
+        mandatory:
+          type: object
+          properties:
+            function_calling: { type: boolean }
+            streaming: { type: boolean }
+            context_window_at_least_32k: { type: boolean }
+            parallel_tool_calls: { type: boolean }
+        optional:
+          type: object
+          additionalProperties: { type: boolean }
+        notes: { type: string }
+        latency_ms: { type: integer }
+
+    VirtualKey:
+      type: object
+      required: [id, name, prefix, status, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        prefix: { type: string }
+        providers_allowed:
+          type: array
+          items: { type: string }
+        models_allowed:
+          type: array
+          items: { type: string }
+        token_quota_monthly: { type: integer, nullable: true }
+        tokens_used_this_period: { type: integer }
+        expires_at: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [ACTIVE, REVOKED, EXPIRED, QUOTA_EXCEEDED] }
+        created_at: { type: string, format: date-time }
+
+    CreateVirtualKeyResponse:
+      allOf:
+        - $ref: '#/components/schemas/VirtualKey'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: 明文 token，仅本响应可见

@@ -1,0 +1,51 @@
+================================================================================
+ SaaS Foundation 已部署
+ Profile: {{ .Values.global.profile }}
+================================================================================
+
+后续步骤:
+
+1) 看所有 service 状态:
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/part-of=saas-foundation
+
+2) 跑数据库迁移（首次部署 / 升级后必跑）:
+   helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+   # 或手动:
+   kubectl -n {{ .Release.Namespace }} create job --from=cronjob/foundation-migrator manual-migration
+
+3) 访问管理控制台:
+{{- if .Values.global.ingress.enabled }}
+   {{- if .Values.global.ingress.tls }}
+   https://{{ .Values.global.ingress.host }}/admin
+   {{- else }}
+   http://{{ .Values.global.ingress.host }}/admin
+   {{- end }}
+{{- else }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/foundation-admin-console 8080:80
+   # 然后 http://localhost:8080
+{{- end }}
+
+4) 健康检查:
+   for svc in identity authz org billing audit lifecycle notification search \
+              api-platform llm-gateway feature-flag classification dlp crypto \
+              compliance pam data-protection security-ops; do
+     kubectl -n {{ .Release.Namespace }} exec deploy/foundation-$svc -- \
+       curl -sf http://localhost:8000/healthz || echo "❌ $svc"
+   done
+
+5) 合规模式:
+   当前启用: {{ .Values.global.complianceModes | join ", " }}
+   数据驻留: {{ .Values.global.dataResidency }}
+
+警告:
+{{- if eq .Values.global.profile "small" }}
+   - small profile 无 HA，仅用于 POC / 演示
+   - Vault 跑 dev 模式，root token 写在 values 里
+   - 不要在生产用 small profile
+{{- end }}
+{{- if not .Values.global.mtls.enabled }}
+   - mTLS 未启用；生产强烈建议开
+{{- end }}
+{{- if not .Values.global.ingress.tls }}
+   - Ingress TLS 未启用；生产强烈建议开
+{{- end }}

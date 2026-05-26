@@ -1,0 +1,441 @@
+# =============================================================================
+# Privileged Access Management Service API — pam-v1
+# =============================================================================
+# JIT 提权（30min-4h）+ 4 眼审批 + 操作录屏 + 高危命令实时阻断
+# 与 authz role_binding `expires_at` 联动
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: PAM Service API
+  version: 1.0.0
+  description: |
+    特权账号管理：堡垒机集成（Teleport / JumpServer / 齐治 / 行云）、
+    JIT 提权（写 authz role_binding with expires_at）、4 眼审批、操作录屏、
+    高危命令阻断、季度账号审计、30 天密码轮换。
+    详见 [docs/design/pam-v1.md](../../docs/design/pam-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/pam/v1
+  - url: http://localhost:8013/api/pam/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: elevations
+    description: JIT 提权
+  - name: approvals
+    description: 4 眼审批
+  - name: sessions
+    description: 特权会话（录屏）
+  - name: commands
+    description: 命令策略 / 高危拦截
+  - name: privileged-accounts
+    description: 特权账户登记
+  - name: bastions
+    description: 堡垒机配置
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Elevations -----------------------------------
+  /elevations:
+    get:
+      tags: [elevations]
+      operationId: listElevations
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [PENDING_APPROVAL, APPROVED, ACTIVE, EXPIRED, REVOKED, REJECTED] }
+        - name: filter.user_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Elevation' }
+    post:
+      tags: [elevations]
+      summary: 申请 JIT 提权
+      operationId: requestElevation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RequestElevationRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /elevations/{elev_id}:
+    parameters:
+      - name: elev_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [elevations]
+      operationId: getElevation
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /elevations/{elev_id}/revoke:
+    parameters:
+      - name: elev_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [elevations]
+      summary: 紧急回收提权（管理员）
+      operationId: revokeElevation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+
+  # --------------------------- Approvals ------------------------------------
+  /approvals/{approval_id}/decide:
+    parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [approvals]
+      summary: 审批员决策
+      operationId: decideApproval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Elevation' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  # --------------------------- Sessions -------------------------------------
+  /sessions:
+    get:
+      tags: [sessions]
+      operationId: listPrivilegedSessions
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [ACTIVE, ENDED, KILLED] }
+        - name: filter.elevation_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PrivilegedSession' }
+
+  /sessions/{session_id}:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [sessions]
+      operationId: getPrivilegedSession
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrivilegedSession' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /sessions/{session_id}/recording:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [sessions]
+      summary: 取录屏文件（asciinema / mp4）
+      operationId: getRecording
+      responses:
+        '200':
+          description: ok
+          content:
+            application/x-asciicast+json:
+              schema: { type: string, format: binary }
+            video/mp4:
+              schema: { type: string, format: binary }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /sessions/{session_id}/kill:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [sessions]
+      summary: 安全管理员强杀活跃会话
+      operationId: killSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '204': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Commands -------------------------------------
+  /command-policies:
+    get:
+      tags: [commands]
+      operationId: listCommandPolicies
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CommandPolicy' }
+    post:
+      tags: [commands]
+      operationId: createCommandPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandPolicy' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandPolicy' }
+
+  # --------------------------- Privileged Accounts --------------------------
+  /privileged-accounts:
+    get:
+      tags: [privileged-accounts]
+      operationId: listPrivilegedAccounts
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PrivilegedAccount' }
+
+  /privileged-accounts/{account_id}/rotate-password:
+    parameters:
+      - name: account_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [privileged-accounts]
+      summary: 手动触发密码轮换（30 天自动也会跑）
+      operationId: rotatePrivilegedPassword
+      responses:
+        '202': { description: 已入队 }
+
+  # --------------------------- Bastions -------------------------------------
+  /bastions:
+    get:
+      tags: [bastions]
+      operationId: listBastions
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Bastion' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    Elevation:
+      type: object
+      required: [id, requester_id, target_role, target_resource, duration_minutes, status, requested_at]
+      properties:
+        id: { type: string }
+        requester_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        target_role: { type: string }
+        target_resource:
+          type: object
+          properties:
+            type: { type: string }
+            id: { type: string }
+        reason: { type: string }
+        duration_minutes: { type: integer, minimum: 30, maximum: 240 }
+        approval_required: { type: boolean }
+        approvers_required: { type: integer, default: 2 }
+        approvals:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              decision: { type: string, enum: [APPROVE, REJECT] }
+              at: { type: string, format: date-time }
+        role_binding_id:
+          type: string
+          nullable: true
+          description: authz binding id（with expires_at）
+        status: { type: string, enum: [PENDING_APPROVAL, APPROVED, ACTIVE, EXPIRED, REVOKED, REJECTED] }
+        requested_at: { type: string, format: date-time }
+        activated_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+
+    RequestElevationRequest:
+      type: object
+      required: [target_role, reason, duration_minutes]
+      properties:
+        target_role: { type: string }
+        target_resource:
+          type: object
+          properties:
+            type: { type: string }
+            id: { type: string }
+        reason: { type: string, minLength: 20 }
+        duration_minutes: { type: integer, minimum: 30, maximum: 240 }
+
+    PrivilegedSession:
+      type: object
+      required: [id, elevation_id, user_id, target_host, status, started_at, recording_started]
+      properties:
+        id: { type: string }
+        elevation_id: { type: string, nullable: true }
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        target_host: { type: string }
+        target_type: { type: string, enum: [LINUX_SSH, WINDOWS_RDP, K8S_EXEC, DB_QUERY, WEB_ADMIN] }
+        status: { type: string, enum: [ACTIVE, ENDED, KILLED] }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time, nullable: true }
+        recording_started: { type: boolean }
+        recording_s3_key: { type: string, nullable: true }
+        commands_count: { type: integer }
+        high_risk_commands_blocked: { type: integer }
+        witness_user_id:
+          type: string
+          nullable: true
+          description: 实时见证者（带 kill 按钮）
+
+    CommandPolicy:
+      type: object
+      required: [id, pattern, action]
+      properties:
+        id: { type: string }
+        pattern: { type: string, example: 'rm -rf /' }
+        match_mode: { type: string, enum: [EXACT, REGEX, GLOB] }
+        action: { type: string, enum: [BLOCK, ALERT, REQUIRE_WITNESS] }
+        applies_to:
+          type: array
+          items: { type: string, enum: [LINUX_SSH, WINDOWS_RDP, K8S_EXEC, DB_QUERY, WEB_ADMIN] }
+        severity: { $ref: './_common.yaml#/components/schemas/Severity' }
+        enabled: { type: boolean, default: true }
+
+    PrivilegedAccount:
+      type: object
+      required: [id, account_type, system, status]
+      properties:
+        id: { type: string }
+        account_type: { type: string, enum: [INFRA_OS, INFRA_DB, INFRA_K8S, APP_ADMIN, BACKUP, SERVICE] }
+        system: { type: string, example: prod-pg-1 }
+        username: { type: string }
+        owner_team: { type: string }
+        password_last_rotated_at: { type: string, format: date-time }
+        next_rotation_due: { type: string, format: date-time }
+        vaulted_secret_id: { type: string, description: 在 Vault 中的路径 }
+        status: { type: string, enum: [ACTIVE, DISABLED, ROTATING] }
+
+    Bastion:
+      type: object
+      required: [id, kind, status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [TELEPORT, JUMPSERVER, QIZHI, XINGYUN] }
+        endpoint: { type: string }
+        status: { type: string, enum: [CONNECTED, DEGRADED, DISCONNECTED] }
+        last_heartbeat_at: { type: string, format: date-time }

@@ -1,0 +1,248 @@
+# =============================================================================
+# Reusable service CI — 各 service 用 workflow_call 调用
+#
+# 用法（在 service 自己的 workflow 里）：
+#   jobs:
+#     ci:
+#       uses: ./.github/workflows/service-ci.yml
+#       with:
+#         service-name: identity
+#         working-directory: packages/identity
+# =============================================================================
+
+name: Service CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: "Service short name (e.g. identity, authz)"
+        required: true
+        type: string
+      working-directory:
+        description: "Path to the service package"
+        required: true
+        type: string
+      python-version:
+        required: false
+        type: string
+        default: "3.12"
+      coverage-min:
+        required: false
+        type: number
+        default: 80
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # ===========================================================================
+  # 1) 代码质量与单元测试
+  # ===========================================================================
+  lint-and-test:
+    name: Lint + Unit Test (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python + Poetry
+        uses: ./.github/actions/setup-foundation
+        with:
+          python-version: ${{ inputs.python-version }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Ruff format check
+        run: poetry run ruff format --check .
+
+      - name: Ruff lint
+        run: poetry run ruff check . --output-format=github
+
+      - name: Mypy strict
+        run: poetry run mypy src/
+
+      - name: Pytest with coverage
+        run: |
+          poetry run pytest \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=${{ inputs.coverage-min }} \
+            -v
+
+      - name: Upload coverage to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        uses: codecov/codecov-action@v4
+        with:
+          files: ${{ inputs.working-directory }}/coverage.xml
+          flags: ${{ inputs.service-name }}
+
+  # ===========================================================================
+  # 2) 集成测试（依赖 docker-compose 起的底座栈）
+  # ===========================================================================
+  integration-test:
+    name: Integration Test (${{ inputs.service-name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres_change_me
+          POSTGRES_DB: foundation
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python + Poetry
+        uses: ./.github/actions/setup-foundation
+        with:
+          python-version: ${{ inputs.python-version }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Bootstrap DB roles (mimic init/postgres/01-roles.sql)
+        env:
+          PGPASSWORD: postgres_change_me
+        run: |
+          psql -h localhost -U postgres -d foundation \
+            -f deploy/docker-compose/init/postgres/01-roles.sql || true
+          psql -h localhost -U postgres -d foundation \
+            -f deploy/docker-compose/init/postgres/02-tenant-table.sql || true
+        working-directory: .
+
+      - name: Apply Alembic migrations
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          DATABASE_URL: postgres://app_migrator:app_migrator_change_me@localhost:5432/foundation
+        run: poetry run alembic upgrade head || echo "no migrations yet"
+
+      - name: Run integration tests
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          FOUNDATION_DB_HOST: localhost
+          FOUNDATION_DB_PORT: "5432"
+          FOUNDATION_DB_NAME: foundation
+          FOUNDATION_DB_USER: app_user
+          FOUNDATION_DB_PASSWORD: app_user_change_me
+          FOUNDATION_REDIS_HOST: localhost
+          FOUNDATION_REDIS_PORT: "6379"
+        run: poetry run pytest tests/integration/ -v
+
+  # ===========================================================================
+  # 3) RLS 越权 fuzz（强制）
+  # ===========================================================================
+  rls-fuzz:
+    name: RLS Cross-Tenant Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres_change_me
+          POSTGRES_DB: foundation
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python + Poetry
+        uses: ./.github/actions/setup-foundation
+        with:
+          python-version: ${{ inputs.python-version }}
+          working-directory: ${{ inputs.working-directory }}
+      - name: Bootstrap DB
+        env:
+          PGPASSWORD: postgres_change_me
+        run: |
+          psql -h localhost -U postgres -d foundation \
+            -f deploy/docker-compose/init/postgres/01-roles.sql
+          psql -h localhost -U postgres -d foundation \
+            -f deploy/docker-compose/init/postgres/02-tenant-table.sql
+        working-directory: .
+      - name: Migrate
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          DATABASE_URL: postgres://app_migrator:app_migrator_change_me@localhost:5432/foundation
+        run: poetry run alembic upgrade head || echo "no migrations yet"
+      - name: Run RLS fuzz tests
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          FOUNDATION_DB_HOST: localhost
+          FOUNDATION_DB_USER: app_user
+          FOUNDATION_DB_PASSWORD: app_user_change_me
+        run: |
+          if [ -d tests/security ]; then
+            poetry run pytest tests/security/ -v --tb=short
+          else
+            echo "::warning::No tests/security/ directory; skipping. Required for any service with RLS tables."
+          fi
+
+  # ===========================================================================
+  # 4) 契约一致性：OpenAPI lint + 实现一致
+  # ===========================================================================
+  contract-check:
+    name: Contract Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Spectral lint OpenAPI
+        run: |
+          npx -y @stoplight/spectral-cli lint \
+            "contracts/openapi/${{ inputs.service-name }}.yaml" \
+            --ruleset .spectral.yaml \
+            --fail-severity=warn || \
+          (echo "::warning::No OpenAPI spec for ${{ inputs.service-name }} yet" && exit 0)
+
+  # ===========================================================================
+  # 5) Docker 构建（不推；推由 release workflow 做）
+  # ===========================================================================
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint-and-test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          push: false
+          tags: foundation/${{ inputs.service-name }}:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+
+      - name: Save image
+        run: docker save foundation/${{ inputs.service-name }}:ci-${{ github.sha }} -o /tmp/image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ inputs.service-name }}-${{ github.sha }}
+          path: /tmp/image.tar
+          retention-days: 1

@@ -1,0 +1,345 @@
+# =============================================================================
+# saas-foundation 本地开发栈（all-in-one docker-compose）
+#
+# 一行启动：  cd deploy/docker-compose && cp .env.example .env && docker compose -f dev.yml up -d
+# 健康检查： docker compose -f dev.yml ps
+# 完整清理： docker compose -f dev.yml down -v
+#
+# 端口/账号默认值见 .env.example
+# 数据卷在 docker volume 里；强制清空请显式加 -v
+# =============================================================================
+
+name: saas-foundation-dev
+
+networks:
+  foundation:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis_data:
+  clickhouse_data:
+  opensearch_data:
+  minio_data:
+  keycloak_data:
+  vault_data:
+
+services:
+  # ===========================================================================
+  # Postgres — 唯一数据库；多个逻辑库（foundation/keycloak/unleash）共用一个实例
+  # 生产 medium+ 改 Patroni 集群
+  # ===========================================================================
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-16-alpine}
+    container_name: foundation-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-foundation}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+      APP_USER_PASSWORD: ${APP_USER_PASSWORD:-app_user_change_me}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-app_admin_change_me}
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}
+      APP_OBSERVABILITY_PASSWORD: ${APP_OBSERVABILITY_PASSWORD:-app_obs_change_me}
+    ports:
+      - "${PORT_POSTGRES:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init/postgres:/docker-entrypoint-initdb.d:ro
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "log_statement=none"
+      - "-c"
+      - "log_min_duration_statement=200"
+
+  # ===========================================================================
+  # PgBouncer — 强约束 transaction 模式（详见 docs/multi-tenancy.md §4）
+  # ===========================================================================
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p3
+    container_name: foundation-pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORT_PGBOUNCER:-6432}:6432"
+    volumes:
+      - ./config/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./config/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "psql 'host=127.0.0.1 port=6432 user=pgbouncer_admin password=pgbouncer_admin_change_me dbname=pgbouncer' -c 'SHOW POOLS' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ===========================================================================
+  # Redis — Sentinel 模式简化为单实例；medium+ 上 Sentinel
+  # ===========================================================================
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    container_name: foundation-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-redis_change_me}", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${PORT_REDIS:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_change_me}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # Keycloak — Identity Provider；本地用 dev 模式跳过 hostname 严格校验
+  # ===========================================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-25.0}
+    container_name: foundation-keycloak
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: app_migrator
+      KC_DB_PASSWORD: ${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      # Dev: allow plain HTTP and disable HTTPS-only enforcement.
+      # KC 25 removed KC_PROXY=edge; switched to proxy-headers.
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_LOG_LEVEL: INFO
+    ports:
+      - "${PORT_KEYCLOAK:-8080}:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./init/keycloak:/opt/keycloak/data/import:ro
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nhost: localhost\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # ===========================================================================
+  # ClickHouse — 审计与可观测性后端
+  # ===========================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-24.8}
+    container_name: foundation-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-foundation}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_change_me}
+      CLICKHOUSE_DB: audit
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${PORT_CLICKHOUSE_HTTP:-8123}:8123"
+      - "${PORT_CLICKHOUSE_TCP:-9000}:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./config/clickhouse/audit-schema.sql:/docker-entrypoint-initdb.d/01-audit-schema.sql:ro
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -nv -O - 'http://127.0.0.1:8123/ping' | grep -q Ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # OpenSearch — 搜索；单节点开发模式（生产 3 节点）
+  # ===========================================================================
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.16.0}
+    container_name: foundation-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-OpenSearch_Change_Me_123!}
+      plugins.security.disabled: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "${PORT_OPENSEARCH_HTTP:-9200}:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://127.0.0.1:9200/_cluster/health | grep -E 'yellow|green'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # Vault — KMS / Secret 管理；本地开发模式（生产 raft + 3 节点）
+  # ===========================================================================
+  vault:
+    image: hashicorp/vault:${VAULT_VERSION:-1.17}
+    container_name: foundation-vault
+    restart: unless-stopped
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://0.0.0.0:8200"
+    ports:
+      - "${PORT_VAULT:-8200}:8200"
+    volumes:
+      - vault_data:/vault/file
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # MinIO — S3 兼容对象存储；测试 WORM Object Lock
+  # ===========================================================================
+  minio:
+    image: minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    container_name: foundation-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9002"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-foundation}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+    ports:
+      - "${PORT_MINIO_API:-9001}:9000"
+      - "${PORT_MINIO_CONSOLE:-9002}:9002"
+    volumes:
+      - minio_data:/data
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ===========================================================================
+  # OPA — 授权策略引擎
+  # ===========================================================================
+  opa:
+    image: openpolicyagent/opa:1.16.2-static
+    container_name: foundation-opa
+    restart: unless-stopped
+    command:
+      - "run"
+      - "--server"
+      - "--addr=:8181"
+      - "--log-level=info"
+      - "--set=decision_logs.console=true"
+      - "--ignore=*_test.rego"
+      - "/policies"
+      - "/data"
+    volumes:
+      - ./config/opa/policies:/policies:ro
+      - ./config/opa/data:/data:ro
+    ports:
+      - "8181:8181"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8181/health | grep -q '{}'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # Unleash — Feature Flag
+  # ===========================================================================
+  unleash:
+    image: unleashorg/unleash-server:${UNLEASH_VERSION:-6.4}
+    container_name: foundation-unleash
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/unleash
+      DATABASE_SSL: "false"
+      LOG_LEVEL: warn
+      INIT_ADMIN_API_TOKENS: "*:*.unleash-insecure-admin-api-token"
+      INIT_FRONTEND_API_TOKENS: "*:development.unleash-insecure-frontend-api-token"
+    ports:
+      - "${PORT_UNLEASH:-4242}:4242"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4242/health | grep -q OK"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ===========================================================================
+  # OTel Collector — 收口所有 trace/log/metric，转发到 Jaeger（本地）
+  # ===========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION:-0.108.0}
+    container_name: foundation-otel
+    restart: unless-stopped
+    command: ["--config=/etc/otel/collector.yaml"]
+    volumes:
+      - ./config/otel/collector.yaml:/etc/otel/collector.yaml:ro
+    ports:
+      - "${PORT_OTEL_GRPC:-4317}:4317"
+      - "${PORT_OTEL_HTTP:-4318}:4318"
+    networks: [foundation]
+    depends_on:
+      - jaeger
+
+  # ===========================================================================
+  # Jaeger — 本地 trace 可视化（生产用 ClickHouse + Grafana Tempo）
+  # ===========================================================================
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: foundation-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${PORT_JAEGER_UI:-16686}:16686"
+    networks: [foundation]
+
+  # ===========================================================================
+  # Mailhog — 本地 SMTP 测试
+  # ===========================================================================
+  mailhog:
+    image: mailhog/mailhog:${MAILHOG_VERSION:-v1.0.1}
+    container_name: foundation-mailhog
+    restart: unless-stopped
+    ports:
+      - "${PORT_MAILHOG_UI:-8025}:8025"
+      - "${PORT_MAILHOG_SMTP:-1025}:1025"
+    networks: [foundation]

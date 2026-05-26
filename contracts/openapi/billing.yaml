@@ -1,0 +1,482 @@
+# =============================================================================
+# Billing Service API — billing-v1
+# =============================================================================
+# 双模式：私有化（quota+invoice）/ SaaS（+Stripe 订阅）
+# 抽象：PaymentProvider / InvoiceGenerator / TaxCalculator
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Billing Service API
+  version: 1.0.0
+  description: |
+    计费：套餐 / 订阅 / 配额 / 用量 / 发票。双模式：
+    - 私有化默认（OfflineProvider + 中国电子发票）
+    - SaaS（Stripe + Stripe Tax）通过 feature flag 启用
+    详见 [docs/design/billing-v1.md](../../docs/design/billing-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/billing/v1
+  - url: http://localhost:8016/api/billing/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: plans
+  - name: subscriptions
+  - name: quotas
+  - name: usage
+  - name: invoices
+  - name: webhooks
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Plans ----------------------------------------
+  /plans:
+    get:
+      tags: [plans]
+      operationId: listPlans
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Plan' }
+    post:
+      tags: [plans]
+      operationId: createPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Plan' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+
+  # --------------------------- Subscriptions --------------------------------
+  /subscriptions:
+    get:
+      tags: [subscriptions]
+      operationId: listSubscriptions
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Subscription' }
+    post:
+      tags: [subscriptions]
+      operationId: createSubscription
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSubscriptionRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /subscriptions/{sub_id}:
+    parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [subscriptions]
+      operationId: getSubscription
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /subscriptions/{sub_id}/change-plan:
+    parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [subscriptions]
+      summary: 升降级（自动按比例计费）
+      operationId: changePlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_plan_id]
+              properties:
+                new_plan_id: { type: string }
+                proration: { type: boolean, default: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /subscriptions/{sub_id}/cancel:
+    parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [subscriptions]
+      operationId: cancelSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                immediate: { type: boolean, default: false }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+
+  # --------------------------- Quotas ---------------------------------------
+  /quotas:
+    get:
+      tags: [quotas]
+      operationId: listQuotas
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Quota' }
+
+  /quotas/{dimension}/check:
+    parameters:
+      - name: dimension
+        in: path
+        required: true
+        schema: { type: string, example: llm_tokens }
+    post:
+      tags: [quotas]
+      summary: 配额检查（业务用 SDK，本端点用于调试）
+      operationId: checkQuota
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: integer }
+      responses:
+        '200':
+          description: 允许
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [allowed, remaining]
+                properties:
+                  allowed: { type: boolean }
+                  remaining: { type: integer }
+                  hard_limit: { type: integer }
+                  soft_limit: { type: integer }
+        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
+
+  # --------------------------- Usage ----------------------------------------
+  /usage:
+    post:
+      tags: [usage]
+      summary: 上报用量（业务用 SDK 异步批量）
+      operationId: reportUsage
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dimension, amount]
+              properties:
+                dimension: { type: string }
+                amount: { type: integer }
+                resource_id: { type: string }
+                occurred_at: { type: string, format: date-time }
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '202':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  usage_record_id: { type: string }
+    get:
+      tags: [usage]
+      summary: 查询用量
+      operationId: queryUsage
+      parameters:
+        - name: dimension
+          in: query
+          schema: { type: string }
+        - name: time_start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: time_end
+          in: query
+          schema: { type: string, format: date-time }
+        - name: granularity
+          in: query
+          schema: { type: string, enum: [HOUR, DAY, MONTH] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts: { type: string, format: date-time }
+                        amount: { type: integer }
+                  total: { type: integer }
+
+  # --------------------------- Invoices -------------------------------------
+  /invoices:
+    get:
+      tags: [invoices]
+      operationId: listInvoices
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [DRAFT, OPEN, PAID, VOID, UNCOLLECTIBLE] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Invoice' }
+
+  /invoices/{invoice_id}:
+    parameters:
+      - name: invoice_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [invoices]
+      operationId: getInvoice
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /invoices/{invoice_id}/pdf:
+    parameters:
+      - name: invoice_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [invoices]
+      operationId: downloadInvoicePdf
+      responses:
+        '200':
+          description: ok
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+  # --------------------------- Webhooks (Stripe / Aliypay / WeChatPay) ------
+  /webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string, enum: [stripe, alipay, wechatpay] }
+    post:
+      tags: [webhooks]
+      summary: 接收支付 provider webhook
+      operationId: receivePaymentWebhook
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged: { type: boolean }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    Plan:
+      type: object
+      required: [id, name, kind, billing_cycle, price_amount, currency]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        kind: { type: string, enum: [FREE, PRO, BUSINESS, ENTERPRISE, CUSTOM] }
+        billing_cycle: { type: string, enum: [MONTHLY, YEARLY, ONE_TIME] }
+        price_amount: { type: integer, description: '最小货币单位（分 / cent）' }
+        currency: { type: string, example: USD }
+        included_quotas:
+          type: object
+          additionalProperties: { type: integer }
+        features:
+          type: array
+          items: { type: string }
+        active: { type: boolean, default: true }
+
+    Subscription:
+      type: object
+      required: [id, tenant_id, plan_id, status, current_period_start, current_period_end]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        plan_id: { type: string }
+        status: { type: string, enum: [TRIAL, ACTIVE, PAST_DUE, CANCELED, SUSPENDED] }
+        provider: { type: string, enum: [OFFLINE, STRIPE, ALIPAY, WECHATPAY] }
+        provider_subscription_id: { type: string, nullable: true }
+        current_period_start: { type: string, format: date-time }
+        current_period_end: { type: string, format: date-time }
+        trial_ends_at: { type: string, format: date-time, nullable: true }
+        canceled_at: { type: string, format: date-time, nullable: true }
+        grace_period_ends_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CreateSubscriptionRequest:
+      type: object
+      required: [plan_id]
+      properties:
+        plan_id: { type: string }
+        payment_method_id: { type: string }
+        trial_days: { type: integer }
+
+    Quota:
+      type: object
+      required: [dimension, hard_limit, used, period]
+      properties:
+        dimension: { type: string, example: llm_tokens }
+        unit: { type: string }
+        hard_limit: { type: integer }
+        soft_limit: { type: integer }
+        used: { type: integer }
+        period: { type: string, enum: [MONTH, DAY, HOUR, LIFETIME] }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+
+    Invoice:
+      type: object
+      required: [id, tenant_id, status, currency, total_amount, period_start, period_end, created_at]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        subscription_id: { type: string }
+        number: { type: string }
+        status: { type: string, enum: [DRAFT, OPEN, PAID, VOID, UNCOLLECTIBLE] }
+        currency: { type: string }
+        subtotal_amount: { type: integer }
+        tax_amount: { type: integer }
+        total_amount: { type: integer }
+        line_items:
+          type: array
+          items:
+            type: object
+            properties:
+              description: { type: string }
+              quantity: { type: integer }
+              unit_amount: { type: integer }
+              amount: { type: integer }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        due_at: { type: string, format: date-time, nullable: true }
+        paid_at: { type: string, format: date-time, nullable: true }
+        pdf_s3_key: { type: string, nullable: true }
+        china_einvoice_id: { type: string, nullable: true, description: 航天信息 / 百望接口返回 }
+        created_at: { type: string, format: date-time }

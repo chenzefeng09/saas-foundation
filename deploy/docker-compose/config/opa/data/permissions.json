@@ -1,0 +1,34 @@
+{
+  "foundation": {
+    "authz": {
+      "permissions_meta": {
+        "_comment": "种子 permission_definition；A-M1 后由 authz-service 从 DB 动态生成 bundle 覆盖",
+        "permissions": {
+          "identity.user.read":   { "risk_level": "LOW",  "requires_mfa": false },
+          "identity.user.create": { "risk_level": "MEDIUM", "requires_mfa": false },
+          "identity.user.freeze": { "risk_level": "HIGH", "requires_mfa": true },
+
+          "authz.role.create":    { "risk_level": "HIGH", "requires_mfa": true },
+          "authz.role_binding.create": { "risk_level": "MEDIUM", "requires_mfa": false },
+
+          "org.org_unit.read":    { "risk_level": "LOW",  "requires_mfa": false },
+          "org.org_unit.move":    { "risk_level": "HIGH", "requires_mfa": true },
+
+          "billing.invoice.read":   { "risk_level": "LOW",  "requires_mfa": false },
+          "billing.invoice.void":   { "risk_level": "HIGH", "requires_mfa": true },
+          "billing.subscription.cancel": {
+            "risk_level": "CRITICAL", "requires_mfa": true, "requires_4eyes": true
+          },
+
+          "audit.event.read":     { "risk_level": "LOW",  "requires_mfa": false },
+          "audit.event.export":   {
+            "risk_level": "HIGH", "requires_mfa": true,
+            "requires_classification_lte": 4
+          },
+
+          "data.export":          { "risk_level": "HIGH", "requires_mfa": true }
+        }
+      }
+    }
+  }
+}

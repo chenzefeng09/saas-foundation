@@ -1,0 +1,227 @@
+{{- /* =============================================================================
+     批量渲染 18 个 service：每个调用 _service-template 通用模板
+     —— 实现方式：umbrella 把 service 名 + 对应 .Values.services.<name> 注入子上下文
+     —— 等 P0 #4/#5 service 真正成型后，每个 service 单独 packages/<svc>/helm/ 出 subchart
+        到那时本文件 deprecated，dependencies 直接走 subchart
+============================================================================= */}}
+
+{{- $services := dict
+  "identity"        .Values.services.identity
+  "authz"           .Values.services.authz
+  "org"             .Values.services.org
+  "billing"         .Values.services.billing
+  "audit"           .Values.services.audit
+  "lifecycle"       .Values.services.lifecycle
+  "notification"    .Values.services.notification
+  "search"          .Values.services.search
+  "api-platform"    .Values.services.apiPlatform
+  "llm-gateway"     .Values.services.llmGateway
+  "feature-flag"    .Values.services.featureFlag
+  "classification"  .Values.services.classification
+  "dlp"             .Values.services.dlp
+  "crypto"          .Values.services.crypto
+  "compliance"      .Values.services.compliance
+  "pam"             .Values.services.pam
+  "data-protection" .Values.services.dataProtection
+  "security-ops"    .Values.services.securityOps
+-}}
+
+{{- range $name, $svc := $services }}
+{{- if and $svc $svc.enabled }}
+---
+# ============================================================================
+# {{ $name }}（占位 Deployment；实际镜像由 service 自己 build/push）
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/part-of: saas-foundation
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    foundation.example.com/profile: {{ $.Values.global.profile | default "small" }}
+spec:
+  {{- if not (and $svc.autoscaling $svc.autoscaling.enabled) }}
+  replicas: {{ $svc.replicaCount | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/part-of: saas-foundation
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: foundation-{{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $name }}
+          image: "{{ $.Values.global.imageRegistry }}/{{ $svc.image.repository | default (printf "foundation/%s" $name) }}:{{ $svc.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          ports:
+            - { name: http,    containerPort: 8000 }
+            - { name: metrics, containerPort: 9090 }
+          env:
+            - { name: FOUNDATION_SERVICE_NAME, value: {{ $name | quote }} }
+            - { name: FOUNDATION_PROFILE,      value: {{ $.Values.global.profile | quote }} }
+            - { name: FOUNDATION_COMPLIANCE_MODES, value: {{ $.Values.global.complianceModes | join "," | quote }} }
+            - { name: OTEL_SERVICE_NAME, value: {{ printf "foundation-%s" $name | quote }} }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ $.Values.global.otelCollector.endpoint | quote }} }
+            - { name: FOUNDATION_DB_HOST, value: {{ $.Values.global.database.host | quote }} }
+            - { name: FOUNDATION_DB_PORT, value: {{ $.Values.global.database.port | quote }} }
+            - { name: FOUNDATION_DB_NAME, value: {{ $.Values.global.database.name | quote }} }
+            - { name: FOUNDATION_REDIS_HOST, value: {{ $.Values.global.redis.host | quote }} }
+            - { name: FOUNDATION_KEYCLOAK_URL, value: {{ $.Values.global.keycloak.url | quote }} }
+            - { name: FOUNDATION_VAULT_ADDR, value: {{ $.Values.global.vault.addr | quote }} }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml ($svc.resources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: cache, mountPath: /app/.cache }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: cache, emptyDir: {} }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+  ports:
+    - { name: http,    port: 80,   targetPort: http }
+    - { name: metrics, port: 9090, targetPort: metrics }
+{{- if and $svc.autoscaling $svc.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: foundation-{{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: foundation-{{ $name }}
+  minReplicas: {{ $svc.autoscaling.minReplicas | default 1 }}
+  maxReplicas: {{ $svc.autoscaling.maxReplicas | default 10 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage | default 70 }}
+{{- end }}
+{{- if and $svc.podDisruptionBudget $svc.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: foundation-{{ $name }}
+spec:
+  minAvailable: {{ $svc.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+{{- end }}
+{{- if and $svc.networkPolicy $svc.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Release.Namespace }}
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+        - port: 8200
+          protocol: TCP
+        - port: 4317
+          protocol: TCP
+{{- end }}
+{{- if and $svc.serviceMonitor $svc.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  endpoints:
+    - port: metrics
+      interval: {{ $svc.serviceMonitor.interval | default "30s" }}
+      path: /metrics
+{{- end }}
+{{- end }}
+{{- end }}

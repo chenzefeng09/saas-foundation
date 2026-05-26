@@ -1,0 +1,42 @@
+name: "Setup foundation dev env"
+description: "Install Python + Poetry + restore Poetry cache. Used by every service-ci job."
+inputs:
+  python-version:
+    required: false
+    default: "3.12"
+  working-directory:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Poetry
+      shell: bash
+      run: |
+        pipx install poetry==1.8.3
+        poetry --version
+
+    - name: Configure Poetry
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        poetry config virtualenvs.in-project true
+        poetry config installer.parallel true
+
+    - name: Restore Poetry cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.working-directory }}/.venv
+        key: poetry-${{ runner.os }}-py${{ inputs.python-version }}-${{ hashFiles(format('{0}/poetry.lock', inputs.working-directory)) }}
+        restore-keys: |
+          poetry-${{ runner.os }}-py${{ inputs.python-version }}-
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: poetry install --no-interaction --no-root

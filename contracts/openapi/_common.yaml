@@ -1,0 +1,562 @@
+# =============================================================================
+# OpenAPI 3.1 — saas-foundation 共享 components
+# =============================================================================
+# 所有 service spec 通过 $ref 引用本文件，避免重复定义。
+#
+# 使用方式（service spec 顶部）：
+#   components:
+#     schemas:
+#       Error:
+#         $ref: './_common.yaml#/components/schemas/Error'
+#     parameters:
+#       RequestId:
+#         $ref: './_common.yaml#/components/parameters/RequestId'
+#     responses:
+#       BadRequest:
+#         $ref: './_common.yaml#/components/responses/BadRequest'
+#     securitySchemes:
+#       bearerAuth:
+#         $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+#
+# CI bundle 阶段（make openapi-bundle）使用 redocly cli 把 $ref 内联展开，
+# 产出可独立分发的 bundle/<service>.yaml。
+#
+# 配套：
+#   - docs/CONVENTIONS.md §2 API 设计规范
+#   - docs/errors.md 错误码规范
+#   - docs/multi-tenancy.md 租户上下文传递
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: SaaS Foundation — Shared Components
+  description: 所有 service 通过 $ref 引用本文件的 schemas / parameters / responses / securitySchemes。
+  version: 1.0.0
+
+# 占位 path 让本文件可独立 lint
+paths:
+  /_common:
+    get:
+      summary: 占位（不真实暴露）
+      operationId: _common_placeholder
+      responses:
+        '200':
+          description: ok
+
+components:
+
+  # ===========================================================================
+  # Security
+  # ===========================================================================
+  securitySchemes:
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT 由 Keycloak 签发。Claim 含 `sub`、`tenant_id`、`org_id`（可选）、`roles`、`scopes`、`exp`、`jti`。
+        API Gateway 校验签名 + 过期后，注入 X-User-Id / X-Tenant-Id / X-Roles header 给下游 service。
+
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API Key 模式（机器对机器；服务账号）。
+        Key 格式：`fnd_<tenant_prefix>_<random32>` ；存储为 Argon2id 哈希；
+        作用域、IP 白名单、过期由 api-platform-service 管理。
+
+    oauth2:
+      type: oauth2
+      description: 内部 OAuth2 server，面向租户内部应用
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/oauth/authorize
+          tokenUrl: https://auth.example.com/oauth/token
+          refreshUrl: https://auth.example.com/oauth/token
+          scopes:
+            openid: OIDC 身份
+            profile: 用户档案
+            email: 邮箱
+            offline_access: 刷新 token
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            api:read: 只读
+            api:write: 读写
+
+  # ===========================================================================
+  # 通用 parameters（请求 header / query）
+  # ===========================================================================
+  parameters:
+
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: 请求链路 ID；客户端可带，缺则网关生成；回响应必带
+      schema:
+        type: string
+        pattern: '^req_[0-9A-Z]{26}$'
+        example: req_01J5XXXXXXXXXXXXXXXXXXXXXX
+
+    TraceParent:
+      name: traceparent
+      in: header
+      required: false
+      description: W3C Trace Context；OTel 自动注入
+      schema:
+        type: string
+
+    Cursor:
+      name: cursor
+      in: query
+      description: 游标分页，从上次响应的 next_cursor 获取
+      schema:
+        type: string
+
+    Limit:
+      name: limit
+      in: query
+      description: 每页数量
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+    Offset:
+      name: offset
+      in: query
+      description: 偏移分页（仅历史兼容路径用；新接口必用 Cursor）
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    Sort:
+      name: sort
+      in: query
+      description: 排序字段；前缀 `-` 降序，多字段逗号分隔
+      schema:
+        type: string
+        example: -created_at,email
+
+    Fields:
+      name: fields
+      in: query
+      description: 字段选择，逗号分隔，减小响应体积
+      schema:
+        type: string
+        example: id,name,email
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        幂等键。POST/PUT/PATCH 建议带；重放时返回首次结果。
+        服务端缓存 24h；超时未到返同结果 + status header `X-Idempotent-Replay: true`。
+      schema:
+        type: string
+        maxLength: 64
+
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: 乐观锁 ETag；不匹配返 412
+      schema:
+        type: string
+
+    AcceptLanguage:
+      name: Accept-Language
+      in: header
+      required: false
+      description: 用户语言偏好；用于 user_message i18n
+      schema:
+        type: string
+        example: zh-CN
+
+  # ===========================================================================
+  # 通用 headers（响应）
+  # ===========================================================================
+  headers:
+
+    RequestIdHeader:
+      schema: { type: string }
+      description: 回显请求 ID
+
+    ServiceNameHeader:
+      schema: { type: string }
+      description: 处理 service 名（debug）
+
+    ServiceVersionHeader:
+      schema: { type: string }
+      description: 处理 service 版本
+
+    RetryAfterHeader:
+      schema: { type: integer }
+      description: 限流恢复秒数
+
+    RateLimitLimitHeader:
+      schema: { type: integer }
+      description: 限流窗口配额
+
+    RateLimitRemainingHeader:
+      schema: { type: integer }
+      description: 剩余配额
+
+    RateLimitResetHeader:
+      schema: { type: integer }
+      description: 配额重置 epoch
+
+    IdempotentReplayHeader:
+      schema: { type: boolean }
+      description: 标记此响应来自 Idempotency-Key 重放缓存
+
+  # ===========================================================================
+  # 通用错误响应
+  # ===========================================================================
+  responses:
+
+    BadRequest:
+      description: 入参格式错（400）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalid_pagination:
+              value:
+                type: https://errors.foundation.example.com/_/input/invalid-pagination
+                title: Invalid pagination parameters
+                status: 400
+                code: FOUNDATION._.INPUT.INVALID_PAGINATION
+                detail: limit must be between 1 and 200
+                instance: /api/identity/v1/users
+                request_id: req_01J5XXXXXXXXXXXXXXXXXXXXXX
+                timestamp: '2026-05-22T10:00:00Z'
+
+    Unauthorized:
+      description: 未认证 / token 失效（401）
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Forbidden:
+      description: 已认证但无权限 / 合规阻断（403）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    NotFound:
+      description: 资源不存在（404）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Conflict:
+      description: 资源冲突 / 状态错（409）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Gone:
+      description: 资源永久删除（410）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    StaleVersion:
+      description: 乐观锁版本过期（412）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    PayloadTooLarge:
+      description: 请求体过大（413）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    ValidationFailed:
+      description: 语义校验失败（422）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+
+    RateLimited:
+      description: 限流 / 配额超限（429）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+        Retry-After: { $ref: '#/components/headers/RetryAfterHeader' }
+        X-RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimitHeader' }
+        X-RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemainingHeader' }
+        X-RateLimit-Reset: { $ref: '#/components/headers/RateLimitResetHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    InternalError:
+      description: 服务器内部错（500）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    BadGateway:
+      description: 下游服务错（502）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    ServiceUnavailable:
+      description: 服务暂不可用 / 维护中（503）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+        Retry-After: { $ref: '#/components/headers/RetryAfterHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    GatewayTimeout:
+      description: 下游服务超时（504）
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  # ===========================================================================
+  # Schemas
+  # ===========================================================================
+  schemas:
+
+    # ---------------------- 错误（RFC 9457 Problem Details）------------------
+    Error:
+      type: object
+      required: [type, title, status, code, detail, instance, request_id, timestamp]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: 错误码对应文档 URL
+        title:
+          type: string
+          description: 错误标题（英文，固定）
+        status:
+          type: integer
+          description: HTTP 状态码
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z_]+\.[A-Z][A-Z_]+\.[A-Z][A-Z_]+\.[A-Z][A-Z_]+$'
+          description: 机器可读错误码 `FOUNDATION.<SVC>.<CAT>.<NAME>` 四段
+          example: FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS
+        detail:
+          type: string
+        user_message:
+          type: string
+          nullable: true
+        instance:
+          type: string
+        request_id:
+          type: string
+        trace_id:
+          type: string
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+        retry_after:
+          type: integer
+          nullable: true
+        help_url:
+          type: string
+          format: uri
+          nullable: true
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [field, code, detail]
+                properties:
+                  field:
+                    type: string
+                    description: JSON Pointer 字段路径
+                    example: /email
+                  code:
+                    type: string
+                    example: INVALID_EMAIL_FORMAT
+                  detail:
+                    type: string
+                  user_message:
+                    type: string
+                    nullable: true
+
+    # ---------------------- 通用 ID 类型 -------------------------------------
+    # 命名约定 CONVENTIONS §2.8：<type>_<ULID 26 字符>
+
+    TenantId:
+      type: string
+      pattern: '^tnt_[0-9A-Z]{26}$'
+      example: tnt_01J5XXXXXXXXXXXXXXXXXXXXXX
+
+    UserId:
+      type: string
+      pattern: '^usr_[0-9A-Z]{26}$'
+      example: usr_01J5XXXXXXXXXXXXXXXXXXXXXX
+
+    SessionId:
+      type: string
+      pattern: '^sess_[0-9A-Z]{26}$'
+
+    OrgUnitId:
+      type: string
+      pattern: '^ou_[0-9A-Z]{26}$'
+
+    TeamId:
+      type: string
+      pattern: '^team_[0-9A-Z]{26}$'
+
+    RoleId:
+      type: string
+      pattern: '^role_[0-9A-Z]{26}$'
+
+    ResourceId:
+      type: string
+      description: 通用资源 ID；业务对象按各自前缀
+      pattern: '^[a-z]+_[0-9A-Z]{26}$'
+
+    AuditEventId:
+      type: string
+      pattern: '^aud_[0-9A-Z]{26}$'
+
+    RequestIdValue:
+      type: string
+      pattern: '^req_[0-9A-Z]{26}$'
+
+    # ---------------------- 列表分页 wrapper ---------------------------------
+    CursorPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {}
+        next_cursor:
+          type: string
+          nullable: true
+          description: 下一页游标；null = 已到末尾
+
+    OffsetPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: {}
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    # ---------------------- 通用 enum ---------------------------------------
+    SensitivityLevel:
+      type: string
+      enum: [L1_PUBLIC, L2_INTERNAL, L3_CONFIDENTIAL, L4_RESTRICTED, L5_SECRET]
+      description: 资源分级（dlp-classification-v1 §3）
+
+    ComplianceMode:
+      type: string
+      enum:
+        - equal_protection_3
+        - equal_protection_4
+        - finance_jrt0071
+        - pipl
+        - gdpr
+        - hipaa
+        - soc2
+        - iso27001
+      description: 合规模式（compliance-v1 §3 single source of truth）
+
+    Severity:
+      type: string
+      enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO]
+
+    # ---------------------- 健康检查 ----------------------------------------
+    HealthStatus:
+      type: object
+      required: [status, service, version]
+      properties:
+        status:
+          type: string
+          enum: [OK, DEGRADED, UNHEALTHY]
+        service:
+          type: string
+        version:
+          type: string
+        dependencies:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status: { type: string, enum: [OK, DEGRADED, UNHEALTHY] }
+              latency_ms: { type: integer }
+              message: { type: string, nullable: true }
+        uptime_seconds:
+          type: integer
+
+    # ---------------------- 时间窗口 ----------------------------------------
+    TimeRange:
+      type: object
+      required: [start, end]
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    # ---------------------- Idempotent 重放标记 -----------------------------
+    IdempotentReplay:
+      type: object
+      properties:
+        replayed:
+          type: boolean
+          description: 此响应来自幂等键缓存
+        original_request_id:
+          type: string

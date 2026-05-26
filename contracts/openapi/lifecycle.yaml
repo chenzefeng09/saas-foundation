@@ -1,0 +1,475 @@
+# =============================================================================
+# Lifecycle Service API — lifecycle-v1
+# =============================================================================
+# Retention / Recycle Bin / Backup / Legal Hold / 销毁证明（sole holder）
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Lifecycle Service API
+  version: 1.0.0
+  description: |
+    资源生命周期：保留策略、软删除回收站、备份恢复编排、Legal Hold、销毁证明（owner）。
+    详见 [docs/design/lifecycle-v1.md](../../docs/design/lifecycle-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/lifecycle/v1
+  - url: http://localhost:8006/api/lifecycle/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: retention
+    description: 保留策略
+  - name: recycle-bin
+    description: 软删回收站
+  - name: legal-hold
+    description: 法律保留
+  - name: backups
+    description: 备份与恢复演练
+  - name: destruction-certs
+    description: 销毁证明（PDF）
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Retention ------------------------------------
+  /retention-policies:
+    get:
+      tags: [retention]
+      operationId: listRetentionPolicies
+      parameters:
+        - name: filter.resource_type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RetentionPolicy' }
+    post:
+      tags: [retention]
+      operationId: createRetentionPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RetentionPolicy' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RetentionPolicy' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Recycle Bin ----------------------------------
+  /recycle-bin:
+    get:
+      tags: [recycle-bin]
+      operationId: listRecycledItems
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.resource_type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/RecycledItem' }
+
+  /recycle-bin/{item_id}/restore:
+    parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [recycle-bin]
+      operationId: restoreItem
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecycledItem' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: 已硬删除 / 已被 legal hold
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  /recycle-bin/{item_id}/purge:
+    parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [recycle-bin]
+      summary: 立即硬删除（生成销毁证明）
+      operationId: purgeItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destruction_method]
+              properties:
+                destruction_method:
+                  type: string
+                  enum: [CRYPTO_KEY_DESTROY, DOD_5220_22_M, NIST_800_88_CLEAR, NIST_800_88_PURGE]
+                witness_id:
+                  type: string
+                  description: 第二人见证（强制 4 眼场景）
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  certificate_id: { type: string }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409':
+          description: Legal hold 阻断
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  # --------------------------- Legal Hold -----------------------------------
+  /legal-holds:
+    get:
+      tags: [legal-hold]
+      operationId: listLegalHolds
+      parameters:
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [ACTIVE, RELEASED] }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/LegalHold' }
+    post:
+      tags: [legal-hold]
+      operationId: createLegalHold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateLegalHoldRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegalHold' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /legal-holds/{hold_id}/release:
+    parameters:
+      - name: hold_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [legal-hold]
+      operationId: releaseLegalHold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, witness_id]
+              properties:
+                reason: { type: string, minLength: 10 }
+                witness_id: { type: string, description: 4 眼审批的第二人 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegalHold' }
+
+  # --------------------------- Backups --------------------------------------
+  /backups:
+    get:
+      tags: [backups]
+      operationId: listBackups
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.kind
+          in: query
+          schema: { type: string, enum: [POSTGRES_FULL, POSTGRES_INCREMENTAL, CLICKHOUSE, VELERO_SNAPSHOT, MINIO] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Backup' }
+
+  /backups/{backup_id}/restore:
+    parameters:
+      - name: backup_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [backups]
+      summary: 触发恢复（生产环境必走演练环境验证）
+      operationId: restoreBackup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_environment]
+              properties:
+                target_environment:
+                  type: string
+                  enum: [DRILL, STAGING, PRODUCTION]
+                witness_id:
+                  type: string
+                  description: PRODUCTION 强制 4 眼
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  restore_job_id: { type: string }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Destruction Certificates ---------------------
+  /destruction-certificates:
+    get:
+      tags: [destruction-certs]
+      operationId: listDestructionCertificates
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.resource_id
+          in: query
+          schema: { type: string }
+        - name: filter.time_start
+          in: query
+          schema: { type: string, format: date-time }
+        - name: filter.time_end
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DestructionCertificate' }
+
+  /destruction-certificates/{cert_id}:
+    parameters:
+      - name: cert_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^dcert_[0-9A-Z]{26}$' }
+    get:
+      tags: [destruction-certs]
+      operationId: getDestructionCertificate
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DestructionCertificate' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /destruction-certificates/{cert_id}/pdf:
+    parameters:
+      - name: cert_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [destruction-certs]
+      summary: 下载 PDF（由 data-protection 渲染 + crypto 签名）
+      operationId: downloadDestructionCertificatePdf
+      responses:
+        '200':
+          description: ok
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    RetentionPolicy:
+      type: object
+      required: [id, resource_type, retention_days, post_retention_action]
+      properties:
+        id: { type: string }
+        resource_type: { type: string }
+        retention_days: { type: integer, minimum: 1 }
+        post_retention_action:
+          type: string
+          enum: [SOFT_DELETE, HARD_DELETE, ARCHIVE_S3, ARCHIVE_OFFLINE]
+        compliance_mode_override:
+          type: object
+          additionalProperties:
+            type: integer
+          description: 合规模式 → 强制保留期（取最严）
+
+    RecycledItem:
+      type: object
+      required: [id, tenant_id, resource_type, resource_id, deleted_at, scheduled_purge_at, status]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        deleted_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        deleted_at: { type: string, format: date-time }
+        scheduled_purge_at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [PENDING_PURGE, PURGED, RESTORED, ON_LEGAL_HOLD]
+        legal_hold_id: { type: string, nullable: true }
+
+    LegalHold:
+      type: object
+      required: [id, tenant_id, scope, created_at, status]
+      properties:
+        id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        scope:
+          type: object
+          properties:
+            resource_ids:
+              type: array
+              items: { type: string }
+            user_ids:
+              type: array
+              items: { type: string }
+            resource_type_filter: { type: string }
+        case_reference: { type: string, description: 法务案件号 }
+        created_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        created_at: { type: string, format: date-time }
+        released_at: { type: string, format: date-time, nullable: true }
+        released_by: { type: string, nullable: true }
+        status: { type: string, enum: [ACTIVE, RELEASED] }
+
+    CreateLegalHoldRequest:
+      type: object
+      required: [scope, case_reference]
+      properties:
+        scope:
+          type: object
+          properties:
+            resource_ids:
+              type: array
+              items: { type: string }
+            user_ids:
+              type: array
+              items: { type: string }
+            resource_type_filter: { type: string }
+        case_reference: { type: string, minLength: 3 }
+
+    Backup:
+      type: object
+      required: [id, kind, created_at, size_bytes, location, status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [POSTGRES_FULL, POSTGRES_INCREMENTAL, CLICKHOUSE, VELERO_SNAPSHOT, MINIO] }
+        created_at: { type: string, format: date-time }
+        size_bytes: { type: integer }
+        location: { type: string, description: s3:// or volume path }
+        kms_key_id: { type: string }
+        residency_region: { type: string }
+        status: { type: string, enum: [PENDING, RUNNING, COMPLETED, FAILED, ARCHIVED] }
+        expires_at: { type: string, format: date-time, nullable: true }
+
+    DestructionCertificate:
+      type: object
+      required: [id, tenant_id, resource_type, resource_ids, destruction_method, destroyed_at, signature_algorithm, signature]
+      properties:
+        id: { type: string, pattern: '^dcert_[0-9A-Z]{26}$' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        resource_type: { type: string }
+        resource_ids:
+          type: array
+          items: { type: string }
+        destruction_method:
+          type: string
+          enum: [CRYPTO_KEY_DESTROY, DOD_5220_22_M, NIST_800_88_CLEAR, NIST_800_88_PURGE]
+        destroyed_at: { type: string, format: date-time }
+        executor_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        witness_id:
+          type: string
+          nullable: true
+        kek_id_destroyed: { type: string, nullable: true }
+        pdf_s3_key: { type: string }
+        signature_algorithm: { type: string, enum: [ECDSA_P256_SHA256, SM2_SM3, ED25519] }
+        signature: { type: string }
+        tsa_token: { type: string, nullable: true }
+        audit_event_id: { $ref: './_common.yaml#/components/schemas/AuditEventId' }

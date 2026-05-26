@@ -1,0 +1,472 @@
+# =============================================================================
+# Data Protection Service API — data-protection-v1
+# =============================================================================
+# 脱敏引擎 + 数据出院审批 + 销毁证书 PDF 渲染 + DSAR + 跨境检查 + 同意管理
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Data Protection Service API
+  version: 1.0.0
+  description: |
+    脱敏 / 假名化 / 销毁证书渲染 / DSAR / 跨境检查 / 同意管理。
+    销毁证书数据由 lifecycle 持有，本服务负责 PDF 渲染与签名（与 crypto 联动）。
+    详见 [docs/design/data-protection-v1.md](../../docs/design/data-protection-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/data-protection/v1
+  - url: http://localhost:8008/api/data-protection/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: masking
+    description: 字段级脱敏 / 假名化
+  - name: data-export
+    description: 数据出院申请审批
+  - name: dsar
+    description: 个人信息主体权利请求
+  - name: cross-border
+    description: 跨境传输检查
+  - name: consents
+    description: 同意管理
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Masking --------------------------------------
+  /mask:
+    post:
+      tags: [masking]
+      summary: 应用脱敏规则到数据
+      operationId: maskData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MaskRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaskResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '413': { $ref: './_common.yaml#/components/responses/PayloadTooLarge' }
+
+  /pseudonymize:
+    post:
+      tags: [masking]
+      summary: 假名化（一致性：同输入 + 同 purpose → 同输出）
+      operationId: pseudonymizeData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [values, purpose]
+              properties:
+                values:
+                  type: array
+                  items: { type: string }
+                purpose:
+                  type: string
+                  description: 业务用途（影响 KEK 派生）
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pseudonyms:
+                    type: array
+                    items: { type: string }
+
+  # --------------------------- Data Export ----------------------------------
+  /data-export-requests:
+    get:
+      tags: [data-export]
+      operationId: listDataExportRequests
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [PENDING_APPROVAL, APPROVED, REJECTED, EXPORTED, EXPIRED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DataExportRequest' }
+    post:
+      tags: [data-export]
+      summary: 申请生产数据出院（自动强制脱敏）
+      operationId: createDataExportRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purpose, source, destination, masking_rules]
+              properties:
+                purpose: { type: string, enum: [DEV, TEST, ANALYTICS, AUDIT] }
+                source:
+                  type: object
+                  properties:
+                    schema: { type: string }
+                    tables:
+                      type: array
+                      items: { type: string }
+                destination:
+                  type: object
+                  properties:
+                    type: { type: string, enum: [POSTGRES, FILE_S3, FILE_LOCAL] }
+                    uri: { type: string }
+                masking_rules:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      field: { type: string }
+                      method: { type: string, enum: [MASK, TRUNCATE, HASH, PSEUDONYMIZE, TOKENIZE, SYNTHESIZE, GENERALIZE, SUPPRESS, NOISE] }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataExportRequest' }
+
+  /data-export-requests/{req_id}/approve:
+    parameters:
+      - name: req_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [data-export]
+      operationId: approveDataExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DataExportRequest' }
+
+  # --------------------------- DSAR -----------------------------------------
+  /dsar-requests:
+    get:
+      tags: [dsar]
+      operationId: listDsarRequests
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [SUBMITTED, IDENTITY_VERIFYING, IN_PROGRESS, RESPONDED, REJECTED, EXPIRED] }
+        - name: filter.right
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DsarRequest' }
+    post:
+      tags: [dsar]
+      summary: 提交 DSAR（访问 / 更正 / 删除 / 限制 / 可携带 / 反对 / 拒绝自动化决策）
+      operationId: submitDsarRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitDsarRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsarRequest' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /dsar-requests/{req_id}:
+    parameters:
+      - name: req_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [dsar]
+      operationId: getDsarRequest
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsarRequest' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- Cross Border ---------------------------------
+  /cross-border/check:
+    post:
+      tags: [cross-border]
+      summary: 跨境传输检查（PIPL §38）
+      operationId: checkCrossBorder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data_categories, destination_country, lawful_basis]
+              properties:
+                data_categories:
+                  type: array
+                  items: { type: string, enum: [PII, SENSITIVE_PII, FINANCIAL, HEALTH, BIOMETRIC, CHILDREN] }
+                destination_country: { type: string, example: SG }
+                lawful_basis:
+                  type: string
+                  enum: [STANDARD_CONTRACT, SECURITY_ASSESSMENT, CERTIFICATION, CONSENT, EXEMPTION]
+                volume_estimate: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed: { type: boolean }
+                  required_actions:
+                    type: array
+                    items: { type: string }
+                  estimated_documents:
+                    type: array
+                    items: { type: string }
+        '403':
+          description: 强制驻留 / 法律禁运
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  # --------------------------- Consents -------------------------------------
+  /consents:
+    get:
+      tags: [consents]
+      operationId: listConsents
+      parameters:
+        - name: filter.user_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+        - name: filter.purpose
+          in: query
+          schema: { type: string }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Consent' }
+    post:
+      tags: [consents]
+      summary: 记录用户同意
+      operationId: recordConsent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purpose, granted]
+              properties:
+                purpose: { type: string }
+                granted: { type: boolean }
+                granted_at: { type: string, format: date-time }
+                evidence_s3_key: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consent' }
+
+  /consents/{consent_id}/withdraw:
+    parameters:
+      - name: consent_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [consents]
+      operationId: withdrawConsent
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consent' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    MaskRequest:
+      type: object
+      required: [data, rules]
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+          description: 待脱敏数据（嵌套对象 / 数组都支持）
+        rules:
+          type: array
+          items:
+            type: object
+            required: [field, method]
+            properties:
+              field: { type: string, description: JSON Pointer }
+              method: { type: string, enum: [MASK, TRUNCATE, HASH, PSEUDONYMIZE, TOKENIZE, SYNTHESIZE, GENERALIZE, SUPPRESS, NOISE] }
+              params:
+                type: object
+                additionalProperties: true
+        purpose:
+          type: string
+          description: 影响假名化一致性
+
+    MaskResponse:
+      type: object
+      required: [masked_data]
+      properties:
+        masked_data:
+          type: object
+          additionalProperties: true
+        rules_applied: { type: integer }
+
+    DataExportRequest:
+      type: object
+      required: [id, purpose, source, destination, status, created_at]
+      properties:
+        id: { type: string }
+        purpose: { type: string, enum: [DEV, TEST, ANALYTICS, AUDIT] }
+        source: { type: object, additionalProperties: true }
+        destination: { type: object, additionalProperties: true }
+        masking_rules:
+          type: array
+          items: { type: object, additionalProperties: true }
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, EXPORTED, EXPIRED]
+        requested_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        approvals:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              decision: { type: string, enum: [APPROVE, REJECT] }
+              at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        exported_at: { type: string, format: date-time, nullable: true }
+        rows_exported: { type: integer, nullable: true }
+        audit_event_id: { $ref: './_common.yaml#/components/schemas/AuditEventId' }
+
+    SubmitDsarRequest:
+      type: object
+      required: [subject_identifier, right]
+      properties:
+        subject_identifier:
+          type: object
+          properties:
+            email: { type: string, format: email }
+            user_id: { type: string }
+            national_id: { type: string, description: 国密加密 / pseudonymize }
+        right:
+          type: string
+          enum: [ACCESS, RECTIFY, ERASE, RESTRICT, PORT, OBJECT, REJECT_AUTOMATED_DECISION]
+        details: { type: string }
+        evidence_s3_key: { type: string, description: 身份证明文件 }
+
+    DsarRequest:
+      type: object
+      required: [id, right, status, submitted_at, due_at]
+      properties:
+        id: { type: string }
+        subject_id_pseudonym: { type: string }
+        right: { type: string, enum: [ACCESS, RECTIFY, ERASE, RESTRICT, PORT, OBJECT, REJECT_AUTOMATED_DECISION] }
+        status: { type: string, enum: [SUBMITTED, IDENTITY_VERIFYING, IN_PROGRESS, RESPONDED, REJECTED, EXPIRED] }
+        submitted_at: { type: string, format: date-time }
+        due_at:
+          type: string
+          format: date-time
+          description: 30 天 SLA（复杂情形 +30）
+        responded_at: { type: string, format: date-time, nullable: true }
+        response_s3_key: { type: string, nullable: true }
+        collected_from_services:
+          type: array
+          items: { type: string }
+
+    Consent:
+      type: object
+      required: [id, user_id, purpose, granted, recorded_at]
+      properties:
+        id: { type: string }
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        purpose: { type: string }
+        granted: { type: boolean }
+        granted_at: { type: string, format: date-time }
+        withdrawn_at: { type: string, format: date-time, nullable: true }
+        recorded_at: { type: string, format: date-time }
+        evidence_s3_key: { type: string, nullable: true }

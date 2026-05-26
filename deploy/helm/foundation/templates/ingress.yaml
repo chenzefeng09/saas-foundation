@@ -1,0 +1,162 @@
+{{- /* =============================================================================
+     Ingress 路由 — 把各 service 的 HTTP 端口暴露到统一域名下
+     ============================================================================= */}}
+{{- if .Values.global.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: foundation-services
+  labels:
+    app.kubernetes.io/part-of: saas-foundation
+  annotations:
+    {{- toYaml .Values.global.ingress.annotations | nindent 4 }}
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.global.ingress.tls | quote }}
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+spec:
+  ingressClassName: {{ .Values.global.ingress.className }}
+  {{- if .Values.global.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ .Values.global.ingress.host }}
+      secretName: foundation-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.global.ingress.host }}
+      http:
+        paths:
+          - path: /api/identity
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-identity
+                port:
+                  number: 80
+          - path: /api/authz
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-authz
+                port:
+                  number: 80
+          - path: /api/org
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-org
+                port:
+                  number: 80
+          - path: /api/billing
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-billing
+                port:
+                  number: 80
+          - path: /api/audit
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-audit
+                port:
+                  number: 80
+          - path: /api/lifecycle
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-lifecycle
+                port:
+                  number: 80
+          - path: /api/notification
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-notification
+                port:
+                  number: 80
+          - path: /api/search
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-search
+                port:
+                  number: 80
+          - path: /api/api-platform
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-api-platform
+                port:
+                  number: 80
+          - path: /api/llm-gateway
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-llm-gateway
+                port:
+                  number: 80
+          - path: /api/feature-flag
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-feature-flag
+                port:
+                  number: 80
+          - path: /api/classification
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-classification
+                port:
+                  number: 80
+          - path: /api/dlp
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-dlp
+                port:
+                  number: 80
+          - path: /api/crypto
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-crypto
+                port:
+                  number: 80
+          - path: /api/compliance
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-compliance
+                port:
+                  number: 80
+          - path: /api/pam
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-pam
+                port:
+                  number: 80
+          - path: /api/data-protection
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-data-protection
+                port:
+                  number: 80
+          - path: /api/security-ops
+            pathType: Prefix
+            backend:
+              service:
+                name: foundation-security-ops
+                port:
+                  number: 80
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.adminConsole.service.name | default "foundation-admin-console" }}
+                port:
+                  number: 80
+{{- end }}

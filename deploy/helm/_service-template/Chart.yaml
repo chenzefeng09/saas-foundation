@@ -1,0 +1,10 @@
+apiVersion: v2
+name: foundation-service-template
+description: |
+  Template subchart for any foundation service. Copy this directory to
+  packages/<svc>/helm/ (or a new subchart) and rename. All 18 services share
+  the same shape: Deployment, Service, ServiceAccount, ConfigMap, optional
+  HPA, optional PDB, optional NetworkPolicy.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

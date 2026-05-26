@@ -1,0 +1,16 @@
+# OPA config —— 本地开发模式直接从 mount 的目录加载（无 bundle server）
+# 详见 docs/design/authz-v1.md §4.1 / §4.2
+#
+# 生产 medium+ 由 authz-service 推 OCI/S3 bundle；OPA polling 拉取
+
+decision_logs:
+  console: true
+  reporting:
+    min_delay_seconds: 5
+    max_delay_seconds: 30
+
+status:
+  console: true
+
+# 本地 dev 不连远端 bundle server；启动参数走 --addr=:8181 --log-level=info
+# rego / data 通过 -d 目录加载

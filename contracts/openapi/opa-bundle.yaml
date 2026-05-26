@@ -1,0 +1,316 @@
+# =============================================================================
+# OPA Bundle Service API — opa-bundle-v1
+# =============================================================================
+# Bundle 制品流水线 + 灰度发布（SHADOW / CANARY_10 / CANARY_50 / FULL）+ kill switch
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: OPA Bundle Service API
+  version: 1.0.0
+  description: |
+    OPA bundle 制品流水线：编译 Rego → 签名（ES256）→ 发布到 OPA sidecar；
+    灰度 4 阶段；kill switch（fail_close / fallback_previous）。
+    详见 [docs/design/opa-bundle-v1.md](../../docs/design/opa-bundle-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/opa-bundle/v1
+  - url: http://localhost:8011/api/opa-bundle/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: bundles
+  - name: rollouts
+  - name: kill-switch
+  - name: serving
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  /bundles:
+    get:
+      tags: [bundles]
+      operationId: listBundles
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [BUILDING, BUILT, SIGNED, PUBLISHING, ACTIVE, SUPERSEDED, FAILED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Bundle' }
+
+    post:
+      tags: [bundles]
+      summary: 构建新 bundle（从源 commit）
+      operationId: buildBundle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_commit]
+              properties:
+                source_commit: { type: string, description: git sha }
+                channel: { type: string, enum: [PROD, STAGING], default: STAGING }
+                notes: { type: string }
+      responses:
+        '202':
+          description: 构建已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bundle_id: { type: string }
+
+  /bundles/{bundle_id}:
+    parameters:
+      - name: bundle_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [bundles]
+      operationId: getBundle
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bundle' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /bundles/{bundle_id}/download:
+    parameters:
+      - name: bundle_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [serving]
+      summary: OPA sidecar 拉取（包含签名）
+      description: 也可被外部审计直接下载比对
+      operationId: downloadBundle
+      responses:
+        '200':
+          description: ok
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bundle_url: { type: string, format: uri }
+                  signature_url: { type: string, format: uri }
+                  signing_algorithm: { type: string, enum: [ES256] }
+
+  /rollouts:
+    post:
+      tags: [rollouts]
+      summary: 启动灰度发布
+      operationId: startRollout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle_id, target_stage]
+              properties:
+                bundle_id: { type: string }
+                target_stage: { type: string, enum: [SHADOW, CANARY_10, CANARY_50, FULL] }
+                slo_guard:
+                  type: object
+                  properties:
+                    error_rate_max: { type: number, default: 0.01 }
+                    deny_rate_delta_max: { type: number, default: 0.05 }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rollout' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /rollouts/{rollout_id}:
+    parameters:
+      - name: rollout_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [rollouts]
+      operationId: getRollout
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rollout' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /rollouts/{rollout_id}/promote:
+    parameters:
+      - name: rollout_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [rollouts]
+      summary: 推进到下一 stage（手动 gate）
+      operationId: promoteRollout
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rollout' }
+
+  /rollouts/{rollout_id}/rollback:
+    parameters:
+      - name: rollout_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [rollouts]
+      operationId: rollbackRollout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rollout' }
+
+  /kill-switch:
+    get:
+      tags: [kill-switch]
+      operationId: getKillSwitch
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillSwitch' }
+    put:
+      tags: [kill-switch]
+      summary: 激活 / 关闭 kill switch
+      operationId: setKillSwitch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetKillSwitchRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillSwitch' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    Bundle:
+      type: object
+      required: [id, source_commit, status, created_at]
+      properties:
+        id: { type: string }
+        source_commit: { type: string }
+        channel: { type: string, enum: [PROD, STAGING] }
+        status: { type: string, enum: [BUILDING, BUILT, SIGNED, PUBLISHING, ACTIVE, SUPERSEDED, FAILED] }
+        signing_algorithm: { type: string, enum: [ES256] }
+        signature_kek_id: { type: string }
+        artifact_sha256: { type: string }
+        coverage_pct: { type: number }
+        rules_count: { type: integer }
+        size_bytes: { type: integer }
+        created_at: { type: string, format: date-time }
+        signed_at: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+
+    Rollout:
+      type: object
+      required: [id, bundle_id, current_stage, status, started_at]
+      properties:
+        id: { type: string }
+        bundle_id: { type: string }
+        current_stage: { type: string, enum: [SHADOW, CANARY_10, CANARY_50, FULL] }
+        status: { type: string, enum: [IN_PROGRESS, PROMOTED, ROLLED_BACK, COMPLETED] }
+        slo_guard:
+          type: object
+          additionalProperties: true
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+        rollback_reason: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+
+    KillSwitch:
+      type: object
+      required: [active, mode, updated_at]
+      properties:
+        active: { type: boolean }
+        mode: { type: string, enum: [FAIL_CLOSE, FALLBACK_PREVIOUS] }
+        target_bundle_id:
+          type: string
+          nullable: true
+          description: FALLBACK_PREVIOUS 模式下回退目标
+        reason: { type: string, nullable: true }
+        activated_by: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    SetKillSwitchRequest:
+      type: object
+      required: [active, mode]
+      properties:
+        active: { type: boolean }
+        mode: { type: string, enum: [FAIL_CLOSE, FALLBACK_PREVIOUS] }
+        target_bundle_id: { type: string }
+        reason: { type: string, minLength: 5 }

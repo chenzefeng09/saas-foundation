@@ -1,0 +1,105 @@
+# =============================================================================
+# large profile — 跨 AZ 私有化 / 1000+ 用户 / SaaS 主集群
+#
+# 特点：
+#   - 跨 3 AZ 部署
+#   - 业务 service 5+ 副本 + Karpenter 弹性
+#   - 数据库主从跨 AZ
+#   - mTLS + 国密 TLS（合规模式 equal_protection_4 时）
+#   - 严格 PodSecurityContext / NetworkPolicy / topologySpread
+# =============================================================================
+
+global:
+  profile: large
+  ingress:
+    enabled: true
+    className: nginx
+    tls: true
+  mtls:
+    enabled: true
+  complianceModes:
+    - pipl
+    - equal_protection_3
+    - soc2
+  # 等保四级 / 密评场景下额外打开：
+  # - finance_jrt0071
+  # - equal_protection_4
+
+# 数据库都假设客户已部署 / 共享集群，仅配置连接
+postgresql:
+  enabled: false
+redis:
+  enabled: false
+keycloak:
+  enabled: false
+clickhouse:
+  enabled: false
+opensearch:
+  enabled: false
+vault:
+  enabled: false
+minio:
+  enabled: false
+
+_serviceDefaults: &serviceDefaults
+  replicaCount: 5
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 60
+    # 自定义指标（KEDA）
+    customMetrics:
+      - type: Pods
+        pods:
+          metric:
+            name: foundation_service_inflight_requests
+          target:
+            type: AverageValue
+            averageValue: "50"
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2,    memory: 2Gi }
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 3
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+  networkPolicy:
+    enabled: true
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    readOnlyRootFilesystem: true
+
+services:
+  identity:        { <<: *serviceDefaults }
+  authz:           { <<: *serviceDefaults, replicaCount: 8 }  # 高 QPS
+  org:             { <<: *serviceDefaults }
+  billing:         { <<: *serviceDefaults }
+  audit:           { <<: *serviceDefaults, replicaCount: 10 } # 写入压力
+  lifecycle:       { <<: *serviceDefaults }
+  notification:    { <<: *serviceDefaults }
+  search:          { <<: *serviceDefaults }
+  apiPlatform:     { <<: *serviceDefaults }
+  llmGateway:      { <<: *serviceDefaults, replicaCount: 10 } # 长连接 SSE
+  featureFlag:     { <<: *serviceDefaults }
+  classification:  { <<: *serviceDefaults }
+  dlp:             { <<: *serviceDefaults }
+  crypto:          { <<: *serviceDefaults }
+  compliance:      { <<: *serviceDefaults }
+  pam:             { <<: *serviceDefaults }
+  dataProtection:  { <<: *serviceDefaults }
+  securityOps:     { <<: *serviceDefaults }

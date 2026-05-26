@@ -1,0 +1,81 @@
+# =============================================================================
+# 通用 service 默认 values
+# 实际 service chart 通过 umbrella 的 .Values.services.<name> 注入覆盖
+# =============================================================================
+
+# 服务名（umbrella 会注入）
+name: example
+
+image:
+  repository: foundation/example
+  tag: ""              # 留空走 .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# 容器端口
+ports:
+  http: 8000
+  metrics: 9090
+  health: 8000        # 默认与 http 同口；不同时改
+
+# 健康检查
+probes:
+  liveness:
+    httpGet: { path: /healthz, port: health }
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readiness:
+    httpGet: { path: /readyz, port: health }
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# 资源
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 500m, memory: 512Mi }
+
+# 环境变量（除了从 global 注入的标准项）
+env: []
+envFromSecret: []     # 引用现有 Secret 注入
+
+# 安全上下文（large profile 默认收紧）
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+# HPA
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  customMetrics: []
+
+# PDB
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# NetworkPolicy
+networkPolicy:
+  enabled: false
+  allowFrom: []       # service short-names allowed to call this service
+
+# topology spread
+topologySpreadConstraints: []
+
+# Service / Ingress
+service:
+  type: ClusterIP
+  http: 80
+ingress:
+  enabled: false
+  path: /
+  annotations: {}

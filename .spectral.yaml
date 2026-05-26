@@ -1,0 +1,63 @@
+# Spectral ruleset for OpenAPI specs
+# 检查 docs/CONVENTIONS.md §2 约定
+
+extends:
+  - spectral:oas
+
+rules:
+  # 强制 v1 前缀
+  paths-must-have-v1:
+    description: "All paths must start with /vN"
+    given: "$.paths"
+    severity: error
+    then:
+      function: pattern
+      functionOptions:
+        match: "^/v\\d+"
+      field: "@key"
+
+  # 强制 snake_case JSON 字段
+  schema-properties-snake-case:
+    description: "JSON properties must be snake_case"
+    given: "$.components.schemas..properties.*~"
+    severity: warn
+    then:
+      function: pattern
+      functionOptions:
+        match: "^[a-z][a-z0-9_]*$"
+
+  # 强制错误响应用 components/responses
+  use-shared-error-responses:
+    description: "4xx/5xx responses must reference components/responses/*"
+    given: "$.paths..responses[?(@property.match(/^[45]/))]"
+    severity: warn
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          required: ["$ref"]
+
+  # 强制 operationId
+  operation-operationId-required:
+    description: "Every operation must have operationId"
+    given: "$.paths..[get,put,post,delete,patch,options,head,trace]"
+    severity: error
+    then:
+      field: operationId
+      function: truthy
+
+  # 强制 X-Request-Id parameter
+  must-have-request-id-param:
+    description: "Operations should accept X-Request-Id"
+    given: "$.paths..[get,put,post,delete,patch]"
+    severity: warn
+    then:
+      field: parameters
+      function: schema
+      functionOptions:
+        schema:
+          type: array
+          contains:
+            type: object
+            properties:
+              $ref: { type: string, pattern: "RequestId" }

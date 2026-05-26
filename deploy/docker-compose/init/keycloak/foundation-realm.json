@@ -1,0 +1,262 @@
+{
+  "realm": "foundation",
+  "displayName": "SaaS Foundation",
+  "displayNameHtml": "<b>SaaS Foundation</b>",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": false,
+  "verifyEmail": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "defaultRole": {
+    "name": "default-roles-foundation",
+    "description": "Default role for all foundation users"
+  },
+
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "ssoSessionIdleTimeoutRememberMe": 0,
+  "ssoSessionMaxLifespanRememberMe": 0,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": false,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanUserAction": 300,
+  "accessCodeLifespanLogin": 1800,
+  "actionTokenGeneratedByAdminLifespan": 43200,
+  "actionTokenGeneratedByUserLifespan": 300,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "passwordPolicy": "length(15) and notUsername and notEmail and hashAlgorithm(argon2) and hashIterations(3) and passwordHistory(3) and forceExpiredPasswordChange(90)",
+
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA256",
+  "otpPolicyInitialCounter": 0,
+  "otpPolicyDigits": 6,
+  "otpPolicyLookAheadWindow": 1,
+  "otpPolicyPeriod": 30,
+  "otpPolicyCodeReusable": false,
+  "otpSupportedApplications": [
+    "totpAppFreeOTPName",
+    "totpAppGoogleName",
+    "totpAppMicrosoftAuthenticatorName"
+  ],
+  "webAuthnPolicyRpEntityName": "SaaS Foundation",
+  "webAuthnPolicySignatureAlgorithms": ["ES256", "RS256", "EdDSA"],
+  "webAuthnPolicyRpId": "",
+  "webAuthnPolicyAttestationConveyancePreference": "not specified",
+  "webAuthnPolicyAuthenticatorAttachment": "not specified",
+  "webAuthnPolicyRequireResidentKey": "not specified",
+  "webAuthnPolicyUserVerificationRequirement": "preferred",
+  "webAuthnPolicyCreateTimeout": 0,
+  "webAuthnPolicyAvoidSameAuthenticatorRegister": false,
+  "webAuthnPolicyAcceptableAaguids": [],
+  "webAuthnPolicyExtraOrigins": ["http://localhost:8080"],
+
+  "internationalizationEnabled": true,
+  "supportedLocales": ["zh-CN", "en", "zh-TW", "ja"],
+  "defaultLocale": "zh-CN",
+
+  "browserSecurityHeaders": {
+    "contentSecurityPolicyReportOnly": "",
+    "xContentTypeOptions": "nosniff",
+    "referrerPolicy": "no-referrer",
+    "xRobotsTag": "none",
+    "xFrameOptions": "DENY",
+    "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'self'; object-src 'none';",
+    "xXSSProtection": "1; mode=block",
+    "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+  },
+
+  "roles": {
+    "realm": [
+      { "name": "platform_super_admin", "description": "平台超管（跨租户）" },
+      { "name": "platform_security_auditor", "description": "平台安全审计员（只读）" },
+      { "name": "tenant_admin", "description": "租户管理员" },
+      { "name": "tenant_security_admin", "description": "租户安全管理员" },
+      { "name": "tenant_billing_admin", "description": "租户计费管理员" },
+      { "name": "member", "description": "普通成员" },
+      { "name": "readonly", "description": "只读" }
+    ]
+  },
+
+  "groups": [
+    { "name": "tnt_01J5DEV0000000000000000AA", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"], "tenant_name": ["Dev Tenant A"] } },
+    { "name": "tnt_01J5DEV0000000000000000BB", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"], "tenant_name": ["Dev Tenant B"] } }
+  ],
+
+  "clients": [
+    {
+      "clientId": "foundation-frontend",
+      "name": "Foundation Web Frontend",
+      "description": "管理控制台 + 业务前端 SPA",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "protocol": "openid-connect",
+      "rootUrl": "http://localhost:3000",
+      "baseUrl": "/",
+      "redirectUris": ["http://localhost:3000/*", "http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:3000", "http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "foundation-identity-service",
+      "name": "identity-service backend",
+      "description": "service ↔ KC Admin API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-identity-service-secret-change-me",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "attributes": { "use.refresh.tokens": "false" }
+    },
+    {
+      "clientId": "foundation-api",
+      "name": "Foundation API（资源服务器）",
+      "description": "所有业务 service 的对外 API；走 access token 验证",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect"
+    }
+  ],
+
+  "users": [
+    {
+      "username": "admin@foundation.local",
+      "email": "admin@foundation.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "credentials": [
+        { "type": "password", "value": "ChangeMe-Long-Enough-15chars!", "temporary": true }
+      ],
+      "realmRoles": ["platform_super_admin"],
+      "attributes": { "tenant_id": ["tnt_PLATFORM"] }
+    },
+    {
+      "username": "alice@tenant-a.local",
+      "email": "alice@tenant-a.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Alice",
+      "lastName": "Admin (Tenant A)",
+      "credentials": [
+        { "type": "password", "value": "Tenant-A-Dev-Pwd-15chars!", "temporary": false }
+      ],
+      "realmRoles": ["tenant_admin", "member"],
+      "groups": ["/tnt_01J5DEV0000000000000000AA"],
+      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+    },
+    {
+      "username": "bob@tenant-a.local",
+      "email": "bob@tenant-a.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Bob",
+      "lastName": "Member (Tenant A)",
+      "credentials": [
+        { "type": "password", "value": "Tenant-A-Bob-Pwd-15chars!", "temporary": false }
+      ],
+      "realmRoles": ["member"],
+      "groups": ["/tnt_01J5DEV0000000000000000AA"],
+      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+    },
+    {
+      "username": "carol@tenant-b.local",
+      "email": "carol@tenant-b.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Carol",
+      "lastName": "Admin (Tenant B)",
+      "credentials": [
+        { "type": "password", "value": "Tenant-B-Dev-Pwd-15chars!", "temporary": false }
+      ],
+      "realmRoles": ["tenant_admin", "member"],
+      "groups": ["/tnt_01J5DEV0000000000000000BB"],
+      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"] }
+    }
+  ],
+
+  "scopeMappings": [],
+  "clientScopes": [
+    {
+      "name": "tenant_id",
+      "description": "Inject tenant_id claim into tokens",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": ["tenant_id", "profile", "email", "roles", "web-origins"],
+  "defaultOptionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
+
+  "smtpServer": {
+    "host": "mailhog",
+    "port": "1025",
+    "from": "noreply@foundation.local",
+    "fromDisplayName": "SaaS Foundation",
+    "replyTo": "noreply@foundation.local",
+    "ssl": "false",
+    "starttls": "false",
+    "auth": "false"
+  },
+
+  "eventsEnabled": true,
+  "eventsExpiration": 604800,
+  "enabledEventTypes": [
+    "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
+    "REGISTER", "REGISTER_ERROR",
+    "UPDATE_PASSWORD", "UPDATE_PASSWORD_ERROR",
+    "UPDATE_TOTP", "REMOVE_TOTP",
+    "GRANT_CONSENT", "REVOKE_GRANT",
+    "CLIENT_LOGIN", "CLIENT_LOGIN_ERROR",
+    "REFRESH_TOKEN", "REFRESH_TOKEN_ERROR",
+    "PERMISSION_TOKEN", "TOKEN_EXCHANGE",
+    "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true
+}

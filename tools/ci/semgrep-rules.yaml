@@ -1,0 +1,84 @@
+# Foundation-specific Semgrep rules
+# 配套 docs/CONVENTIONS.md / multi-tenancy.md
+
+rules:
+  - id: business-must-not-set-app-tenant-id
+    message: |
+      业务代码不允许直接 SET app.tenant_id；该操作只在 adapters / foundation_common.db 中
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: $X.execute("SET LOCAL app.tenant_id = ...")
+      - pattern: $X.execute("set_config('app.tenant_id', ...)")
+    paths:
+      include:
+        - "packages/*/src/*/services/**"
+        - "packages/*/src/*/api/**"
+
+  - id: business-must-use-sdk-not-keycloak
+    message: |
+      业务代码不允许直接 import keycloak / python-keycloak；必须经底座 identity SDK
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: import keycloak
+      - pattern: from keycloak import ...
+      - pattern: from python_keycloak import ...
+    paths:
+      exclude:
+        - "packages/identity/**"
+        - "**/adapters/**"
+        - "**/_template/**"
+
+  - id: business-must-use-sdk-not-litellm
+    message: |
+      业务代码不允许直接 import litellm；必须经底座 llm-gateway SDK
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: import litellm
+      - pattern: from litellm import ...
+    paths:
+      exclude:
+        - "packages/llm-gateway/**"
+        - "**/_template/**"
+
+  - id: forbid-tenant-id-as-parameter
+    message: |
+      SDK 公开方法不接受 tenant_id 参数；从 contextvars 自动获取（CONVENTIONS §3.3）
+    severity: WARNING
+    languages: [python]
+    pattern-either:
+      - pattern: |
+          def $METHOD(self, ..., tenant_id: str, ...):
+            ...
+      - pattern: |
+          async def $METHOD(self, ..., tenant_id: str, ...):
+            ...
+    paths:
+      include:
+        - "sdks/python/*/foundation_*/resources/**"
+        - "sdks/python/*/foundation_*/client.py"
+      exclude:
+        - "**/_template/**"
+
+  - id: forbid-print-in-production-code
+    message: "用 logger 替代 print（结构化 JSON log）"
+    severity: WARNING
+    languages: [python]
+    pattern: print(...)
+    paths:
+      exclude:
+        - "tests/**"
+        - "**/_template/**"
+        - "tools/**"
+
+  - id: forbid-bare-except
+    message: "禁止裸 except；至少 except Exception"
+    severity: WARNING
+    languages: [python]
+    pattern: |
+      try:
+        ...
+      except:
+        ...

@@ -1,0 +1,668 @@
+# =============================================================================
+# Org Service API — org-v1 + saas-isolation-routing-v1
+# =============================================================================
+# 四层组织：Tenant → OrgUnit → Team → User（用户挂 team）
+# 含 tenant routing（套餐路由）+ tier migration（套餐迁移）
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Org Service API
+  version: 1.0.0
+  description: |
+    组织服务：tenant / org_unit（部门，可嵌套）/ team / membership。
+    叠加 tenant_routing（saas-isolation-routing-v1）+ tier_migration（套餐升降迁移）。
+    详见 [docs/design/org-v1.md](../../docs/design/org-v1.md) + [saas-isolation-routing-v1.md](../../docs/design/saas-isolation-routing-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/org/v1
+  - url: http://localhost:8003/api/org/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: tenants
+    description: 租户 CRUD（仅平台管理员）
+  - name: org-units
+    description: 部门树
+  - name: teams
+    description: 团队（用户挂 team）
+  - name: memberships
+    description: 用户 ↔ team / org-unit 关系
+  - name: routing
+    description: 租户路由（套餐 → 数据 / 命名空间映射）
+  - name: migrations
+    description: 套餐迁移（Pro→Business→Enterprise）
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Tenants --------------------------------------
+  /tenants:
+    get:
+      tags: [tenants]
+      summary: 列租户（仅平台管理员）
+      operationId: listTenants
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.tier
+          in: query
+          schema: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        - name: filter.compliance_mode
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Tenant' }
+    post:
+      tags: [tenants]
+      summary: 创建租户
+      operationId: createTenant
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTenantRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /tenants/{tenant_id}:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TenantId' }
+    get:
+      tags: [tenants]
+      operationId: getTenant
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- Org Units (Departments) ----------------------
+  /org-units:
+    get:
+      tags: [org-units]
+      operationId: listOrgUnits
+      parameters:
+        - name: filter.parent_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        - name: filter.path_prefix
+          in: query
+          schema: { type: string, example: '/eng' }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/OrgUnit' }
+    post:
+      tags: [org-units]
+      operationId: createOrgUnit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOrgUnitRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /org-units/{ou_id}:
+    parameters:
+      - name: ou_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+    get:
+      tags: [org-units]
+      operationId: getOrgUnit
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    patch:
+      tags: [org-units]
+      operationId: updateOrgUnit
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateOrgUnitRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    delete:
+      tags: [org-units]
+      operationId: deleteOrgUnit
+      responses:
+        '204': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409':
+          description: 子节点 / 成员未空
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+
+  /org-units/{ou_id}/move:
+    parameters:
+      - name: ou_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+    post:
+      tags: [org-units]
+      summary: 移动部门到新 parent
+      operationId: moveOrgUnit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_parent_id]
+              properties:
+                new_parent_id:
+                  oneOf:
+                    - $ref: './_common.yaml#/components/schemas/OrgUnitId'
+                    - type: 'null'
+                  description: null = 移到 tenant 根
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgUnit' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Teams ----------------------------------------
+  /teams:
+    get:
+      tags: [teams]
+      operationId: listTeams
+      parameters:
+        - name: filter.org_unit_id
+          in: query
+          schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Team' }
+    post:
+      tags: [teams]
+      operationId: createTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTeamRequest' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Team' }
+
+  /teams/{team_id}/members:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TeamId' }
+    get:
+      tags: [memberships]
+      operationId: listTeamMembers
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Membership' }
+    post:
+      tags: [memberships]
+      summary: 加成员
+      operationId: addTeamMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+                role:
+                  type: string
+                  enum: [OWNER, MAINTAINER, MEMBER, VIEWER]
+                  default: MEMBER
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /teams/{team_id}/members/{user_id}:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TeamId' }
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    delete:
+      tags: [memberships]
+      operationId: removeTeamMember
+      responses:
+        '204': { description: ok }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- Routing --------------------------------------
+  /tenants/{tenant_id}/routing:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TenantId' }
+    get:
+      tags: [routing]
+      summary: 取租户路由信息
+      operationId: getTenantRouting
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantRouting' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /tenants/{tenant_id}/routing:invalidate-cache:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TenantId' }
+    post:
+      tags: [routing]
+      summary: 平台管理员紧急失效缓存
+      operationId: invalidateRoutingCache
+      responses:
+        '204': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Tier Migration -------------------------------
+  /tenants/{tenant_id}/migrations:
+    parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/TenantId' }
+    post:
+      tags: [migrations]
+      summary: 计划套餐迁移
+      operationId: planTierMigration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanMigrationRequest' }
+      responses:
+        '201':
+          description: 已入计划
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TierMigration' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /migrations/{migration_id}:
+    parameters:
+      - name: migration_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^mig_[0-9A-Z]{26}$' }
+    get:
+      tags: [migrations]
+      operationId: getMigration
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TierMigration' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /migrations/{migration_id}/approve:
+    parameters:
+      - name: migration_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [migrations]
+      summary: 平台管理员审批（4 眼之一）
+      operationId: approveMigration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                reason: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TierMigration' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /migrations/{migration_id}/execute:
+    parameters:
+      - name: migration_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [migrations]
+      summary: 进入 SNAPSHOTTING 阶段
+      operationId: executeMigration
+      responses:
+        '202': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /migrations/{migration_id}/rollback:
+    parameters:
+      - name: migration_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [migrations]
+      operationId: rollbackMigration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TierMigration' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    Tenant:
+      type: object
+      required: [id, name, status, tier, compliance_modes, created_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        name: { type: string }
+        slug:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{2,30}$'
+          description: URL 路径 / 子域用
+        status:
+          type: string
+          enum: [ACTIVE, SUSPENDED, ARCHIVED, ONBOARDING]
+        tier:
+          type: string
+          enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED]
+        compliance_modes:
+          type: array
+          items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+        data_residency:
+          type: string
+          enum: [CN_ONLY, EU_ONLY, US_ONLY, GLOBAL]
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    CreateTenantRequest:
+      type: object
+      required: [name, slug, tier]
+      properties:
+        name: { type: string }
+        slug: { type: string, pattern: '^[a-z][a-z0-9-]{2,30}$' }
+        tier: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        compliance_modes:
+          type: array
+          items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+        data_residency:
+          type: string
+          enum: [CN_ONLY, EU_ONLY, US_ONLY, GLOBAL]
+        admin_email: { type: string, format: email }
+
+    OrgUnit:
+      type: object
+      required: [id, tenant_id, name, path, depth, created_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        parent_id:
+          oneOf:
+            - $ref: './_common.yaml#/components/schemas/OrgUnitId'
+            - type: 'null'
+        name: { type: string }
+        path:
+          type: string
+          description: '/eng/backend/infra'
+        depth: { type: integer, minimum: 0 }
+        descendants_count: { type: integer }
+        members_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateOrgUnitRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        parent_id: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+
+    UpdateOrgUnitRequest:
+      type: object
+      properties:
+        name: { type: string }
+
+    Team:
+      type: object
+      required: [id, tenant_id, name, created_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/TeamId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        org_unit_id:
+          oneOf:
+            - $ref: './_common.yaml#/components/schemas/OrgUnitId'
+            - type: 'null'
+        name: { type: string }
+        description: { type: string, nullable: true }
+        members_count: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    CreateTeamRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        org_unit_id: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        description: { type: string }
+
+    Membership:
+      type: object
+      required: [team_id, user_id, role, joined_at]
+      properties:
+        team_id: { $ref: './_common.yaml#/components/schemas/TeamId' }
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        role: { type: string, enum: [OWNER, MAINTAINER, MEMBER, VIEWER] }
+        joined_at: { type: string, format: date-time }
+
+    TenantRouting:
+      type: object
+      required: [tenant_id, tier, pg_cluster_id, pg_database, ch_cluster_id, k8s_namespace, redis_cluster_id, status]
+      properties:
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        tier: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        pg_cluster_id: { type: string }
+        pg_database: { type: string }
+        pg_schema: { type: string, nullable: true }
+        ch_cluster_id: { type: string }
+        ch_database: { type: string }
+        k8s_namespace: { type: string }
+        redis_cluster_id: { type: string }
+        redis_key_prefix: { type: string }
+        data_residency:
+          type: string
+          enum: [CN_ONLY, EU_ONLY, US_ONLY, GLOBAL]
+          nullable: true
+        status:
+          type: string
+          enum: [ACTIVE, MIGRATING, FROZEN, ARCHIVED]
+        migration_id: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    TierMigration:
+      type: object
+      required: [id, tenant_id, from_tier, to_tier, status, initiated_at]
+      properties:
+        id: { type: string, pattern: '^mig_[0-9A-Z]{26}$' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        from_tier: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        to_tier: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        status:
+          type: string
+          enum:
+            - PLANNED
+            - PRECHECK
+            - SNAPSHOTTING
+            - DUAL_WRITING
+            - CHECKSUM_VERIFYING
+            - CUTOVER_READY
+            - CUTTING_OVER
+            - POST_VERIFY
+            - COMPLETED
+            - ROLLED_BACK
+            - ABORTED
+        initiated_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+        initiated_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+        rollback_reason: { type: string, nullable: true }
+        checksum_passed: { type: boolean, nullable: true }
+        bytes_migrated: { type: integer }
+        rows_migrated: { type: integer }
+        approval_id: { type: string, nullable: true }
+
+    PlanMigrationRequest:
+      type: object
+      required: [to_tier]
+      properties:
+        to_tier: { type: string, enum: [SHARED, SCHEMA, ENTERPRISE, DEDICATED] }
+        target_pg_cluster: { type: string }
+        target_namespace: { type: string }
+        cutover_window:
+          type: object
+          required: [start, end]
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }

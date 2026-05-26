@@ -1,0 +1,158 @@
+# =============================================================================
+# Spectral ruleset — saas-foundation OpenAPI 强制规则
+# =============================================================================
+# 跑法：make openapi-lint （或 npx spectral lint contracts/openapi/*.yaml）
+# CI 强制：任何规则触发 error → 阻断合并
+# =============================================================================
+
+extends:
+  - spectral:oas      # OpenAPI 标准合规
+  - spectral:asyncapi # 异步契约（webhook 用）
+
+formats:
+  - oas3_1
+
+rules:
+
+  # --------------------------------------------------------------------------
+  # CONVENTIONS §2.2 URL 路径：所有 path 必须带 v1 前缀（_common.yaml 占位除外）
+  # --------------------------------------------------------------------------
+  foundation-paths-must-have-version:
+    description: All paths must begin with /v1 or /v2 (versioned API per CONVENTIONS §2.2)
+    severity: error
+    given: $.paths
+    then:
+      field: '@key'
+      function: pattern
+      functionOptions:
+        match: '^(/v[0-9]+/|/_common|/healthz|/readyz|/metrics)'
+
+  # --------------------------------------------------------------------------
+  # CONVENTIONS §2.8 JSON 字段命名 snake_case
+  # --------------------------------------------------------------------------
+  foundation-property-snake-case:
+    description: JSON property names must be snake_case
+    severity: error
+    given: $.components.schemas..properties[*]~
+    then:
+      function: pattern
+      functionOptions:
+        match: '^[a-z_][a-z0-9_]*$'
+
+  # --------------------------------------------------------------------------
+  # CONVENTIONS §2.8 枚举 UPPER_SNAKE_CASE
+  # 例外：合规模式标识符使用小写 + 数字（compliance-v1 §3 single source of truth）
+  # --------------------------------------------------------------------------
+  foundation-enum-upper-snake:
+    description: Enum values must be UPPER_SNAKE_CASE (except compliance mode identifiers)
+    severity: warn
+    given: $.components.schemas..enum[*]
+    then:
+      function: pattern
+      functionOptions:
+        match: '^([A-Z][A-Z0-9_]*|equal_protection_[34]|finance_jrt0071|pipl|gdpr|hipaa|soc2|iso27001)$'
+
+  # --------------------------------------------------------------------------
+  # 错误码格式 FOUNDATION.<SVC>.<CAT>.<NAME> 四段
+  # --------------------------------------------------------------------------
+  foundation-error-code-format:
+    description: Error code must match FOUNDATION.<SVC>.<CAT>.<NAME> 4-segment pattern
+    severity: error
+    given: $.components.schemas..code.pattern
+    then:
+      function: pattern
+      functionOptions:
+        match: '\\^\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\$'
+
+  # --------------------------------------------------------------------------
+  # 所有 path 必须有 operationId（SDK 生成必需）
+  # --------------------------------------------------------------------------
+  operation-operationId:
+    severity: error
+
+  operation-operationId-unique:
+    severity: error
+
+  # --------------------------------------------------------------------------
+  # operationId 必须 camelCase（生成 SDK 方法名）
+  # --------------------------------------------------------------------------
+  foundation-operation-id-camel-case:
+    description: operationId must be camelCase (used for SDK method generation)
+    severity: error
+    given: $.paths.*[get,put,post,delete,options,head,patch,trace].operationId
+    then:
+      function: pattern
+      functionOptions:
+        match: '^[a-z][a-zA-Z0-9]*$'
+
+  # --------------------------------------------------------------------------
+  # 4xx / 5xx 响应必须用 $ref 引用 _common
+  # --------------------------------------------------------------------------
+  foundation-error-responses-must-be-ref:
+    description: 4xx/5xx responses must use $ref to common responses
+    severity: error
+    given: $.paths..responses[?(@property.match(/^[45]/))]
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          type: object
+          required: [$ref]
+          properties:
+            $ref:
+              type: string
+              pattern: '^./_common\.yaml#/components/responses/'
+
+  # --------------------------------------------------------------------------
+  # 所有非公开 path 必须声明 security
+  # 公开路径：/healthz、/readyz、/metrics、登录端点（需显式 security: []）
+  # --------------------------------------------------------------------------
+  foundation-security-required:
+    description: All non-public paths must require auth; declare security explicitly
+    severity: error
+    given: $.paths..[get,put,post,delete,options,head,patch].security
+    then:
+      function: defined
+
+  # --------------------------------------------------------------------------
+  # 所有时间字段必须 format: date-time
+  # --------------------------------------------------------------------------
+  foundation-time-format:
+    description: Time fields must declare format date-time
+    severity: warn
+    given: $.components.schemas..properties[?(@property.match(/_(at|time|date)$/))]
+    then:
+      field: format
+      function: enumeration
+      functionOptions:
+        values: [date-time, date]
+
+  # --------------------------------------------------------------------------
+  # ID 字段必须有 pattern
+  # --------------------------------------------------------------------------
+  foundation-id-pattern:
+    description: ID fields must declare ULID pattern
+    severity: warn
+    given: $.components.schemas..properties[?(@property == 'id' || @property.match(/_id$/))]
+    then:
+      field: pattern
+      function: defined
+
+  # --------------------------------------------------------------------------
+  # info 块必填
+  # --------------------------------------------------------------------------
+  info-contact:
+    severity: warn
+  info-description:
+    severity: error
+  info-license:
+    severity: warn
+
+  # --------------------------------------------------------------------------
+  # 标准 spectral 规则保留
+  # --------------------------------------------------------------------------
+  no-$ref-siblings:
+    severity: error
+
+  oas3-server-not-example.com:
+    severity: hint    # 模板里用 example.com 是有意的

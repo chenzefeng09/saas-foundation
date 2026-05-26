@@ -1,0 +1,638 @@
+# =============================================================================
+# Identity Service API — identity-v1
+# =============================================================================
+# 配套设计：docs/design/identity-v1.md + docs/design/auth-flows-v1.md
+# Owner: Identity Team
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Identity Service API
+  version: 1.0.0
+  description: |
+    身份服务：用户、会话、SSO、社交登录、MFA、SCIM、密码 / Session 策略。
+    封装 Keycloak Admin API。详见 [docs/design/identity-v1.md](../../docs/design/identity-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/identity/v1
+  - url: http://localhost:8001/api/identity/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: sessions
+    description: 登录 / 登出 / 会话管理
+  - name: users
+    description: 用户档案 CRUD
+  - name: mfa
+    description: 多因素认证
+  - name: sso
+    description: 企业 SSO 配置（每租户）
+  - name: social
+    description: 社交登录配置
+  - name: scim
+    description: SCIM 2.0 server endpoints
+  - name: policies
+    description: 密码 / Session / MFA 策略
+  - name: health
+    description: 健康检查
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: alive
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Sessions -------------------------------------
+  /sessions:
+    post:
+      tags: [sessions]
+      summary: 登录（创建会话）
+      operationId: createSession
+      security: []
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/RequestId'
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSessionRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/SessionCreated' }
+        '202':
+          description: 需要 MFA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaChallengeResponse' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
+
+  /sessions/current:
+    get:
+      tags: [sessions]
+      summary: 取当前会话信息
+      operationId: getCurrentSession
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+    delete:
+      tags: [sessions]
+      summary: 登出当前会话
+      operationId: revokeCurrentSession
+      responses:
+        '204': { description: 已登出 }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+
+  /sessions/{session_id}:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/SessionId' }
+    delete:
+      tags: [sessions]
+      summary: 杀指定会话（管理员）
+      operationId: revokeSession
+      responses:
+        '204': { description: ok }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /sessions/{session_id}/mfa-verify:
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/SessionId' }
+    post:
+      tags: [mfa]
+      summary: 提交 MFA 二步验证
+      operationId: verifyMfa
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MfaVerifyRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/SessionCreated' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Users ----------------------------------------
+  /users:
+    get:
+      tags: [users]
+      summary: 列租户用户
+      operationId: listUsers
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - $ref: './_common.yaml#/components/parameters/Sort'
+        - name: filter.status
+          in: query
+          schema: { $ref: '#/components/schemas/UserStatus' }
+        - name: filter.email
+          in: query
+          schema: { type: string, format: email }
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+    post:
+      tags: [users]
+      summary: 邀请创建用户
+      operationId: inviteUser
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InviteUserRequest' }
+      responses:
+        '201':
+          description: 用户已邀请
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /users/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    get:
+      tags: [users]
+      summary: 取用户详情
+      operationId: getUser
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    patch:
+      tags: [users]
+      summary: 更新用户档案（JSON Merge Patch）
+      operationId: updateUser
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateUserRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '412': { $ref: './_common.yaml#/components/responses/StaleVersion' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /users/{user_id}/freeze:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    post:
+      tags: [users]
+      summary: 紧急冻结用户（管理员）
+      operationId: freezeUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5 }
+      responses:
+        '204': { description: 已冻结 }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /users/{user_id}/unfreeze:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    post:
+      tags: [users]
+      summary: 解冻用户
+      operationId: unfreezeUser
+      responses:
+        '204': { description: 已解冻 }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /users/{user_id}/password:reset:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
+    post:
+      tags: [users]
+      summary: 强制重置密码
+      operationId: forcePasswordReset
+      responses:
+        '204': { description: 已发送重置邮件 }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- MFA ------------------------------------------
+  /mfa/methods:
+    get:
+      tags: [mfa]
+      summary: 当前用户已绑定 MFA 方式
+      operationId: listMfaMethods
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MfaMethod' }
+
+  /mfa/methods/totp:enroll:
+    post:
+      tags: [mfa]
+      summary: 绑定 TOTP（返回二维码 secret）
+      operationId: enrollTotp
+      responses:
+        '201':
+          description: 待用户确认验证码
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, qr_url, enrollment_id]
+                properties:
+                  secret: { type: string }
+                  qr_url: { type: string, format: uri }
+                  enrollment_id: { type: string }
+
+  /mfa/methods/totp:confirm:
+    post:
+      tags: [mfa]
+      summary: 确认 TOTP 绑定
+      operationId: confirmTotp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollment_id, code]
+              properties:
+                enrollment_id: { type: string }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '204': { description: 绑定成功 }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- SSO ------------------------------------------
+  /sso/providers:
+    get:
+      tags: [sso]
+      summary: 列租户已配置 SSO providers
+      operationId: listSsoProviders
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SsoProvider' }
+    post:
+      tags: [sso]
+      summary: 新增 SSO provider（OIDC/SAML/AD/LDAP/钉钉企业/飞书/企微）
+      operationId: createSsoProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSsoProviderRequest' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SsoProvider' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Social ---------------------------------------
+  /social/providers:
+    get:
+      tags: [social]
+      summary: 当前租户开放的社交登录 provider 列表（前端登录页用）
+      operationId: listEnabledSocialProviders
+      security: []
+      parameters:
+        - name: tenant_hint
+          in: query
+          required: true
+          schema: { $ref: './_common.yaml#/components/schemas/TenantId' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SocialProvider' }
+
+  /social/providers:toggle:
+    post:
+      tags: [social]
+      summary: 管理员开关某 social provider
+      operationId: toggleSocialProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, enabled]
+              properties:
+                provider: { type: string, enum: [GOOGLE, GITHUB, MICROSOFT, WECHAT, QQ, DINGTALK_PERSONAL, FEISHU_PERSONAL, APPLE] }
+                enabled: { type: boolean }
+      responses:
+        '204': { description: ok }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  # --------------------------- Policies -------------------------------------
+  /policies/password:
+    get:
+      tags: [policies]
+      summary: 取当前租户密码策略
+      operationId: getPasswordPolicy
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasswordPolicy' }
+    put:
+      tags: [policies]
+      summary: 更新密码策略（只可加严不可放宽）
+      operationId: updatePasswordPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordPolicy' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasswordPolicy' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  responses:
+    SessionCreated:
+      description: 会话已创建
+      headers:
+        X-Request-Id: { $ref: './_common.yaml#/components/headers/RequestIdHeader' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Session' }
+
+  schemas:
+
+    UserStatus:
+      type: string
+      enum: [ACTIVE, INVITED, SUSPENDED, LOCKED, DEACTIVATED, FROZEN]
+
+    User:
+      type: object
+      required: [id, tenant_id, email, status, mfa_enabled, created_at, updated_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        email: { type: string, format: email }
+        display_name: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        roles:
+          type: array
+          items: { type: string, pattern: '^[A-Z_]+$' }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        mfa_enabled: { type: boolean }
+        external_id:
+          type: string
+          nullable: true
+          description: 来自 SSO/SCIM 的外部 ID
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    InviteUserRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        send_invite_email: { type: boolean, default: true }
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        display_name: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        roles:
+          type: array
+          items: { type: string }
+
+    Session:
+      type: object
+      required: [id, user_id, tenant_id, access_token, refresh_token, expires_at, issued_at]
+      properties:
+        id: { $ref: './_common.yaml#/components/schemas/SessionId' }
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, enum: [BEARER] }
+        expires_at: { type: string, format: date-time }
+        issued_at: { type: string, format: date-time }
+        scopes:
+          type: array
+          items: { type: string }
+        device_id: { type: string, nullable: true }
+
+    CreateSessionRequest:
+      oneOf:
+        - $ref: '#/components/schemas/EmailPasswordCredential'
+        - $ref: '#/components/schemas/OidcCredential'
+        - $ref: '#/components/schemas/SamlCredential'
+      discriminator:
+        propertyName: method
+
+    EmailPasswordCredential:
+      type: object
+      required: [method, email, password]
+      properties:
+        method: { type: string, enum: [EMAIL_PASSWORD] }
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+        device_id: { type: string, nullable: true }
+
+    OidcCredential:
+      type: object
+      required: [method, provider, code]
+      properties:
+        method: { type: string, enum: [OIDC] }
+        provider: { type: string }
+        code: { type: string }
+        redirect_uri: { type: string, format: uri }
+
+    SamlCredential:
+      type: object
+      required: [method, provider, saml_response]
+      properties:
+        method: { type: string, enum: [SAML] }
+        provider: { type: string }
+        saml_response: { type: string }
+
+    MfaChallengeResponse:
+      type: object
+      required: [challenge_id, methods, expires_at]
+      properties:
+        challenge_id: { type: string }
+        methods:
+          type: array
+          items: { type: string, enum: [TOTP, SMS_OTP, WEBAUTHN, PUSH] }
+        expires_at: { type: string, format: date-time }
+
+    MfaVerifyRequest:
+      type: object
+      required: [challenge_id, method, code]
+      properties:
+        challenge_id: { type: string }
+        method: { type: string, enum: [TOTP, SMS_OTP, WEBAUTHN, PUSH] }
+        code: { type: string }
+
+    MfaMethod:
+      type: object
+      required: [id, kind, enrolled_at]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [TOTP, SMS_OTP, WEBAUTHN, PUSH] }
+        label: { type: string, nullable: true }
+        enrolled_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+
+    SsoProvider:
+      type: object
+      required: [id, kind, name, enabled, created_at]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [OIDC, SAML, AD, LDAP, DINGTALK_ENTERPRISE, FEISHU_ENTERPRISE, WECOM] }
+        name: { type: string }
+        enabled: { type: boolean }
+        config:
+          type: object
+          additionalProperties: true
+          description: 各 kind 的字段不同；敏感字段如 client_secret 写入后不返回
+        created_at: { type: string, format: date-time }
+
+    CreateSsoProviderRequest:
+      type: object
+      required: [kind, name, config]
+      properties:
+        kind: { type: string, enum: [OIDC, SAML, AD, LDAP, DINGTALK_ENTERPRISE, FEISHU_ENTERPRISE, WECOM] }
+        name: { type: string }
+        config:
+          type: object
+          additionalProperties: true
+
+    SocialProvider:
+      type: object
+      required: [provider, enabled]
+      properties:
+        provider:
+          type: string
+          enum: [GOOGLE, GITHUB, MICROSOFT, WECHAT, QQ, DINGTALK_PERSONAL, FEISHU_PERSONAL, APPLE]
+        enabled: { type: boolean }
+        login_url: { type: string, format: uri }
+
+    PasswordPolicy:
+      type: object
+      required: [min_length, require_upper, require_lower, require_digit, require_symbol, max_age_days, history_size, max_failed_attempts, lockout_minutes]
+      properties:
+        min_length: { type: integer, minimum: 8, maximum: 128 }
+        require_upper: { type: boolean }
+        require_lower: { type: boolean }
+        require_digit: { type: boolean }
+        require_symbol: { type: boolean }
+        max_age_days: { type: integer, minimum: 1, maximum: 365 }
+        history_size: { type: integer, minimum: 1, maximum: 24 }
+        max_failed_attempts: { type: integer, minimum: 3, maximum: 10 }
+        lockout_minutes: { type: integer, minimum: 5, maximum: 1440 }
+        breach_check_enabled:
+          type: boolean
+          description: 集成 HaveIBeenPwned 等口令泄露库

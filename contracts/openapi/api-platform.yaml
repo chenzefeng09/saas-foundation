@@ -1,0 +1,481 @@
+# =============================================================================
+# API Platform Service API — api-platform-v1
+# =============================================================================
+# API Key（3 层）+ OAuth2 server（内部）+ Webhook + 限流
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: API Platform Service API
+  version: 1.0.0
+  description: |
+    API Key 3 层（tenant/user/app）+ scope + IP 白名单 + 限流；
+    OAuth2 内部应用（client_credentials + authorization_code + PKCE + refresh）；
+    Webhook 订阅 + HMAC 签名 + 重试 + DLQ。
+    详见 [docs/design/api-platform-v1.md](../../docs/design/api-platform-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/api-platform/v1
+  - url: http://localhost:8017/api/api-platform/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: api-keys
+  - name: oauth-apps
+  - name: webhooks
+  - name: webhook-events
+  - name: rate-limits
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- API Keys -------------------------------------
+  /api-keys:
+    get:
+      tags: [api-keys]
+      operationId: listApiKeys
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.tier
+          in: query
+          schema: { type: string, enum: [TENANT, USER, APP] }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [ACTIVE, REVOKED, EXPIRED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiKey' }
+    post:
+      tags: [api-keys]
+      summary: 创建 API Key（返回明文 1 次，之后只能看哈希）
+      operationId: createApiKey
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiKeyRequest' }
+      responses:
+        '201':
+          description: 已创建（明文 token 仅在本次响应可见）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateApiKeyResponse' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /api-keys/{key_id}:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [api-keys]
+      operationId: getApiKey
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    delete:
+      tags: [api-keys]
+      summary: Revoke
+      operationId: revokeApiKey
+      responses:
+        '204': { description: ok }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- OAuth Apps -----------------------------------
+  /oauth-apps:
+    get:
+      tags: [oauth-apps]
+      operationId: listOauthApps
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/OauthApp' }
+    post:
+      tags: [oauth-apps]
+      operationId: createOauthApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOauthAppRequest' }
+      responses:
+        '201':
+          description: ok（含 client_secret 仅 1 次可见）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateOauthAppResponse' }
+
+  /oauth-apps/{client_id}:
+    parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [oauth-apps]
+      operationId: getOauthApp
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OauthApp' }
+    delete:
+      tags: [oauth-apps]
+      operationId: deleteOauthApp
+      responses:
+        '204': { description: ok }
+
+  /oauth-apps/{client_id}/rotate-secret:
+    parameters:
+      - name: client_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [oauth-apps]
+      operationId: rotateOauthAppSecret
+      responses:
+        '200':
+          description: ok（含新 client_secret 仅 1 次可见）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_id: { type: string }
+                  new_client_secret: { type: string }
+
+  # --------------------------- Webhooks -------------------------------------
+  /webhooks:
+    get:
+      tags: [webhooks]
+      operationId: listWebhookEndpoints
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WebhookEndpoint' }
+    post:
+      tags: [webhooks]
+      operationId: createWebhookEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWebhookEndpointRequest' }
+      responses:
+        '201':
+          description: ok（含 signing_secret 仅 1 次可见）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookEndpoint' }
+
+  /webhooks/{endpoint_id}:
+    parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [webhooks]
+      operationId: getWebhookEndpoint
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookEndpoint' }
+    delete:
+      tags: [webhooks]
+      operationId: deleteWebhookEndpoint
+      responses:
+        '204': { description: ok }
+
+  /webhooks/{endpoint_id}/test:
+    parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [webhooks]
+      operationId: testWebhookEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event_type]
+              properties:
+                event_type: { type: string }
+                sample_payload:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '202':
+          description: 已发送测试投递
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivery_id: { type: string }
+
+  /webhook-deliveries:
+    get:
+      tags: [webhook-events]
+      operationId: listWebhookDeliveries
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.endpoint_id
+          in: query
+          schema: { type: string }
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [PENDING, DELIVERED, FAILED, DLQ] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/WebhookDelivery' }
+
+  /webhook-deliveries/{delivery_id}/replay:
+    parameters:
+      - name: delivery_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [webhook-events]
+      operationId: replayWebhookDelivery
+      responses:
+        '202': { description: ok }
+
+  # --------------------------- Rate Limits ----------------------------------
+  /rate-limits:
+    get:
+      tags: [rate-limits]
+      summary: 列租户 / 用户 / app 当前限流策略
+      operationId: listRateLimits
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RateLimit' }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    ApiKey:
+      type: object
+      required: [id, tier, prefix, scopes, status, created_at]
+      properties:
+        id: { type: string }
+        tier: { type: string, enum: [TENANT, USER, APP] }
+        prefix: { type: string, description: 前缀（用于识别，不暴露完整 key） }
+        owner_id: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        ip_allowlist:
+          type: array
+          items: { type: string, description: CIDR }
+        rate_limit_override:
+          type: object
+          additionalProperties: { type: integer }
+        expires_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [ACTIVE, REVOKED, EXPIRED] }
+        created_at: { type: string, format: date-time }
+
+    CreateApiKeyRequest:
+      type: object
+      required: [tier, scopes]
+      properties:
+        tier: { type: string, enum: [TENANT, USER, APP] }
+        owner_id: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        ip_allowlist:
+          type: array
+          items: { type: string }
+        expires_at: { type: string, format: date-time }
+        description: { type: string }
+
+    CreateApiKeyResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+              description: 明文 token，仅本响应可见
+
+    OauthApp:
+      type: object
+      required: [client_id, name, grant_types, redirect_uris, created_at]
+      properties:
+        client_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        grant_types:
+          type: array
+          items: { type: string, enum: [authorization_code, client_credentials, refresh_token] }
+        redirect_uris:
+          type: array
+          items: { type: string, format: uri }
+        allowed_scopes:
+          type: array
+          items: { type: string }
+        token_endpoint_auth_method:
+          type: string
+          enum: [client_secret_basic, client_secret_post, none, private_key_jwt]
+        pkce_required: { type: boolean, default: true }
+        created_at: { type: string, format: date-time }
+
+    CreateOauthAppRequest:
+      type: object
+      required: [name, grant_types, redirect_uris]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        grant_types:
+          type: array
+          items: { type: string, enum: [authorization_code, client_credentials, refresh_token] }
+        redirect_uris:
+          type: array
+          items: { type: string, format: uri }
+        allowed_scopes:
+          type: array
+          items: { type: string }
+        pkce_required: { type: boolean, default: true }
+
+    CreateOauthAppResponse:
+      allOf:
+        - $ref: '#/components/schemas/OauthApp'
+        - type: object
+          required: [client_secret]
+          properties:
+            client_secret:
+              type: string
+              description: 明文，仅本响应可见
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, event_types, signing_algo, status, created_at]
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        event_types:
+          type: array
+          items: { type: string, description: '四段式事件名' }
+        signing_algo: { type: string, enum: [HMAC_SHA256] }
+        signing_secret_preview:
+          type: string
+          description: 仅显示前 4 + 后 4 字符
+        timeout_seconds: { type: integer, default: 10 }
+        status: { type: string, enum: [ENABLED, DISABLED] }
+        created_at: { type: string, format: date-time }
+
+    CreateWebhookEndpointRequest:
+      type: object
+      required: [url, event_types]
+      properties:
+        url: { type: string, format: uri }
+        event_types:
+          type: array
+          items: { type: string }
+        timeout_seconds: { type: integer, default: 10 }
+        description: { type: string }
+
+    WebhookDelivery:
+      type: object
+      required: [id, endpoint_id, event_type, status, attempt_count, created_at]
+      properties:
+        id: { type: string }
+        endpoint_id: { type: string }
+        event_type: { type: string }
+        event_id: { type: string }
+        request_headers:
+          type: object
+          additionalProperties: { type: string }
+        request_body_preview: { type: string }
+        response_status: { type: integer, nullable: true }
+        response_body_preview: { type: string, nullable: true }
+        status: { type: string, enum: [PENDING, DELIVERED, FAILED, DLQ] }
+        attempt_count: { type: integer }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+        delivered_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    RateLimit:
+      type: object
+      required: [scope_type, scope_id, dimension, limit, window_seconds]
+      properties:
+        scope_type: { type: string, enum: [TENANT, USER, APP, API_KEY] }
+        scope_id: { type: string }
+        dimension: { type: string, example: requests_per_second }
+        limit: { type: integer }
+        window_seconds: { type: integer }
+        burst: { type: integer, nullable: true }
+        current_usage: { type: integer }

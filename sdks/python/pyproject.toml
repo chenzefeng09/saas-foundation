@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "foundation-sdk"
+version = "0.1.0"
+description = "Python SDK for SaaS Foundation — typed client for all 16 microservices"
+authors = ["SaaS Foundation Team <foundation@example.com>"]
+readme = "README.md"
+license = "Proprietary"
+packages = [{ include = "foundation_sdk", from = "." }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+httpx = { extras = ["http2"], version = "^0.27.0" }
+pydantic = "^2.9.0"
+pydantic-settings = "^2.6.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+ruff = "^0.7.0"
+respx = "^0.21.1"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+priority = "primary"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["foundation_sdk"]
+
+[tool.ruff.lint]
+select = ["E","F","W","I","B","UP","ASYNC","RUF"]
+ignore = ["S101"]

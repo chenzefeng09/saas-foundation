@@ -1,0 +1,490 @@
+# =============================================================================
+# Compliance Service API — compliance-v1 + equal-protection-checklist-v1
+# =============================================================================
+# 合规模式 + ROPA + DPIA + DSAR 编排 + 等保自评 + 报表
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Compliance Service API
+  version: 1.0.0
+  description: |
+    合规治理：合规模式（single source of truth）、ROPA、DPIA、DSAR 编排、
+    等保 2.0 三级自评清单、SOC 2 / ISO 27001 报表导出。
+    详见 [docs/design/compliance-v1.md](../../docs/design/compliance-v1.md)
+    + [equal-protection-checklist-v1.md](../../docs/design/equal-protection-checklist-v1.md)。
+
+servers:
+  - url: https://api.example.com/api/compliance/v1
+  - url: http://localhost:8015/api/compliance/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: modes
+    description: 合规模式（启用 / 取最严）
+  - name: ropa
+    description: ROPA（Record of Processing Activities）
+  - name: dpia
+    description: DPIA 评估工作流
+  - name: dsar
+    description: DSAR 编排（dispatch 到各 service collector）
+  - name: equal-protection
+    description: 等保 2.0 三级自评
+  - name: reports
+    description: 报表导出（等保 / SOC 2 / ISO 27001 / PIPL DPO 年报）
+  - name: health
+
+paths:
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
+
+  # --------------------------- Modes ----------------------------------------
+  /modes:
+    get:
+      tags: [modes]
+      summary: 当前租户启用的合规模式
+      operationId: listComplianceModes
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+
+  /modes:enable:
+    post:
+      tags: [modes]
+      summary: 启用某模式（审批工作流）
+      operationId: enableComplianceMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, justification]
+              properties:
+                mode: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+                justification: { type: string, minLength: 20 }
+      responses:
+        '202':
+          description: 已提审批
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval_id: { type: string }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /modes:is-at-least:
+    post:
+      tags: [modes]
+      summary: 判定当前租户合规等级是否达到目标（SDK is_at_least helper 远程版）
+      operationId: isAtLeast
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_mode]
+              properties:
+                target_mode: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [satisfied]
+                properties:
+                  satisfied: { type: boolean }
+                  active_modes:
+                    type: array
+                    items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
+
+  # --------------------------- ROPA -----------------------------------------
+  /ropa:
+    get:
+      tags: [ropa]
+      operationId: listRopaEntries
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: filter.source
+          in: query
+          schema: { type: string, enum: [STATIC_SCAN, RUNTIME_PROBE, MANUAL] }
+        - name: filter.processing_purpose
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/RopaEntry' }
+    post:
+      tags: [ropa]
+      operationId: createRopaEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RopaEntry' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RopaEntry' }
+
+  /ropa/scan:
+    post:
+      tags: [ropa]
+      summary: 触发 ROPA 静态扫描（基于 `@pii_processing` 注解 + AST）
+      operationId: triggerRopaScan
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scan_run_id: { type: string }
+
+  # --------------------------- DPIA -----------------------------------------
+  /dpia/assessments:
+    get:
+      tags: [dpia]
+      operationId: listDpiaAssessments
+      parameters:
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - name: filter.status
+          in: query
+          schema: { type: string, enum: [DRAFT, IN_REVIEW, APPROVED, REJECTED, EXPIRED] }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DpiaAssessment' }
+    post:
+      tags: [dpia]
+      operationId: createDpiaAssessment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DpiaAssessment' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DpiaAssessment' }
+
+  /dpia/assessments/{assessment_id}:
+    parameters:
+      - name: assessment_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [dpia]
+      operationId: getDpiaAssessment
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DpiaAssessment' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  # --------------------------- DSAR Orchestration ---------------------------
+  /dsar/orchestrate:
+    post:
+      tags: [dsar]
+      summary: 编排 DSAR 跨服务采集（dispatch to data-protection + 业务 collectors）
+      operationId: orchestrateDsar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dsar_id]
+              properties:
+                dsar_id: { type: string, description: data-protection 已创建的 DSAR id }
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orchestration_id: { type: string }
+
+  # --------------------------- Equal Protection -----------------------------
+  /equal-protection/controls:
+    get:
+      tags: [equal-protection]
+      summary: 列等保控制项（含 owner package 映射）
+      operationId: listEpControls
+      parameters:
+        - name: level
+          in: query
+          schema: { type: integer, enum: [3, 4] }
+        - name: filter.owner_package
+          in: query
+          schema: { type: string }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/EpControl' }
+
+  /equal-protection/assessments:
+    post:
+      tags: [equal-protection]
+      summary: 录入自评结果（一项）
+      operationId: recordEpAssessment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EpAssessment' }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EpAssessment' }
+
+  /equal-protection/dashboard:
+    get:
+      tags: [equal-protection]
+      operationId: getEpDashboard
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_controls: { type: integer }
+                  conformance_rate: { type: number }
+                  by_result:
+                    type: object
+                    additionalProperties: { type: integer }
+                  by_owner:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      additionalProperties: { type: integer }
+                  gaps_overdue: { type: integer }
+                  evidence_freshness_days_avg: { type: number }
+
+  # --------------------------- Reports --------------------------------------
+  /reports:export:
+    post:
+      tags: [reports]
+      summary: 异步导出合规报表
+      operationId: exportComplianceReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_type, format]
+              properties:
+                report_type:
+                  type: string
+                  enum: [EQUAL_PROTECTION_3, EQUAL_PROTECTION_4, SOC2, ISO27001, PIPL_DPO_ANNUAL]
+                format: { type: string, enum: [PDF, DOCX, HTML] }
+                time_range:
+                  $ref: './_common.yaml#/components/schemas/TimeRange'
+      responses:
+        '202':
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export_id: { type: string }
+
+  /reports/{export_id}:
+    parameters:
+      - name: export_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [reports]
+      operationId: getReportStatus
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export_id: { type: string }
+                  status: { type: string, enum: [QUEUED, RUNNING, READY, FAILED] }
+                  download_url: { type: string, format: uri, nullable: true }
+                  signature_url: { type: string, format: uri, nullable: true }
+
+# =============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+
+    RopaEntry:
+      type: object
+      required: [id, service, processing_purpose, data_categories, legal_basis, source]
+      properties:
+        id: { type: string }
+        service: { type: string }
+        processing_purpose: { type: string }
+        data_categories:
+          type: array
+          items: { type: string, enum: [PII, SENSITIVE_PII, FINANCIAL, HEALTH, BIOMETRIC, CHILDREN] }
+        data_subjects:
+          type: array
+          items: { type: string }
+        recipients:
+          type: array
+          items: { type: string }
+        retention_period_days: { type: integer }
+        legal_basis: { type: string, enum: [CONSENT, CONTRACT, LEGAL_OBLIGATION, VITAL_INTEREST, PUBLIC_TASK, LEGITIMATE_INTEREST] }
+        cross_border:
+          type: object
+          properties:
+            occurs: { type: boolean }
+            destinations:
+              type: array
+              items: { type: string }
+            safeguards:
+              type: array
+              items: { type: string }
+        source: { type: string, enum: [STATIC_SCAN, RUNTIME_PROBE, MANUAL] }
+        last_verified_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    DpiaAssessment:
+      type: object
+      required: [id, scope, risks, status, created_at]
+      properties:
+        id: { type: string }
+        scope: { type: string, description: 评估对象（业务模块 / 数据流） }
+        triggers:
+          type: array
+          items: { type: string, enum: [SENSITIVE_PII, LARGE_SCALE, NEW_TECH, AUTOMATED_DECISION, PUBLIC_AREA_MONITORING, CHILDREN] }
+        risks:
+          type: array
+          items:
+            type: object
+            properties:
+              category: { type: string }
+              likelihood: { type: integer, minimum: 1, maximum: 5 }
+              impact: { type: integer, minimum: 1, maximum: 5 }
+              mitigation: { type: string }
+        residual_risk_acceptable: { type: boolean }
+        status: { type: string, enum: [DRAFT, IN_REVIEW, APPROVED, REJECTED, EXPIRED] }
+        approvers:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              role: { type: string, enum: [DPO, LEGAL, SECURITY_LEAD, BUSINESS_OWNER] }
+              decision: { type: string, enum: [APPROVE, REJECT] }
+              at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        next_review_at: { type: string, format: date-time, nullable: true }
+
+    EpControl:
+      type: object
+      required: [id, level, category, title, requirement]
+      properties:
+        id: { type: string, example: '8.1.4.1.b' }
+        level: { type: integer, enum: [3, 4] }
+        category: { type: string, example: '8.1.4' }
+        title: { type: string }
+        requirement: { type: string }
+        owner_package: { type: string, nullable: true }
+        evidence_query: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+
+    EpAssessment:
+      type: object
+      required: [control_id, result, evidence_refs, assessed_by]
+      properties:
+        id: { type: string }
+        control_id: { type: string }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        result: { type: string, enum: [CONFORMING, PARTIAL, NON_CONFORMING, NOT_APPLICABLE] }
+        evidence_refs:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              location: { type: string }
+              hash: { type: string }
+              captured_at: { type: string, format: date-time }
+        gap_description: { type: string, nullable: true }
+        remediation_plan: { type: string, nullable: true }
+        remediation_due: { type: string, format: date-time, nullable: true }
+        assessed_by: { type: string }
+        assessed_at: { type: string, format: date-time }
+        next_review_at: { type: string, format: date-time, nullable: true }

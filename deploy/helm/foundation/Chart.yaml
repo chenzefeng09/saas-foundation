@@ -1,0 +1,64 @@
+apiVersion: v2
+name: foundation
+description: |
+  SaaS Foundation umbrella chart. Deploys identity, authz, org, billing,
+  audit, lifecycle, notification, search, api-platform, llm-gateway,
+  feature-flag, classification, dlp, crypto, compliance, pam,
+  data-protection, security-ops services together with their
+  shared dependencies (Postgres/PgBouncer/Redis/Keycloak/ClickHouse/
+  OpenSearch/Vault/MinIO/OPA/Unleash/OTel).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/your-org/saas-foundation
+maintainers:
+  - name: SaaS Foundation Team
+    email: foundation@example.com
+
+# Profile-based deployment:
+#   small:  POC / 单节点 K3s / 50 用户
+#   medium: 企业私有化 / 3-10 节点 / HA
+#   large:  跨 AZ / 1000+ 用户 / SaaS 主集群
+# Toggle via:  helm install ... -f values-<profile>.yaml
+
+# 子 chart 依赖；个别 service 单独打 subchart 后引入。
+# 第三方组件首选 community chart；锁定 minor 版本，patch 自动跟
+dependencies:
+  # ---- 基础设施（按 profile 启停） ----
+  - name: postgresql
+    version: "15.5.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled
+  - name: redis
+    version: "20.0.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: redis.enabled
+  - name: keycloak
+    version: "22.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: keycloak.enabled
+  - name: clickhouse
+    version: "8.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: clickhouse.enabled
+  - name: opensearch
+    version: "2.x"
+    repository: https://opensearch-project.github.io/helm-charts/
+    condition: opensearch.enabled
+  - name: vault
+    version: "0.28.x"
+    repository: https://helm.releases.hashicorp.com
+    condition: vault.enabled
+  - name: minio
+    version: "5.2.x"
+    repository: https://charts.min.io/
+    condition: minio.enabled
+  - name: opentelemetry-collector
+    version: "0.100.x"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+    condition: otelCollector.enabled
+    alias: otel-collector
+  - name: opa
+    version: "1.x"
+    repository: https://open-policy-agent.github.io/kube-mgmt/charts
+    condition: opa.enabled

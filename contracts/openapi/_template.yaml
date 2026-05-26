@@ -1,0 +1,627 @@
+# =============================================================================
+# OpenAPI 3.1 模板 — saas-foundation
+# =============================================================================
+# 该文件作为所有 service OpenAPI spec 的样板。新增 service 时：
+#   1. 复制本文件到 contracts/openapi/<service>.yaml
+#   2. 替换 <SERVICE> 占位符
+#   3. 重写 paths 与 schemas
+#   4. 保留所有 components/schemas/Error*、components/parameters/Common*、
+#      components/responses/Common*、components/securitySchemes
+#
+# 强制要求（CI 用 spectral 校验）：
+#   - 所有 path 必须带 v1 前缀
+#   - 所有非公开端点必须声明 security: [bearerAuth]
+#   - 4xx/5xx 响应必须用 components/responses 引用
+#   - 字段命名 snake_case；枚举 UPPER_SNAKE_CASE
+#   - 所有时间字段 format: date-time
+#   - 所有 ID 字段 pattern: ^<type>_[0-9A-Z]{26}$
+# =============================================================================
+
+openapi: 3.1.0
+
+info:
+  title: Identity Service API
+  description: |
+    身份服务：登录、会话、用户档案、SSO/SCIM。
+    详见 [docs/CONVENTIONS.md](../../docs/CONVENTIONS.md) §3 租户上下文传递。
+  version: 1.0.0
+  contact:
+    name: SaaS Foundation Team
+    email: foundation@example.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.example.com/api/identity/v1
+    description: Production
+  - url: https://staging.example.com/api/identity/v1
+    description: Staging
+  - url: http://localhost:8001/api/identity/v1
+    description: Local dev
+
+# -----------------------------------------------------------------------------
+# 全局 security：未声明 security 的路径默认走 bearerAuth
+# 公开路径（如 /sessions POST 登录）显式 security: []
+# -----------------------------------------------------------------------------
+security:
+  - bearerAuth: []
+
+tags:
+  - name: sessions
+    description: 登录、登出、会话管理
+  - name: users
+    description: 用户档案
+  - name: mfa
+    description: 多因素认证
+  - name: health
+    description: 健康检查（无认证）
+
+# =============================================================================
+# Paths — 示例只列 3 个典型端点，新 service 按相同模式扩展
+# =============================================================================
+paths:
+
+  # ---------- 健康检查（公开） ----------
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [OK] }
+                  version: { type: string, example: "1.0.0" }
+                  service: { type: string, example: "identity" }
+
+  # ---------- 登录（公开 POST） ----------
+  /sessions:
+    post:
+      tags: [sessions]
+      summary: 创建会话（登录）
+      description: |
+        用邮箱+密码登录。MFA 启用时返回 `mfa_required` 状态需走 /sessions/{id}/mfa-verify。
+      operationId: createSession
+      security: []  # 登录前无 token
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+            examples:
+              email_password:
+                value:
+                  method: EMAIL_PASSWORD
+                  email: alice@example.com
+                  password: "**********"
+      responses:
+        '201':
+          description: 会话创建成功
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/RequestIdHeader' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '202':
+          description: 需要 MFA
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaChallengeResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ---------- 查询用户列表 ----------
+  /users:
+    get:
+      tags: [users]
+      summary: 列出当前租户用户
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: filter.status
+          in: query
+          schema: { $ref: '#/components/schemas/UserStatus' }
+        - name: filter.email
+          in: query
+          schema: { type: string, format: email }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [created_at, -created_at, email, -email]
+            default: -created_at
+        - name: fields
+          in: query
+          description: 字段选择，逗号分隔
+          schema: { type: string, example: "id,email,status" }
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: 下一页游标；null 表示已到末尾
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    post:
+      tags: [users]
+      summary: 创建用户（管理员）
+      operationId: createUser
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserRequest' }
+      responses:
+        '201':
+          description: 用户创建成功
+          headers:
+            Location:
+              schema: { type: string }
+              description: 新资源 URL
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /users/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - name: user_id
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/UserId' }
+
+    get:
+      tags: [users]
+      summary: 取单个用户
+      operationId: getUser
+      responses:
+        '200':
+          description: 用户详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    patch:
+      tags: [users]
+      summary: 更新用户（部分字段）
+      description: 使用 JSON Merge Patch RFC 7396 语义
+      operationId: updateUser
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: 乐观锁版本号（ETag）
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/UpdateUserRequest' }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/StaleVersion' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+    delete:
+      tags: [users]
+      summary: 删除用户（软删除）
+      operationId: deleteUser
+      responses:
+        '204':
+          description: 删除成功
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+
+  # ---------- Security ----------
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT 由 Keycloak 签发；claim 含 `sub`、`tenant_id`、`roles`、`exp`。
+        API Gateway 校验后注入 X-User-Id / X-Tenant-Id header 给下游 service。
+
+  # ---------- 通用参数 ----------
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: 请求链路 ID；客户端可带，缺则网关生成
+      schema:
+        type: string
+        pattern: ^req_[0-9A-Z]{26}$
+
+    Cursor:
+      name: cursor
+      in: query
+      description: 游标分页，从上次响应的 next_cursor 获取
+      schema: { type: string }
+
+    Limit:
+      name: limit
+      in: query
+      description: 每页数量
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 幂等键；POST/PUT/PATCH 建议带，重放时返回首次结果
+      schema:
+        type: string
+        maxLength: 64
+
+  # ---------- 通用 headers ----------
+  headers:
+    RequestIdHeader:
+      schema: { type: string }
+      description: 回显请求 ID
+
+  # ---------- 通用错误响应（所有 service 共用）----------
+  responses:
+    BadRequest:
+      description: 入参格式错
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalid_pagination:
+              value:
+                type: "https://errors.foundation.example.com/_/input/invalid-pagination"
+                title: "Invalid pagination parameters"
+                status: 400
+                code: "FOUNDATION._.INPUT.INVALID_PAGINATION"
+                detail: "limit must be between 1 and 200"
+                instance: "/api/identity/v1/users"
+                request_id: "req_01J5XXXXX"
+                timestamp: "2026-05-22T10:00:00Z"
+
+    Unauthorized:
+      description: 未认证 / token 失效
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Forbidden:
+      description: 已认证但无权限 / 合规阻断
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Conflict:
+      description: 资源冲突 / 状态错
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    StaleVersion:
+      description: 乐观锁版本过期
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    ValidationFailed:
+      description: 语义校验失败
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+
+    RateLimited:
+      description: 限流 / 配额超限
+      headers:
+        Retry-After:
+          schema: { type: integer }
+        X-RateLimit-Limit:
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          schema: { type: integer }
+        X-RateLimit-Reset:
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    InternalError:
+      description: 服务器内部错
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------- Schemas ----------
+  schemas:
+
+    # ===== 通用 Error（RFC 9457） =====
+    Error:
+      type: object
+      required: [type, title, status, code, detail, instance, request_id, timestamp]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: 错误码对应的文档 URL
+        title:
+          type: string
+          description: 错误标题（英文固定）
+        status:
+          type: integer
+          description: HTTP 状态码
+        code:
+          type: string
+          pattern: '^[A-Z_]+\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+$'
+          description: 机器可读错误码
+          example: "FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS"
+        detail:
+          type: string
+          description: 给开发者的英文详细描述
+        user_message:
+          type: string
+          nullable: true
+          description: 给终端用户的本地化消息
+        instance:
+          type: string
+          description: 触发错误的请求路径
+        request_id:
+          type: string
+        trace_id:
+          type: string
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+        retry_after:
+          type: integer
+          nullable: true
+        help_url:
+          type: string
+          format: uri
+          nullable: true
+
+    ValidationError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [field, code, detail]
+                properties:
+                  field:
+                    type: string
+                    description: JSON Pointer 字段路径
+                    example: "/email"
+                  code:
+                    type: string
+                    example: "INVALID_EMAIL_FORMAT"
+                  detail:
+                    type: string
+                  user_message:
+                    type: string
+                    nullable: true
+
+    # ===== 通用 ID 类型 =====
+    TenantId:
+      type: string
+      pattern: '^tnt_[0-9A-Z]{26}$'
+      example: "tnt_01J5XXXXXXXXXXXXXXXXXXXXXX"
+
+    UserId:
+      type: string
+      pattern: '^usr_[0-9A-Z]{26}$'
+      example: "usr_01J5XXXXXXXXXXXXXXXXXXXXXX"
+
+    SessionId:
+      type: string
+      pattern: '^sess_[0-9A-Z]{26}$'
+
+    # ===== 业务类型 =====
+    UserStatus:
+      type: string
+      enum: [ACTIVE, INVITED, SUSPENDED, LOCKED, DEACTIVATED]
+
+    User:
+      type: object
+      required: [id, tenant_id, email, status, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/UserId' }
+        tenant_id: { $ref: '#/components/schemas/TenantId' }
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+          nullable: true
+        status: { $ref: '#/components/schemas/UserStatus' }
+        roles:
+          type: array
+          items:
+            type: string
+            pattern: '^[A-Z_]+$'
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+        mfa_enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateUserRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        send_invite:
+          type: boolean
+          default: true
+        roles:
+          type: array
+          items: { type: string }
+
+    UpdateUserRequest:
+      type: object
+      description: JSON Merge Patch 语义；null 删除字段
+      properties:
+        display_name:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserStatus'
+
+    # ===== 会话 / MFA =====
+    Session:
+      type: object
+      required: [id, user_id, tenant_id, access_token, refresh_token, expires_at]
+      properties:
+        id: { $ref: '#/components/schemas/SessionId' }
+        user_id: { $ref: '#/components/schemas/UserId' }
+        tenant_id: { $ref: '#/components/schemas/TenantId' }
+        access_token:
+          type: string
+          description: JWT，业务层带在 Authorization header
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          enum: [BEARER]
+        expires_at:
+          type: string
+          format: date-time
+        issued_at:
+          type: string
+          format: date-time
+
+    CreateSessionRequest:
+      oneOf:
+        - $ref: '#/components/schemas/EmailPasswordCredential'
+        - $ref: '#/components/schemas/OidcCredential'
+      discriminator:
+        propertyName: method
+        mapping:
+          EMAIL_PASSWORD: '#/components/schemas/EmailPasswordCredential'
+          OIDC: '#/components/schemas/OidcCredential'
+
+    EmailPasswordCredential:
+      type: object
+      required: [method, email, password]
+      properties:
+        method:
+          type: string
+          enum: [EMAIL_PASSWORD]
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    OidcCredential:
+      type: object
+      required: [method, provider, code]
+      properties:
+        method:
+          type: string
+          enum: [OIDC]
+        provider:
+          type: string
+          example: "keycloak-customer-idp"
+        code:
+          type: string
+
+    MfaChallengeResponse:
+      type: object
+      required: [challenge_id, methods]
+      properties:
+        challenge_id:
+          type: string
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [TOTP, SMS_OTP, WEBAUTHN, PUSH]
+        expires_at:
+          type: string
+          format: date-time
