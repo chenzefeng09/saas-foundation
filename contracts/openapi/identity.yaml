@@ -117,6 +117,55 @@ paths:
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
+  /sessions/me:
+    get:
+      tags: [sessions]
+      summary: 取调用方身份（由 bearer token 解析）
+      description: |
+        业务侧 BFF 在每次页面加载时调用，从 foundation 颁发的 JWT 反解出用户/租户档案。
+        BFF **不应**信任客户端存储的身份信息，必须用此接口校验。
+      operationId: getMe
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeResponse' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+
+  /sessions/service-account-token:
+    post:
+      tags: [sessions]
+      summary: 签发短期、租户绑定、scope 限定的服务账号 token
+      description: |
+        当一个 service 需要为它派生的 workload（容器、批处理任务等）颁发凭证时，
+        必须调用本接口换出**短 TTL + 单租户 + 最小 scope** 的 JWT，而**不允许**
+        把自身 service-account token 透传给 workload。
+
+        授权规则：
+        * 调用方必须以 service principal 身份认证（M2 起强制）
+        * `body.tenant_id` 必须等于调用方 token 的 tenant
+        * 每个 scope 必须在 foundation scope catalogue 内（docs/CONVENTIONS.md §4）
+
+        典型用例：agent-platform 的 agent-scheduler 为每个 OpenHands run
+        派发 `ttl=sandbox_timeout`、`scopes=[llm-gateway.invoke, audit.write]`
+        的 token，写入容器 env，run 结束即过期。
+      operationId: issueServiceAccountToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceAccountTokenRequest' }
+      responses:
+        '201':
+          description: token 已签发
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceAccountTokenResponse' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
   /sessions/{session_id}/mfa-verify:
     parameters:
       - name: session_id
@@ -557,6 +606,70 @@ components:
         method: { type: string, enum: [SAML] }
         provider: { type: string }
         saml_response: { type: string }
+
+    MeResponse:
+      type: object
+      required: [user_id, tenant_id, email, display_name, roles]
+      properties:
+        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        mfa_enabled: { type: boolean, default: false }
+        locale: { type: string, default: zh-CN }
+
+    ServiceAccountTokenRequest:
+      type: object
+      required: [tenant_id, subject, scopes]
+      properties:
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        subject:
+          type: string
+          minLength: 3
+          maxLength: 128
+          pattern: '^[a-z0-9._:-]+$'
+          description: 调用方自命名的 workload 标识，进 JWT sub 与审计日志
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: string
+            description: foundation scope catalogue (docs/CONVENTIONS.md §4)
+        audience:
+          type: string
+          default: foundation
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z0-9-]+$'
+        ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          default: 3600
+
+    ServiceAccountTokenResponse:
+      type: object
+      required:
+        [access_token, token_type, expires_at, issued_at, tenant_id, subject, scopes, audience, jti]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, enum: [BEARER] }
+        expires_at: { type: string, format: date-time }
+        issued_at: { type: string, format: date-time }
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        subject: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        audience: { type: string }
+        jti:
+          type: string
+          pattern: '^jti_[0-9A-Z]{26}$'
+          description: 唯一 token id；调用 revoke 接口可吊销
 
     MfaChallengeResponse:
       type: object

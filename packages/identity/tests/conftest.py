@@ -78,9 +78,13 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 # ---------------------------------------------------------------- helper headers
 @pytest.fixture
 def tenant_headers() -> dict[str, str]:
+    # IDs are exactly 26 base32 chars to satisfy TENANT_ID_PATTERN /
+    # USER_ID_PATTERN in foundation_identity.api.middleware.  Prior version
+    # used 25-char IDs which the middleware silently rejected, masking real
+    # endpoint behaviour in tests.
     return {
-        "X-Tenant-Id": "tnt_01J5DEV0000000000000000A0",
-        "X-User-Id": "usr_01J5DEVUSER00000000000001",
+        "X-Tenant-Id": "tnt_01J5DEV00000000000000000A1",
+        "X-User-Id": "usr_01J5DEVUSER000000000000001",
         "X-Actor": "USER",
     }
 

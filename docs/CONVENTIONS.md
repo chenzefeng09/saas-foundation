@@ -177,6 +177,41 @@ Adapters (DB / 其他 service)
 - 单元/集成测试必须用 `with tenant_context("tnt_test")` 包裹，禁止裸跑
 - CI 静态扫描检测：业务层代码出现 `tenant_id=` 参数直接报错
 
+### 3.6 业务侧 BFF cookie（"为什么客户端身份不能自签"）
+
+业务层经常需要一个 BFF（Backend-for-Frontend）把 SPA 与底座对接。BFF
+**必须**把登录后从 identity 返回的 `access_token` 当作权威身份载体，并把任何
+持久化到浏览器的 session 状态用 `foundation_sdk.CookieSigner` 签名。
+
+强制规则：
+
+- **禁止**自创"明文 JSON + base64"的 session cookie；这等于让客户端自由声明
+  `tenant_id`，是阶段 B 的高频踩雷点（参见 [B-M1 review #4]）
+- 使用 `foundation_sdk.CookieSigner`（itsdangerous 包装），构造时强制校验
+  secret 长度 ≥32 且不含 `change-me` 类占位符——开发人员忘配 env 会启动失败
+- cookie payload 只放**可还原**的非敏感字段：`user_id` / `tenant_id` /
+  `display_name`；**禁止**放 `access_token` 或任何 secret
+- BFF 调下游服务时把 identity 返回的 `access_token` 作 `Authorization: Bearer`
+  透传；下游服务用 JWKS 验签拿到 claims——这是唯一可信的身份来源
+- 启动时调 `/api/identity/v1/sessions/me` 把 token claims 校验一遍并返给前端，
+  避免前端基于 cookie 假冒 profile
+
+参考实现：`agent-platform/services/bff/src/agent_bff/api/v1/auth.py`。
+
+### 3.7 服务派生 workload 的凭证派发
+
+任何 service 启动子工作负载（容器、批处理、worker）都**禁止**把自身的 service-account
+token 透传给该 workload——一旦容器被攻破或写日志失误，攻击者拿到的等同于该
+service 的完整身份。
+
+**强制**走 identity 的 `POST /sessions/service-account-token` 换出一个新 token：
+- `tenant_id` 必须等于调用方上下文租户
+- `subject` 写 workload 的稳定标识（如 `agent-scheduler:run_01J5XYZ`）
+- `scopes` 选 §4 scope catalogue 中的最小子集
+- `ttl_seconds` 取 `min(workload_lifetime, 3600)`；超时 token 自然失效
+
+参考实现：`agent-platform/services/agent-scheduler/src/.../services/docker_runtime.py`。
+
 ---
 
 ## 4. 错误处理
@@ -187,6 +222,25 @@ Adapters (DB / 其他 service)
 - 错误码格式：`FOUNDATION.<SERVICE>.<CATEGORY>.<NAME>`，例 `FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS`
 - HTTP 状态码遵守语义；不使用 200 + body code 这种反模式
 - 服务专属错误码定义在 `errors.py`，继承底座基类 `foundation.errors.FoundationError`
+
+### 4.x Scope catalogue（service-account token 唯一允许集）
+
+下表与 `packages/identity/src/foundation_identity/api/v1/sessions.py::_ALLOWED_SCOPES`
+**严格一致**；新增 scope 必须同时更新两处，由 `make test-conformance` 校验。
+
+| scope | 含义 | 典型颁发方 |
+|---|---|---|
+| `audit.write` | 写入审计事件 | 任何业务服务 / agent workload |
+| `llm-gateway.invoke` | 调 LLM 网关推理 | agent workload |
+| `lifecycle.write` | 触发资源生命周期事件 | 后台清理任务 |
+| `notification.send` | 走通知中心发送消息 | 业务事件触发器 |
+| `search.read` / `search.write` | 搜索读/写 | 业务服务 |
+| `billing.usage.write` | 上报用量 | 计量埋点 worker |
+
+约束：
+- 每个 scope **不携带**租户语义；租户由 JWT `tenant_id` claim 强制
+- 申请方 service principal 必须在 authz RBAC 中拥有 `can_issue:<scope>`
+  (M2 强制；目前 skeleton 阶段不强制但已埋点)
 
 ---
 

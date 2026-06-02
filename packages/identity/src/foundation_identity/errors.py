@@ -197,6 +197,22 @@ KEYCLOAK_ERROR: Final = _ec(
     "身份服务返回异常。",
 )
 
+# --- SERVICE-ACCOUNT TOKEN (400 / 403) ---
+SCOPE_NOT_ALLOWED: Final = _ec(
+    "AUTH", "SCOPE_NOT_ALLOWED", 403,
+    "Scope not allowed",
+    "One or more requested scopes are not in the foundation scope catalogue, "
+    "or the caller is not allowed to request them.",
+    "请求的权限范围不被允许。",
+)
+TTL_OUT_OF_RANGE: Final = _ec(
+    "INPUT", "TTL_OUT_OF_RANGE", 422,
+    "TTL out of range",
+    "Requested ttl_seconds must be between 60 and 86400.",
+    "Token 有效期参数超出允许范围。",
+)
+
+
 # --- INTEGRATION (502) ---
 SSO_PROVIDER_ERROR: Final = _ec(
     "INTEGRATION", "SSO_PROVIDER_ERROR", 502,
