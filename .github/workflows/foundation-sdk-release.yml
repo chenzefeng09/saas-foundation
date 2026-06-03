@@ -1,0 +1,120 @@
+# =============================================================================
+# foundation-sdk-release — build + (optionally) publish the Python SDK
+#
+# Two trigger modes:
+#   1. push to main touching sdks/python/**  -> build, run tests, upload wheel
+#      as workflow artifact. No publish.
+#   2. push of a tag `foundation-sdk-v*`     -> same as above plus upload to
+#      the internal PyPI. Tag name (minus prefix) becomes the package version
+#      so the git tag is the single source of truth.
+#
+# Required repo secrets (only used by the publish job):
+#   INTERNAL_PYPI_URL    e.g. https://pypi.internal.example/repository/pypi-hosted/
+#   INTERNAL_PYPI_TOKEN  upload token
+# =============================================================================
+name: foundation-sdk release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/python/**'
+      - '.github/workflows/foundation-sdk-release.yml'
+    tags:
+      - 'foundation-sdk-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: sdks/python
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Test matrix — gate any artifact/publish on a green test run.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: 'pip'
+      - name: Install Poetry
+        run: pip install "poetry==2.4.1"
+      - name: Install deps
+        run: poetry install --no-interaction
+      - name: Run tests
+        run: poetry run pytest tests/ -v
+
+  # ---------------------------------------------------------------------------
+  # Build sdist + wheel. Runs on every trigger. Tagged builds get their
+  # version stamped from the git tag so we never ship a wheel whose
+  # pyproject version drifts from what's in the index.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build wheel
+    needs: [test]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install "poetry==2.4.1"
+      - name: Resolve target version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/foundation-sdk-v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/foundation-sdk-v}"
+            echo "Stamping tag version: ${VERSION}"
+          else
+            VERSION="$(poetry version --short)"
+            echo "Using pyproject version: ${VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        env:
+          FOUNDATION_SDK_VERSION: ${{ steps.version.outputs.version }}
+        run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foundation-sdk-${{ steps.version.outputs.version }}
+          path: sdks/python/dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Publish — only on a foundation-sdk-v* tag. Uses the same publish.sh
+  # developers run locally so behaviour is identical.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to internal PyPI
+    if: startsWith(github.ref, 'refs/tags/foundation-sdk-v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: internal-pypi  # gates on environment-level approval if configured
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: foundation-sdk-${{ needs.build.outputs.version }}
+          path: sdks/python/dist
+      - name: Upload
+        env:
+          FOUNDATION_PYPI_URL: ${{ secrets.INTERNAL_PYPI_URL }}
+          FOUNDATION_PYPI_TOKEN: ${{ secrets.INTERNAL_PYPI_TOKEN }}
+        run: ./publish.sh

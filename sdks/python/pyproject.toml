@@ -6,6 +6,13 @@ authors = ["SaaS Foundation Team <foundation@example.com>"]
 readme = "README.md"
 license = "Proprietary"
 packages = [{ include = "foundation_sdk", from = "." }]
+include = ["foundation_sdk/py.typed"]
+
+[tool.poetry.urls]
+# Surfaced on the internal PyPI index page so operators can jump back to source.
+Repository = "https://git.internal.example/saas-foundation/saas-foundation"
+Documentation = "https://git.internal.example/saas-foundation/saas-foundation/-/blob/main/docs/sdk-release.md"
+Changelog = "https://git.internal.example/saas-foundation/saas-foundation/-/blob/main/sdks/python/CHANGELOG.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"

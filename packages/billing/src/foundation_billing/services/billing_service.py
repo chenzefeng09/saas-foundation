@@ -24,7 +24,7 @@ from foundation_billing.observability import get_logger
 
 log = get_logger(__name__)
 
-QuotaDimension = Literal["user_seats", "storage_gb", "agent_sessions", "llm_tokens", "api_calls"]
+QuotaDimension = Literal["user_seats", "storage_gb", "agent_sessions", "llm_tokens", "api_calls", "sessions", "skills"]
 
 
 class BillingService:
@@ -90,6 +90,7 @@ class BillingService:
             free_tier: dict[str, int] = {
                 "user_seats": 5, "storage_gb": 1,
                 "agent_sessions": 10, "llm_tokens": 1_000_000, "api_calls": 1000,
+                "sessions": 20, "skills": 50,
             }
             limit = free_tier.get(dimension, 100)
         else:

@@ -21,7 +21,10 @@ ACTOR_HEADER = "X-Actor"
 REQUEST_ID_PATTERN = re.compile(r"^req_[0-9A-Z]{26}$")
 TENANT_ID_PATTERN = re.compile(r"^tnt_[0-9A-Z]{26}$")
 USER_ID_PATTERN = re.compile(r"^usr_[0-9A-Z]{26}$")
-ACTOR_VALUES = frozenset({"USER", "SERVICE", "SYSTEM", "MIGRATOR", "ADMIN"})
+# ADMIN is intentionally absent — clients must not be able to request actor=ADMIN.
+# Unrecognised or ADMIN values are silently downgraded to USER (same policy as
+# identity middleware; see foundation_identity.api.middleware for full rationale).
+ACTOR_VALUES = frozenset({"USER", "SERVICE", "SYSTEM", "MIGRATOR"})
 
 PUBLIC_PATHS = frozenset({"/healthz", "/readyz", "/metrics", "/docs", "/openapi.json", "/redoc"})
 
@@ -59,8 +62,9 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
             return _problem(400, "FOUNDATION.ORG.INPUT.INVALID_FORMAT",
                             f"Invalid {USER_ID_HEADER} format", request.url.path, request_id)
         if actor not in ACTOR_VALUES:
-            return _problem(400, "FOUNDATION.ORG.INPUT.INVALID_FORMAT",
-                            f"Invalid {ACTOR_HEADER} value", request.url.path, request_id)
+            # Silently downgrade (including ADMIN) rather than 400, to avoid
+            # leaking which actor values are "valid but forbidden".
+            actor = "USER"
 
         token = None
         if tenant_id:

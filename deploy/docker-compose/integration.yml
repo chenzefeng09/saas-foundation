@@ -30,6 +30,7 @@ services:
       IDENTITY_LOG_LEVEL: INFO
       IDENTITY_LOG_FORMAT: console
       IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
       IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       IDENTITY_KEYCLOAK_URL: http://keycloak:8080
       IDENTITY_KEYCLOAK_REALM: foundation
@@ -162,6 +163,7 @@ services:
       AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       ORG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       CRYPTO_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      BILLING_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       CRYPTO_VAULT_URL: http://vault:8200
       CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
     entrypoint: ["/bin/sh", "-c"]
@@ -176,6 +178,8 @@ services:
         cd /app/org && poetry run alembic upgrade head
         echo "=== Running Crypto migrations ==="
         cd /app/crypto && poetry run alembic upgrade head
+        echo "=== Running Billing migrations ==="
+        cd /app/billing && poetry run alembic upgrade head
         echo "=== All migrations complete ==="
     networks: [foundation]
     volumes:
@@ -183,6 +187,7 @@ services:
       - ../../packages/authz/migrations:/app/authz/migrations:ro
       - ../../packages/org/migrations:/app/org/migrations:ro
       - ../../packages/crypto/migrations:/app/crypto/migrations:ro
+      - ../../packages/billing/migrations:/app/billing/migrations:ro
       - ./init/vault/transit-init.sh:/app/init/vault-transit.sh:ro
 
   # ===========================================================================

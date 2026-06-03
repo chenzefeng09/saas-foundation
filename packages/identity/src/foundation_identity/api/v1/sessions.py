@@ -1,37 +1,49 @@
-"""Session (login / logout / service-account / me) endpoints — skeleton.
+"""Session (login / logout / service-account / me) endpoints.
 
-Full implementation delegates to Keycloak's token endpoint; this v1 skeleton
-covers the wire shape so contract tests pass. M2 adds the actual login flow.
+Wires the Identity service to Keycloak's OIDC endpoints:
 
-In addition to login/logout the module also hosts two endpoints required by
-the business layer (agent-platform B-M1 review feedback):
+* ``POST /sessions`` — end-user login via Keycloak password grant.
+* ``POST /sessions/service-account-token`` — short-lived workload token via
+  Keycloak ``client_credentials`` grant.
+* ``GET  /sessions/me`` — resolve caller identity by JWKS-verifying the
+  bearer token and returning the canonical user profile.
 
-* ``POST /sessions/service-account-token`` — Identity mints a short-lived,
-  scope-limited, tenant-bound JWT that a backend service (e.g. agent-platform
-  scheduler) can hand to a workload it spawns (e.g. an OpenHands container).
-  Replaces the previous anti-pattern where the scheduler forwarded its own
-  global API token into every sandbox.
-* ``GET /sessions/me`` — Resolves the caller's identity from the bearer
-  token; BFFs use this on every page-load to rehydrate the user profile
-  *without* trusting any client-side identity store.
+Token contract (must match ``schemas/session.py``):
+  * ``user_id`` MUST match ``^usr_[0-9A-Z]{26}$``.  Keycloak's native ``sub``
+    is a UUID, so the realm exposes a custom ``user_id`` user-attribute claim
+    that holds the ULID.  We prefer ``user_id`` over ``sub``; if the token
+    carries neither in the right shape, we 401.
+  * ``tenant_id`` MUST match ``^tnt_[0-9A-Z]{26}$``.  Sourced from the
+    realm-injected ``tenant_id`` claim; absent → fall back to
+    ``settings.default_tenant_id`` (used by service-account tokens).
 """
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import ulid
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Header, Path, status
 from fastapi.responses import Response
 
+from foundation_identity.adapters.keycloak_oidc import (
+    KeycloakOIDCAdapter,
+    get_keycloak_oidc,
+)
 from foundation_identity.api.dependencies import current_context
+from foundation_identity.config import get_settings
 from foundation_identity.domain.base import FoundationContext
 from foundation_identity.errors import (
+    INVALID_CREDENTIALS,
     SCOPE_NOT_ALLOWED,
     SESSION_NOT_FOUND,
+    TOKEN_INVALID,
     TTL_OUT_OF_RANGE,
     FoundationError,
 )
+from foundation_identity.observability import get_logger
 from foundation_identity.schemas.session import (
     CreateSessionRequest,
     MeResponse,
@@ -41,6 +53,7 @@ from foundation_identity.schemas.session import (
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+log = get_logger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Service-account scope catalogue — keep in sync with docs/CONVENTIONS.md §4
@@ -55,12 +68,56 @@ _ALLOWED_SCOPES: frozenset[str] = frozenset(
         "search.read",
         "search.write",
         "billing.usage.write",
-        # Add new scopes here AND in CONVENTIONS.md to keep them in lockstep.
     }
 )
 
 _MIN_TTL = 60
 _MAX_TTL = 86_400
+
+_USR_PATTERN = re.compile(r"^usr_[0-9A-Z]{26}$")
+_TNT_PATTERN = re.compile(r"^tnt_[0-9A-Z]{26}$")
+
+
+def _oidc_adapter() -> KeycloakOIDCAdapter:
+    return get_keycloak_oidc()
+
+
+def _extract_user_id(claims: dict[str, Any]) -> str:
+    """Pull the foundation ULID user_id out of a verified token.
+
+    Realm config injects a ``user_id`` claim (user-attribute mapper) that
+    holds the canonical ``usr_…`` ULID.  Tokens minted before that mapper
+    was added — or for non-human service accounts — will not carry it; we
+    fall back to ``sub`` *only* if it already matches the ULID shape, to
+    avoid 500ing on schema mismatch.
+    """
+    candidate = claims.get("user_id") or claims.get("sub", "")
+    if not isinstance(candidate, str) or not _USR_PATTERN.match(candidate):
+        raise FoundationError(
+            TOKEN_INVALID,
+            detail="Token does not carry a foundation user_id claim",
+        )
+    return candidate
+
+
+def _extract_tenant_id(claims: dict[str, Any]) -> str:
+    """Pull the foundation ULID tenant_id from a verified token (or default)."""
+    candidate = claims.get("tenant_id")
+    if isinstance(candidate, str) and _TNT_PATTERN.match(candidate):
+        return candidate
+    # Service-account / non-human tokens may legitimately lack tenant_id.
+    default = get_settings().default_tenant_id
+    if not _TNT_PATTERN.match(default):
+        raise FoundationError(
+            TOKEN_INVALID,
+            detail="Token missing tenant_id and default_tenant_id is malformed",
+        )
+    return default
+
+
+# --------------------------------------------------------------------------- #
+# POST /sessions — end-user login (Keycloak password grant)
+# --------------------------------------------------------------------------- #
 
 
 @router.post(
@@ -69,24 +126,47 @@ _MAX_TTL = 86_400
     status_code=status.HTTP_201_CREATED,
     operation_id="createSession",
 )
-async def create_session(body: CreateSessionRequest) -> SessionRead:
-    """SKELETON — returns a fabricated session.
+async def create_session(
+    body: CreateSessionRequest,
+    oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
+) -> SessionRead:
+    """Authenticate an end user and return a Keycloak-issued session.
 
-    Real implementation:
-      * EMAIL_PASSWORD → POST keycloak /token (password grant)
-      * OIDC           → exchange code at keycloak /broker/<provider>/endpoint
-      * SAML           → POST ACS endpoint
+    Only ``EMAIL_PASSWORD`` is wired in M2; ``OIDC`` and ``SAML`` raise
+    INVALID_CREDENTIALS until the broker flows land.
     """
-    now = datetime.now(UTC)
+    if body.method != "EMAIL_PASSWORD":
+        raise FoundationError(
+            INVALID_CREDENTIALS,
+            detail=f"Login method {body.method!r} not yet implemented",
+        )
+
+    tokens = await oidc.password_grant(
+        username=body.email,
+        password=body.password.get_secret_value(),
+    )
+    access_token = tokens["access_token"]
+    refresh_token = tokens.get("refresh_token", "")
+    expires_in = int(tokens.get("expires_in", 300))
+
+    # We verify the access_token we just minted: cheap (JWKS already cached
+    # after first hit) and lets us pull user_id/tenant_id without trusting
+    # the token blob ourselves.  Also catches realm-misconfiguration early.
+    claims = await oidc.verify_token(access_token)
+    user_id = _extract_user_id(claims)
+    tenant_id = _extract_tenant_id(claims)
+
+    issued_at = datetime.now(UTC)
     return SessionRead(
         id=f"sess_{ulid.new()!s}",
-        user_id=f"usr_{ulid.new()!s}",
-        tenant_id="tnt_01J5SKELETON00000000000000",
-        access_token="<keycloak-jwt-placeholder>",
-        refresh_token="<keycloak-refresh-placeholder>",
-        expires_at=now + timedelta(hours=1),
-        issued_at=now,
-        scopes=[],
+        user_id=user_id,
+        tenant_id=tenant_id,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=issued_at + timedelta(seconds=expires_in),
+        issued_at=issued_at,
+        scopes=tokens.get("scope", "").split() if tokens.get("scope") else [],
+        device_id=body.device_id,
     )
 
 
@@ -140,8 +220,18 @@ async def revoke_session(
 
 
 # --------------------------------------------------------------------------- #
-# /sessions/me — resolve caller identity from bearer token
+# GET /sessions/me — resolve caller identity from bearer token
 # --------------------------------------------------------------------------- #
+
+
+def _parse_bearer(authorization: str | None) -> str:
+    """Extract the bearer token from an ``Authorization`` header value."""
+    if not authorization:
+        raise FoundationError(TOKEN_INVALID, detail="Missing Authorization header")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise FoundationError(TOKEN_INVALID, detail="Expected 'Bearer <token>'")
+    return token
 
 
 @router.get(
@@ -151,31 +241,48 @@ async def revoke_session(
     summary="Resolve caller identity from bearer token",
 )
 async def get_me(
-    ctx: FoundationContext = Depends(current_context),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
 ) -> MeResponse:
-    """SKELETON — would join keycloak user record + tenant settings.
+    """JWKS-verify the bearer token and project the canonical user profile."""
+    token = _parse_bearer(authorization)
+    claims = await oidc.verify_token(token)
 
-    Real implementation:
-      1. middleware already verified the bearer JWT signature + audience
-      2. read user from identity.user table by ctx.user_id
-      3. join tenant.user_role for roles
-      4. read mfa_enabled / locale from user profile
-    """
+    user_id = _extract_user_id(claims)
+    tenant_id = _extract_tenant_id(claims)
+
+    email = claims.get("email") or claims.get("preferred_username") or ""
+    if not email:
+        raise FoundationError(
+            TOKEN_INVALID,
+            detail="Token missing email / preferred_username claim",
+        )
+
+    realm_access = claims.get("realm_access") or {}
+    roles = list(realm_access.get("roles") or [])
+
+    display_name = (
+        claims.get("name")
+        or " ".join(
+            x for x in (claims.get("given_name"), claims.get("family_name")) if x
+        ).strip()
+        or claims.get("preferred_username")
+        or email.split("@", 1)[0]
+    )
+
     return MeResponse(
-        user_id=ctx.user_id or f"usr_{ulid.new()!s}",
-        tenant_id=ctx.tenant_id,
-        email="placeholder@example.com",
-        display_name="placeholder",
-        roles=[],
+        user_id=user_id,
+        tenant_id=tenant_id,
+        email=email,
+        display_name=display_name,
+        roles=roles,
         mfa_enabled=False,
-        # locale will be sourced from the user record once M2 wires the DB
-        # lookup; placeholder default is fine for the skeleton.
         locale="zh-CN",
     )
 
 
 # --------------------------------------------------------------------------- #
-# /sessions/service-account-token — mint short-lived workload tokens
+# POST /sessions/service-account-token — mint short-lived workload tokens
 # --------------------------------------------------------------------------- #
 
 
@@ -189,26 +296,30 @@ async def get_me(
 async def issue_service_account_token(
     body: ServiceAccountTokenRequest,
     ctx: FoundationContext = Depends(current_context),
+    oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
 ) -> ServiceAccountTokenResponse:
     """Issue a short-lived service-account token.
 
     Authorisation rules:
-      * Caller MUST be authenticated as a *service principal* (e.g.
-        ``svc_agent-scheduler``).  End-user tokens are rejected.  This skeleton
-        leaves the principal-type check to M2 once the JWT validator is in.
-      * ``body.tenant_id`` MUST equal ``ctx.tenant_id``.  A service token for
-        tenant A cannot mint a token for tenant B.  Cross-tenant minting needs
-        a dedicated admin endpoint (out of scope).
+      * ``body.tenant_id`` MUST equal ``ctx.tenant_id`` — a service token for
+        tenant A cannot mint one for tenant B (cross-tenant minting needs a
+        dedicated admin endpoint, out of scope).
       * Every scope in ``body.scopes`` MUST appear in :data:`_ALLOWED_SCOPES`.
+      * ``ttl_seconds`` is bounded by ``_MIN_TTL`` / ``_MAX_TTL``.
 
-    The skeleton fabricates the token; M2 plugs in Keycloak token-exchange
-    (RFC 8693) so the JWT is signed by the realm key downstream services
-    already trust.
+    Implementation: we hand back a Keycloak-minted ``client_credentials``
+    access token.  Keycloak does NOT honour our requested ``ttl_seconds``
+    directly — the realm's access-token lifespan applies — so the
+    ``expires_at`` we report is the *actual* one from the response, while
+    ``ttl_seconds`` in the request is treated as a *ceiling hint* only.
     """
     if body.tenant_id != ctx.tenant_id:
         raise FoundationError(
             SCOPE_NOT_ALLOWED,
-            detail=f"tenant_id {body.tenant_id} does not match caller tenant {ctx.tenant_id}",
+            detail=(
+                f"tenant_id {body.tenant_id} does not match caller tenant "
+                f"{ctx.tenant_id}"
+            ),
         )
 
     unknown = sorted(set(body.scopes) - _ALLOWED_SCOPES)
@@ -219,15 +330,17 @@ async def issue_service_account_token(
         )
 
     if not (_MIN_TTL <= body.ttl_seconds <= _MAX_TTL):
-        # Belt + braces; pydantic Field already enforces this.
         raise FoundationError(TTL_OUT_OF_RANGE)
+
+    tokens = await oidc.client_credentials_grant()
+    expires_in = int(tokens.get("expires_in", body.ttl_seconds))
 
     issued_at = datetime.now(UTC)
     return ServiceAccountTokenResponse(
-        access_token="<keycloak-token-exchange-jwt-placeholder>",
+        access_token=tokens["access_token"],
         token_type="BEARER",
         issued_at=issued_at,
-        expires_at=issued_at + timedelta(seconds=body.ttl_seconds),
+        expires_at=issued_at + timedelta(seconds=expires_in),
         tenant_id=body.tenant_id,
         subject=body.subject,
         scopes=list(body.scopes),

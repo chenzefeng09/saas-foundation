@@ -33,8 +33,17 @@ COPY alembic.ini ./
 
 RUN poetry install --only main
 
-# ---------- Stage 2: runtime (distroless) ----------
-FROM gcr.io/distroless/python3-debian12:nonroot
+# ---------- Stage 2: runtime ----------
+# NOTE: distroless python3-debian12 ships Python 3.11 which conflicts with
+# pyproject's python = "^3.12" requirement and breaks the venv symlinks.
+# Switched to the slim 3.12 image to match the builder; revisit once
+# distroless ships 3.12.
+FROM python:3.12-slim-bookworm AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r nonroot && useradd -r -g nonroot -u 65532 -m -d /home/nonroot nonroot
 
 WORKDIR /app
 
@@ -52,7 +61,6 @@ USER nonroot
 
 EXPOSE 8001
 
-# distroless 没有 shell，CMD 必须是 exec 形式
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "uvicorn"]
 CMD ["foundation_identity.main:app", \
      "--host", "0.0.0.0", \

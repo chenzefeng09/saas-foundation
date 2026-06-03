@@ -78,6 +78,31 @@ class IngestService:
         await session.execute(stmt)
         await session.flush()
 
+    async def record_attempts(
+        self,
+        session: AsyncSession,
+        row_ids: list[int],
+        *,
+        error: str,
+    ) -> None:
+        """Increment attempts counter + record last_error for failed rows.
+
+        Called when ClickHouse write fails; leaves delivered_at=NULL so the
+        worker will retry on the next poll cycle.
+        """
+        if not row_ids:
+            return
+        stmt = (
+            update(Outbox)
+            .where(Outbox.id.in_(row_ids))
+            .values(
+                attempts=Outbox.attempts + 1,
+                last_error=error[:2000],  # truncate to avoid huge error strings
+            )
+        )
+        await session.execute(stmt)
+        await session.flush()
+
 
 def _canonical_json(data: dict[str, Any]) -> dict[str, Any]:
     """Strip None values for compact JSON storage."""

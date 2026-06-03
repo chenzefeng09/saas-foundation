@@ -15,7 +15,9 @@ from foundation_identity.adapters.keycloak_admin import (
 from foundation_identity.adapters.password_hasher import PasswordHasher, get_password_hasher
 from foundation_identity.domain.base import FoundationContext, foundation_context
 from foundation_identity.domain.db import session_scope
+from foundation_identity.services.mfa_service import MfaService
 from foundation_identity.services.password_policy_service import PasswordPolicyService
+from foundation_identity.services.sso_service import SsoService
 from foundation_identity.services.user_service import UserService
 
 
@@ -57,3 +59,17 @@ def user_service(
 
 def password_policy_service() -> PasswordPolicyService:
     return PasswordPolicyService()
+
+
+def mfa_service(
+    kc: KeycloakAdminAdapter = Depends(keycloak),
+    ap: AuditPublisher = Depends(audit),
+) -> MfaService:
+    return MfaService(keycloak=kc, audit=ap)
+
+
+def sso_service(
+    kc: KeycloakAdminAdapter = Depends(keycloak),
+    ap: AuditPublisher = Depends(audit),
+) -> SsoService:
+    return SsoService(keycloak=kc, audit=ap)

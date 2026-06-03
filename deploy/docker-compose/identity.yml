@@ -1,0 +1,65 @@
+# =============================================================================
+# foundation-identity 单服务 compose（开发用）
+#
+# 前置：  foundation dev.yml 已 up（提供 postgres/pgbouncer/keycloak/otel network）
+# 启动：  docker compose -f identity.yml up -d --build
+# 状态：  docker compose -f identity.yml ps
+# 清理：  docker compose -f identity.yml down
+#
+# 端口：  identity-service  8001  → http://localhost:8001/api/identity/v1/healthz
+# =============================================================================
+
+name: saas-foundation-identity
+
+networks:
+  foundation:
+    external: true
+    name: ${FOUNDATION_NETWORK:-saas-foundation-dev_foundation}
+
+services:
+  # ===========================================================================
+  # Identity Service — sessions / users / MFA / SSO / policies
+  # container_name 直接叫 identity-service 让 agent-platform 的
+  # BFF_FOUNDATION_IDENTITY_URL=http://identity-service:8001/... 能解析。
+  # ===========================================================================
+  identity-service:
+    build:
+      context: ../../packages/identity
+      dockerfile: Dockerfile
+    container_name: identity-service
+    restart: unless-stopped
+    environment:
+      IDENTITY_ENV: dev
+      IDENTITY_LOG_LEVEL: DEBUG
+      IDENTITY_HTTP_PORT: "8001"
+      # PgBouncer transaction-mode 池；asyncpg DSN
+      IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      IDENTITY_REDIS_DSN: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
+      # 容器内通过服务名访问 keycloak（IPv4 OK）
+      IDENTITY_KEYCLOAK_BASE_URL: http://keycloak:8080
+      IDENTITY_KEYCLOAK_REALM: foundation
+      IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+      IDENTITY_JWT_ISSUER: http://keycloak:8080/realms/foundation
+      # OIDC client secret for `foundation-identity-service` in realm `foundation`.
+      # Used for password / client_credentials grants against Keycloak.
+      IDENTITY_FOUNDATION_IDENTITY_CLIENT_SECRET: ${IDENTITY_CLIENT_SECRET:-dev-identity-service-secret-change-me}
+      # Tenant fallback when a verified token has no tenant_id claim
+      # (e.g. client_credentials service-account tokens).
+      IDENTITY_DEFAULT_TENANT_ID: ${IDENTITY_DEFAULT_TENANT_ID:-tnt_01KT4JBRS02FTG9EW0CB8YZHDV}
+      IDENTITY_OTEL_ENABLED: "true"
+      IDENTITY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      IDENTITY_AUDIT_PUBLISHER_KIND: log_only
+    ports:
+      - "${PORT_IDENTITY:-8001}:8001"
+    networks:
+      foundation:
+        aliases:
+          - identity-service
+    healthcheck:
+      # distroless 没 shell；直接调 venv python urllib
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/identity/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 15

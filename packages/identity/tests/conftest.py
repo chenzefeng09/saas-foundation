@@ -12,7 +12,9 @@ from httpx import ASGITransport, AsyncClient
 
 from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
+from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
 from foundation_identity.api.dependencies import audit, keycloak
+from foundation_identity.api.v1.sessions import _oidc_adapter
 from foundation_identity.main import create_app
 
 
@@ -58,11 +60,43 @@ def mock_audit() -> AsyncMock:
     return mock
 
 
+# Stub claims returned by the mock OIDC adapter's verify_token.
+# Tests that call /sessions/me or /sessions (password grant) rely on these.
+STUB_OIDC_CLAIMS: dict[str, Any] = {
+    "user_id": "usr_01J5DEVUSER000000000000001",
+    "tenant_id": "tnt_01J5DEV00000000000000000A1",
+    "email": "stub-user@example.com",
+    "preferred_username": "stub-user",
+    "name": "Stub User",
+    "realm_access": {"roles": ["user"]},
+    "sub": "usr_01J5DEVUSER000000000000001",
+    "exp": 9999999999,
+}
+
+
 @pytest.fixture
-def app(mock_keycloak: AsyncMock, mock_audit: AsyncMock) -> FastAPI:
+def mock_oidc() -> AsyncMock:
+    """Stub OIDC adapter: verify_token returns STUB_OIDC_CLAIMS; grants return
+    a fake token bundle with access_token='stub-access-token'."""
+    mock = AsyncMock(spec=KeycloakOIDCAdapter)
+    mock.verify_token.return_value = STUB_OIDC_CLAIMS
+    _token_bundle: dict[str, Any] = {
+        "access_token": "stub-access-token",
+        "refresh_token": "stub-refresh-token",
+        "expires_in": 300,
+        "scope": "openid",
+    }
+    mock.password_grant.return_value = _token_bundle
+    mock.client_credentials_grant.return_value = _token_bundle
+    return mock
+
+
+@pytest.fixture
+def app(mock_keycloak: AsyncMock, mock_audit: AsyncMock, mock_oidc: AsyncMock) -> FastAPI:
     application = create_app()
     application.dependency_overrides[keycloak] = lambda: mock_keycloak
     application.dependency_overrides[audit] = lambda: mock_audit
+    application.dependency_overrides[_oidc_adapter] = lambda: mock_oidc
     return application
 
 

@@ -46,6 +46,16 @@ class Settings(BaseSettings):
         default=PostgresDsn("postgresql+asyncpg://app_migrator:app_migrator_change_me@localhost:5432/foundation"),
         description="Alembic 用，直连 PG（绕过 PgBouncer），且角色 BYPASSRLS",
     )
+    # app_admin is the privileged PG role that owns admin_all RLS policies.
+    # Used exclusively by platform-admin code paths after super_admin authz check.
+    # Falls back to db_dsn if unset (acceptable for dev/test).
+    db_dsn_admin: PostgresDsn | None = Field(
+        default=None,
+        description=(
+            "DSN for app_admin PG role — bypasses RLS when app.actor=ADMIN is set "
+            "inside the transaction.  Must be set in production."
+        ),
+    )
     db_pool_size: int = 10
     db_max_overflow: int = 10
     db_pool_timeout_seconds: int = 30
@@ -72,12 +82,25 @@ class Settings(BaseSettings):
     keycloak_admin_password: SecretStr = SecretStr("keycloak_admin_change_me")
     keycloak_timeout_seconds: float = 5.0
 
+    # OIDC client used by identity-service to call Keycloak's /token endpoint
+    # on behalf of end users (password grant) and itself (client_credentials).
+    # MUST exist in the realm with directAccessGrantsEnabled + serviceAccountsEnabled.
+    foundation_identity_client_secret: SecretStr = SecretStr(
+        "dev-identity-service-secret-change-me",
+    )
+
     # JWT verification (issuer + JWKS endpoint)
     jwt_issuer: AnyHttpUrl = Field(
         default=AnyHttpUrl("http://127.0.0.1:8080/realms/foundation"),
     )
     jwt_audience: str = "foundation-api"
-    jwks_cache_ttl_seconds: int = 600
+    jwks_cache_ttl_seconds: int = 300
+
+    # Fallback tenant when an authenticated token does NOT carry a tenant_id
+    # claim (e.g. service-account tokens minted via client_credentials).  In
+    # production this should be a platform-admin tenant id, never a real
+    # business tenant.
+    default_tenant_id: str = "tnt_01J5DEV0000000000000000AA"
 
     # -------------------------------------------------------------------------
     # Audit publisher
@@ -101,6 +124,23 @@ class Settings(BaseSettings):
     session_idle_timeout_floor_seconds: int = 30 * 60  # 30 min
     session_absolute_timeout_floor_seconds: int = 8 * 60 * 60  # 8h
     session_max_concurrent_floor: int = 2
+
+    # -------------------------------------------------------------------------
+    # Downstream service URLs (used by provisioning service)
+    # -------------------------------------------------------------------------
+    org_url: str = "http://org:8003/api/org/v1"
+    billing_url: str = "http://billing:8007/api/billing/v1"
+
+    # -------------------------------------------------------------------------
+    # Platform admin
+    # -------------------------------------------------------------------------
+    # Pre-shared secret carried in X-Internal-Admin-Token by the BFF admin path.
+    # When present and correct, platform-admin endpoints may open an
+    # admin_session_scope.  Empty string means the feature is disabled
+    # (suitable for tenant-service-only deployments; platform endpoints will
+    # always 403 if authz check fails anyway — this is defence-in-depth).
+    internal_admin_token: SecretStr = SecretStr("")
+    authz_url: str = "http://authz:8002/api/authz/v1"
 
     # -------------------------------------------------------------------------
     # Multi-tenancy

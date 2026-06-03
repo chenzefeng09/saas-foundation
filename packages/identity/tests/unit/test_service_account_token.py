@@ -112,7 +112,10 @@ async def test_issue_rejects_malformed_subject(client: AsyncClient) -> None:
 
 @pytest.mark.unit
 async def test_me_returns_tenant_and_user(client: AsyncClient) -> None:
-    resp = await client.get("/api/identity/v1/sessions/me", headers=_headers())
+    # /sessions/me now requires Authorization: Bearer <token>; the OIDC adapter
+    # is mocked via app.dependency_overrides so any non-empty bearer works.
+    headers = {**_headers(), "Authorization": "Bearer stub-access-token"}
+    resp = await client.get("/api/identity/v1/sessions/me", headers=headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["tenant_id"] == _VALID_TENANT

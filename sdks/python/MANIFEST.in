@@ -1,0 +1,11 @@
+# MANIFEST.in — sdist inclusion rules for foundation-sdk.
+#
+# Poetry honours this when building sdists. We keep the wheel lean (only the
+# importable package) while letting the sdist carry README, license info, and
+# the PEP 561 marker so editable installs still see static type info.
+include README.md
+include py.typed
+recursive-include foundation_sdk *.py py.typed
+recursive-exclude foundation_sdk __pycache__
+recursive-exclude tests *
+prune _template
