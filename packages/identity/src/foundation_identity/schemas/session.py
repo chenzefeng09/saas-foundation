@@ -2,20 +2,39 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
 from pydantic.types import StringConstraints
+
+# Loose email pattern that allows special-use TLDs like .local (used in dev)
+# while still requiring a basic user@host.tld structure.
+_LOOSE_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class EmailPasswordCredential(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     method: Literal["EMAIL_PASSWORD"]
-    email: EmailStr
+    email: str
     password: SecretStr
     device_id: str | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        """Accept any syntactically plausible email, including .local/.test TLDs.
+
+        Pydantic's built-in EmailStr uses email-validator which rejects RFC-6761
+        reserved TLDs (.local, .test, .example, …).  Since the foundation stack
+        uses .local addresses in dev/test, we fall back to a permissive regex
+        that still catches obvious typos (missing @, missing dot, whitespace).
+        """
+        if not _LOOSE_EMAIL_RE.match(v):
+            raise ValueError(f"Invalid email address: {v!r}")
+        return v.lower()
 
 
 class OidcCredential(BaseModel):
@@ -131,7 +150,8 @@ class MeResponse(BaseModel):
 
     user_id: str = Field(pattern=r"^usr_[0-9A-Z]{26}$")
     tenant_id: str = Field(pattern=r"^tnt_[0-9A-Z]{26}$")
-    email: EmailStr
+    # Use str instead of EmailStr to allow dev .local addresses.
+    email: str
     display_name: str
     roles: list[str] = Field(default_factory=list)
     mfa_enabled: bool = False

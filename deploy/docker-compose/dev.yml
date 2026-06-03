@@ -388,10 +388,12 @@ services:
       IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
       IDENTITY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
       IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
-      IDENTITY_KEYCLOAK_URL: http://keycloak:8080
+      IDENTITY_KEYCLOAK_BASE_URL: http://keycloak:8080
       IDENTITY_KEYCLOAK_REALM: foundation
       IDENTITY_KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
       IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+      # Tokens issued via the internal Docker hostname carry iss=keycloak:8080
+      IDENTITY_JWT_ISSUER: http://keycloak:8080/realms/foundation
       IDENTITY_VAULT_URL: http://vault:8200
       IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
       IDENTITY_OTEL_ENABLED: "true"
@@ -496,7 +498,9 @@ services:
       BILLING_OTEL_ENABLED: "true"
       BILLING_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
     ports:
-      - "${PORT_BILLING:-8007}:8007"
+      # host 端口用 8017 避开 agent-platform 的 agent-scheduler(host 8007)；
+      # 容器内仍 8007，服务间用 billing:8007 互访不受影响
+      - "${PORT_BILLING:-8017}:8007"
     networks: [foundation]
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8007/api/billing/v1/healthz\").read()' || exit 1"]

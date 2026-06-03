@@ -28,3 +28,7 @@ SELECT id, name, tier FROM tenant.tenant;
 
 -- alembic 创建 FK 引用 tenant.tenant 需要 REFERENCES 权限（在表存在后才能 GRANT）
 GRANT REFERENCES ON tenant.tenant TO app_migrator;
+
+-- app_admin (platform-admin role) needs SELECT/INSERT/UPDATE for cross-tenant admin endpoints
+-- (identity platform_admin.py reads this table with no RLS after super_admin authz check)
+GRANT SELECT, INSERT, UPDATE ON tenant.tenant TO app_admin;
