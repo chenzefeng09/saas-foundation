@@ -172,7 +172,7 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX rb_active_idx ON authz.role_binding "
         "(tenant_id, principal_id) "
-        "WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())"
+        "WHERE revoked_at IS NULL"
     )
     op.execute(
         "CREATE INDEX rb_expires_idx ON authz.role_binding (expires_at) "

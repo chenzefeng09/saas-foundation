@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # claim (e.g. service-account tokens minted via client_credentials).  In
     # production this should be a platform-admin tenant id, never a real
     # business tenant.
-    default_tenant_id: str = "tnt_01J5DEV0000000000000000AA"
+    default_tenant_id: str = "tnt_01J5DEVXX00000000000000001"
 
     # -------------------------------------------------------------------------
     # Audit publisher

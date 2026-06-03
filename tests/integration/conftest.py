@@ -7,7 +7,7 @@ environment variables to be set (injected by docker-compose):
   FOUNDATION_AUTHZ_URL     = http://authz:8002/api/authz/v1
   FOUNDATION_ORG_URL       = http://org:8003/api/org/v1
   FOUNDATION_CRYPTO_URL    = http://crypto:8004/api/crypto/v1
-  FOUNDATION_TENANT_ID     = tnt_01J5DEV0000000000000000AA
+  FOUNDATION_TENANT_ID     = tnt_01J5DEVXX00000000000000001
   FOUNDATION_USER_ID       = usr_01J5INT000000000000TEST1
   FOUNDATION_ACTOR         = SERVICE
 """
@@ -70,7 +70,7 @@ class TenantContext:
     @classmethod
     def from_env(cls) -> TenantContext:
         return cls(
-            tenant_id=os.environ.get("FOUNDATION_TENANT_ID", "tnt_01J5DEV0000000000000000AA"),
+            tenant_id=os.environ.get("FOUNDATION_TENANT_ID", "tnt_01J5DEVXX00000000000000001"),
             user_id=os.environ.get("FOUNDATION_USER_ID", "usr_01J5INT000000000000TEST1"),
             actor=os.environ.get("FOUNDATION_ACTOR", "SERVICE"),
         )

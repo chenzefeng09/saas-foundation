@@ -93,7 +93,9 @@ async def sign_merkle_root(
     )
     resp.raise_for_status()
     body = resp.json()
-    return body["signature_b64"], body["key_id"]
+    # Crypto API returns kek_id (not key_id); handle both for compatibility
+    key_id = body.get("key_id") or body.get("kek_id") or ""
+    return body["signature_b64"], key_id
 
 
 async def verify_signature(

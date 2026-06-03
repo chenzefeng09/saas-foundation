@@ -18,9 +18,13 @@ CREATE TABLE IF NOT EXISTS tenant.tenant (
 );
 
 -- Seed dev 租户
+-- IDs must be 26-char suffix (^tnt_[0-9A-Z]{26}$) — matches audit-init KEK tenants
 INSERT INTO tenant.tenant (id, name, tier) VALUES
-    ('tnt_01J5DEV0000000000000000AA', 'Dev Tenant A', 'PRO'),
-    ('tnt_01J5DEV0000000000000000BB', 'Dev Tenant B', 'PRO')
+    ('tnt_01J5DEVXX00000000000000001', 'Dev Tenant A', 'PRO'),
+    ('tnt_01J5DEVXX00000000000000002', 'Dev Tenant B', 'PRO')
 ON CONFLICT (id) DO NOTHING;
 
 SELECT id, name, tier FROM tenant.tenant;
+
+-- alembic 创建 FK 引用 tenant.tenant 需要 REFERENCES 权限（在表存在后才能 GRANT）
+GRANT REFERENCES ON tenant.tenant TO app_migrator;

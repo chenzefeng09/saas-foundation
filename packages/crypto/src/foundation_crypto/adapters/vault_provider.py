@@ -217,7 +217,7 @@ class VaultKeyProvider:
 
         params: dict[str, Any] = {
             "name": name,
-            "input": _b64encode(data),
+            "hash_input": _b64encode(data),
             "mount_point": self._st.mount,
         }
         if prehashed and sign_algorithm:
@@ -252,7 +252,7 @@ class VaultKeyProvider:
 
         params: dict[str, Any] = {
             "name": name,
-            "input": _b64encode(data),
+            "hash_input": _b64encode(data),
             "signature": _b64encode(signature),
             "mount_point": self._st.mount,
         }
@@ -311,6 +311,9 @@ class VaultKeyProvider:
 
 def _b64decode(s: str) -> bytes:
     import base64
+    # Vault signature format: "vault:v1:<base64>" — strip the prefix if present
+    if isinstance(s, str) and ":" in s:
+        s = s.rsplit(":", 1)[-1]
     return base64.b64decode(s)
 
 

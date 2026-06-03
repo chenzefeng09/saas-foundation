@@ -298,11 +298,10 @@ services:
     ports:
       - "8181:8181"
     networks: [foundation]
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8181/health | grep -q '{}'"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
+    # opa:1.x-static is distroless (no wget/shell/curl).  The healthcheck
+    # cannot run inside the container.  OPA starts in <1 s and is stable,
+    # so we rely on service_started for dependents rather than service_healthy.
+    # (If a native health probe is needed in future, switch to a non-static tag.)
 
   # ===========================================================================
   # migration-runner — 按序跑所有 foundation 服务的 Alembic 迁移（一次性 job）
@@ -333,14 +332,19 @@ services:
     command:
       - |
         set -e
-        pip install --quiet poetry
+        # 走清华源，避开默认 PyPI 在国内的 hash 不匹配问题
+        export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        pip install --quiet -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn poetry
         # Put venvs in /tmp so we don't write into the read-only source mounts
         export POETRY_VIRTUALENVS_PATH=/tmp/poetry-venvs
         export POETRY_VIRTUALENVS_IN_PROJECT=false
         run_migration() {
           svc="$$1"; pkg_dir="$$2"
           echo "=== Running $${svc} migrations ==="
-          cd "$${pkg_dir}"
+          # Copy to /tmp so poetry can write lock updates (source mounts are :ro)
+          cp -r "$${pkg_dir}" /tmp/$${svc}
+          cd /tmp/$${svc}
           poetry install --only main --quiet
           poetry run alembic upgrade head
           echo "=== $${svc} migrations done ==="
@@ -400,7 +404,7 @@ services:
         aliases:
           - identity-service
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8001/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8001/api/identity/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -418,7 +422,7 @@ services:
       postgres:
         condition: service_healthy
       opa:
-        condition: service_healthy
+        condition: service_started   # static image has no healthcheck tool; OPA starts in <1s
       migration-runner:
         condition: service_completed_successfully
     environment:
@@ -434,7 +438,7 @@ services:
       - "${PORT_AUTHZ:-8002}:8002"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8002/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8002/api/authz/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -465,7 +469,7 @@ services:
       - "${PORT_ORG:-8003}:8003"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8003/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8003/api/org/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -495,7 +499,7 @@ services:
       - "${PORT_BILLING:-8007}:8007"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8007/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8007/api/billing/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -620,7 +624,7 @@ services:
       - "${PORT_CRYPTO:-8004}:8004"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8004/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8004/api/crypto/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -675,7 +679,7 @@ services:
       - "${PORT_AUDIT:-8013}:8013"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8013/healthz\").read()' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8013/api/audit/v1/healthz\").read()' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -719,8 +723,8 @@ services:
           fi
         }
 
-        create_kek tnt_01J5DEV0000000000000000AA
-        create_kek tnt_01J5DEV0000000000000000BB
+        create_kek tnt_01J5DEVXX00000000000000001
+        create_kek tnt_01J5DEVXX00000000000000002
         echo "=== audit-init: all KEKs ready ==="
     networks: [foundation]
 
@@ -734,7 +738,7 @@ services:
       dockerfile: Dockerfile
     container_name: foundation-audit-worker
     restart: unless-stopped
-    entrypoint: ["/app/.venv/bin/foundation-audit-worker"]
+    entrypoint: ["/app/.venv/bin/python", "-c", "from foundation_audit.worker.batch_processor import run; run()"]
     depends_on:
       postgres:
         condition: service_healthy

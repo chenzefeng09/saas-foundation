@@ -48,6 +48,15 @@ def upgrade() -> None:
                          ("DELETE", f"USING ({tenant_match})")]:
         op.execute(f'CREATE POLICY tenant_{cmd.lower()} ON audit."outbox" FOR {cmd} TO app_user, app_admin {clause}')
 
+    # audit-worker connects as app_user but uses system_session_scope (app.actor='SYSTEM')
+    # to drain the outbox cross-tenant. This policy enables that cross-tenant access.
+    op.execute(
+        "CREATE POLICY system_all ON audit.\"outbox\" "
+        "FOR ALL TO app_user, app_admin "
+        "USING (current_setting('app.actor', true) = 'SYSTEM') "
+        "WITH CHECK (current_setting('app.actor', true) = 'SYSTEM')"
+    )
+
     # Grants
     op.execute("GRANT USAGE ON SCHEMA audit TO app_user, app_admin, app_observability")
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA audit TO app_user, app_admin")

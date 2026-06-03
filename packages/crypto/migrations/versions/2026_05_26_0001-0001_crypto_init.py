@@ -274,6 +274,14 @@ def upgrade() -> None:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA crypto "
         "GRANT SELECT ON TABLES TO app_observability"
     )
+    # Sequences (e.g. kek_history.id is BIGSERIAL)
+    op.execute(
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA crypto TO app_user, app_admin"
+    )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA crypto "
+        "GRANT USAGE, SELECT ON SEQUENCES TO app_user, app_admin"
+    )
 
 
 def downgrade() -> None:

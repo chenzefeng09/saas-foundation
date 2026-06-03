@@ -94,8 +94,8 @@
   },
 
   "groups": [
-    { "name": "tnt_01J5DEV0000000000000000AA", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"], "tenant_name": ["Dev Tenant A"] } },
-    { "name": "tnt_01J5DEV0000000000000000BB", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"], "tenant_name": ["Dev Tenant B"] } }
+    { "name": "tnt_01J5DEVXX00000000000000001", "attributes": { "tenant_id": ["tnt_01J5DEVXX00000000000000001"], "tenant_name": ["Dev Tenant A"] } },
+    { "name": "tnt_01J5DEVXX00000000000000002", "attributes": { "tenant_id": ["tnt_01J5DEVXX00000000000000002"], "tenant_name": ["Dev Tenant B"] } }
   ],
 
   "clients": [
@@ -169,8 +169,8 @@
         { "type": "password", "value": "Tenant-A-Dev-Pwd-15chars!", "temporary": false }
       ],
       "realmRoles": ["tenant_admin", "member"],
-      "groups": ["/tnt_01J5DEV0000000000000000AA"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+      "groups": ["/tnt_01J5DEVXX00000000000000001"],
+      "attributes": { "tenant_id": ["tnt_01J5DEVXX00000000000000001"] }
     },
     {
       "username": "bob@tenant-a.local",
@@ -183,8 +183,8 @@
         { "type": "password", "value": "Tenant-A-Bob-Pwd-15chars!", "temporary": false }
       ],
       "realmRoles": ["member"],
-      "groups": ["/tnt_01J5DEV0000000000000000AA"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+      "groups": ["/tnt_01J5DEVXX00000000000000001"],
+      "attributes": { "tenant_id": ["tnt_01J5DEVXX00000000000000001"] }
     },
     {
       "username": "carol@tenant-b.local",
@@ -197,8 +197,8 @@
         { "type": "password", "value": "Tenant-B-Dev-Pwd-15chars!", "temporary": false }
       ],
       "realmRoles": ["tenant_admin", "member"],
-      "groups": ["/tnt_01J5DEV0000000000000000BB"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"] }
+      "groups": ["/tnt_01J5DEVXX00000000000000002"],
+      "attributes": { "tenant_id": ["tnt_01J5DEVXX00000000000000002"] }
     }
   ],
 

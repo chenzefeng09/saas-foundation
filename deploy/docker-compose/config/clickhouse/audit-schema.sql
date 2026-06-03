@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS audit.events
     -- 上下文
     ip                  Nullable(String),
     user_agent          Nullable(String),
-    country             Nullable(LowCardinality(String)),
+    country             Nullable(String),
 
     -- 负载（脱敏后 JSON 字符串）
     payload             String DEFAULT '{}',
@@ -131,6 +131,6 @@ CREATE TABLE IF NOT EXISTS audit.events_by_resource
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
-ORDER BY (tenant_id, resource_type, resource_id, occurred_at)
+ORDER BY (tenant_id, resource_type, occurred_at, event_id)
 TTL toDateTime(occurred_at) + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;

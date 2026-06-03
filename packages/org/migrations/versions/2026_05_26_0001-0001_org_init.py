@@ -310,7 +310,7 @@ def upgrade() -> None:
     )
     op.execute(
         "CREATE INDEX uos_ou_idx ON org.user_org_unit_secondary (tenant_id, org_unit_id) "
-        "WHERE valid_until IS NULL OR valid_until > now()"
+        "WHERE valid_until IS NULL"
     )
     op.execute(
         "CREATE INDEX uos_user_idx ON org.user_org_unit_secondary (tenant_id, user_id)"

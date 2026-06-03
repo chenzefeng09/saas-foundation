@@ -169,7 +169,7 @@ def _event_to_row(ev: dict[str, Any]) -> list[Any]:
         payload_size,
         False,                                   # payload_truncated
         [],                                      # compliance_modes
-        None,                                    # retention_until (CH default)
+        occurred_at.date(),                      # retention_until: CH default is +1 year; provide date to avoid NULL
         False,                                   # legal_hold
         ev.get("prev_hash", "0" * 64),
         ev.get("curr_hash", "0" * 64),
