@@ -128,7 +128,8 @@ async def _bootstrap(
     db_url: str,
     dry_run: bool,
 ) -> None:
-    from sqlalchemy import text
+    from sqlalchemy import String, bindparam, text
+    from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 
     engine = await _make_engine(db_url)
 
@@ -163,8 +164,6 @@ async def _bootstrap(
 
                 role_id = _new_role_id()
                 role_ids[name] = role_id
-                perms_literal = "{" + ",".join(role_def["permissions"]) + "}"
-
                 if dry_run:
                     print(f"  [dry-run] would INSERT role '{name}' id={role_id}")
                 else:
@@ -177,6 +176,8 @@ async def _bootstrap(
                             "VALUES "
                             "(:id, :tenant_id, :name, :display_name, :description, "
                             " TRUE, TRUE, :permissions, now(), now(), 'BOOTSTRAP')"
+                        ).bindparams(
+                            bindparam("permissions", type_=PG_ARRAY(String))
                         ),
                         {
                             "id": role_id,
@@ -184,7 +185,7 @@ async def _bootstrap(
                             "name": name,
                             "display_name": role_def["display_name"],
                             "description": role_def["description"],
-                            "permissions": perms_literal,
+                            "permissions": list(role_def["permissions"]),
                         },
                     )
                     print(f"  [created] role '{name}' id={role_id}")

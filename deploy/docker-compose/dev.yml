@@ -733,6 +733,49 @@ services:
     networks: [foundation]
 
   # ===========================================================================
+  # authz-init — 为 dev 租户建系统角色 + 绑定 admin super_admin（一次性 job）
+  # 依赖 migration-runner 完成（authz schema 已建好）+ postgres healthy。
+  # 幂等：角色/绑定已存在时静默跳过（ON CONFLICT 逻辑在脚本里）。
+  # ===========================================================================
+  authz-init:
+    image: python:3.12-slim-bookworm
+    container_name: foundation-authz-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      # app_admin 拥有 RLS bypass（admin_all policy），可写 authz.role / role_binding
+      AUTHZ_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@postgres:5432/foundation
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        pip install --quiet sqlalchemy[asyncio] asyncpg ulid-py
+        echo "=== authz-init: installing tenant roles ==="
+        run_bootstrap() {
+          TENANT_ID="$$1"
+          ADMIN_USER_ID="$$2"
+          echo "--- tenant $${TENANT_ID} ---"
+          python /mnt/authz/scripts/bootstrap_tenant_roles.py \
+            --tenant-id "$${TENANT_ID}" \
+            $${ADMIN_USER_ID:+--admin-user-id "$${ADMIN_USER_ID}"} \
+            --db-url "$${AUTHZ_DB_DSN_ADMIN}"
+        }
+        # Dev Tenant A: admin@foundation.local 绑 super_admin
+        run_bootstrap tnt_01J5DEVXX00000000000000001 usr_01KT7TZ70AM2RK8P0C01KMBPRR
+        # Dev Tenant B: 只建角色，无需 admin 绑定
+        run_bootstrap tnt_01J5DEVXX00000000000000002 ""
+        echo "=== authz-init: all done ==="
+    volumes:
+      - ../../packages/authz:/mnt/authz:ro
+    networks: [foundation]
+
+  # ===========================================================================
   # foundation-audit-worker — 审计 Batch Worker（outbox → ClickHouse + 签名）
   # 与 audit api 共用同一镜像，执行不同 entrypoint（worker console script）
   # ===========================================================================
