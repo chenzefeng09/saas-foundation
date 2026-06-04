@@ -67,18 +67,17 @@ _SEEDS = [
 
 
 def upgrade() -> None:
-    import json
-
     rows = []
     for row in _SEEDS:
         (alg_id, kind, family, provider, key_size, fips, gm, desc, modes) = row
-        modes_json = json.dumps(modes)
+        # Build a PostgreSQL text[] literal: '{val1,val2}' or '{}'
+        modes_pg = "'{" + ",".join(modes) + "}'::text[]"
         rows.append(
             f"('{alg_id}', '{kind}', '{family}', '{provider}', "
             f"{key_size if key_size is not None else 'NULL'}, "
             f"{'TRUE' if fips else 'FALSE'}, {'TRUE' if gm else 'FALSE'}, "
             f"{'NULL' if desc is None else f'$${desc}$$'}, "
-            f"'{modes_json}'::jsonb)"
+            f"{modes_pg})"
         )
 
     values = ",\n  ".join(rows)

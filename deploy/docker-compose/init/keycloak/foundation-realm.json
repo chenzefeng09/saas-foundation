@@ -24,7 +24,6 @@
     "name": "default-roles-foundation",
     "description": "Default role for all foundation users"
   },
-
   "accessTokenLifespan": 300,
   "accessTokenLifespanForImplicitFlow": 900,
   "ssoSessionIdleTimeout": 1800,
@@ -41,7 +40,6 @@
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
   "passwordPolicy": "length(15) and notUsername and notEmail and hashAlgorithm(argon2) and hashIterations(3) and passwordHistory(3) and forceExpiredPasswordChange(90)",
-
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA256",
   "otpPolicyInitialCounter": 0,
@@ -55,7 +53,11 @@
     "totpAppMicrosoftAuthenticatorName"
   ],
   "webAuthnPolicyRpEntityName": "SaaS Foundation",
-  "webAuthnPolicySignatureAlgorithms": ["ES256", "RS256", "EdDSA"],
+  "webAuthnPolicySignatureAlgorithms": [
+    "ES256",
+    "RS256",
+    "EdDSA"
+  ],
   "webAuthnPolicyRpId": "",
   "webAuthnPolicyAttestationConveyancePreference": "not specified",
   "webAuthnPolicyAuthenticatorAttachment": "not specified",
@@ -64,12 +66,17 @@
   "webAuthnPolicyCreateTimeout": 0,
   "webAuthnPolicyAvoidSameAuthenticatorRegister": false,
   "webAuthnPolicyAcceptableAaguids": [],
-  "webAuthnPolicyExtraOrigins": ["http://localhost:8080"],
-
+  "webAuthnPolicyExtraOrigins": [
+    "http://localhost:8080"
+  ],
   "internationalizationEnabled": true,
-  "supportedLocales": ["zh-CN", "en", "zh-TW", "ja"],
+  "supportedLocales": [
+    "zh-CN",
+    "en",
+    "zh-TW",
+    "ja"
+  ],
   "defaultLocale": "zh-CN",
-
   "browserSecurityHeaders": {
     "contentSecurityPolicyReportOnly": "",
     "xContentTypeOptions": "nosniff",
@@ -80,24 +87,69 @@
     "xXSSProtection": "1; mode=block",
     "strictTransportSecurity": "max-age=31536000; includeSubDomains"
   },
-
   "roles": {
     "realm": [
-      { "name": "platform_super_admin", "description": "平台超管（跨租户）" },
-      { "name": "platform_security_auditor", "description": "平台安全审计员（只读）" },
-      { "name": "tenant_admin", "description": "租户管理员" },
-      { "name": "tenant_security_admin", "description": "租户安全管理员" },
-      { "name": "tenant_billing_admin", "description": "租户计费管理员" },
-      { "name": "member", "description": "普通成员" },
-      { "name": "readonly", "description": "只读" }
+      {
+        "name": "platform_super_admin",
+        "description": "平台超管（跨租户）"
+      },
+      {
+        "name": "platform_security_auditor",
+        "description": "平台安全审计员（只读）"
+      },
+      {
+        "name": "tenant_admin",
+        "description": "租户管理员"
+      },
+      {
+        "name": "tenant_security_admin",
+        "description": "租户安全管理员"
+      },
+      {
+        "name": "tenant_billing_admin",
+        "description": "租户计费管理员"
+      },
+      {
+        "name": "member",
+        "description": "普通成员"
+      },
+      {
+        "name": "readonly",
+        "description": "只读"
+      },
+      {
+        "name": "super_admin",
+        "description": "Platform super admin role",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "foundation"
+      }
     ]
   },
-
   "groups": [
-    { "name": "tnt_01J5DEV0000000000000000AA", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"], "tenant_name": ["Dev Tenant A"] } },
-    { "name": "tnt_01J5DEV0000000000000000BB", "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"], "tenant_name": ["Dev Tenant B"] } }
+    {
+      "name": "tnt_01J5DEVXX00000000000000001",
+      "attributes": {
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000001"
+        ],
+        "tenant_name": [
+          "Dev Tenant A"
+        ]
+      }
+    },
+    {
+      "name": "tnt_01J5DEVXX00000000000000002",
+      "attributes": {
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000002"
+        ],
+        "tenant_name": [
+          "Dev Tenant B"
+        ]
+      }
+    }
   ],
-
   "clients": [
     {
       "clientId": "foundation-frontend",
@@ -113,8 +165,14 @@
       "protocol": "openid-connect",
       "rootUrl": "http://localhost:3000",
       "baseUrl": "/",
-      "redirectUris": ["http://localhost:3000/*", "http://localhost:5173/*"],
-      "webOrigins": ["http://localhost:3000", "http://localhost:5173"],
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:5173"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
@@ -128,10 +186,12 @@
       "publicClient": false,
       "secret": "dev-identity-service-secret-change-me",
       "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": false,
+      "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
       "protocol": "openid-connect",
-      "attributes": { "use.refresh.tokens": "false" }
+      "attributes": {
+        "use.refresh.tokens": "false"
+      }
     },
     {
       "clientId": "foundation-api",
@@ -143,7 +203,6 @@
       "protocol": "openid-connect"
     }
   ],
-
   "users": [
     {
       "username": "admin@foundation.local",
@@ -153,10 +212,24 @@
       "firstName": "Platform",
       "lastName": "Admin",
       "credentials": [
-        { "type": "password", "value": "ChangeMe-Long-Enough-15chars!", "temporary": true }
+        {
+          "type": "password",
+          "value": "ChangeMe-Long-Enough-15chars!",
+          "temporary": true
+        }
       ],
-      "realmRoles": ["platform_super_admin"],
-      "attributes": { "tenant_id": ["tnt_PLATFORM"] }
+      "realmRoles": [
+        "platform_super_admin",
+        "super_admin"
+      ],
+      "attributes": {
+        "user_id": [
+          "usr_01KT7TZ70AM2RK8P0C01KMBPRR"
+        ],
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000001"
+        ]
+      }
     },
     {
       "username": "alice@tenant-a.local",
@@ -166,11 +239,24 @@
       "firstName": "Alice",
       "lastName": "Admin (Tenant A)",
       "credentials": [
-        { "type": "password", "value": "Tenant-A-Dev-Pwd-15chars!", "temporary": false }
+        {
+          "type": "password",
+          "value": "Tenant-A-Dev-Pwd-15chars!",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["tenant_admin", "member"],
-      "groups": ["/tnt_01J5DEV0000000000000000AA"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+      "realmRoles": [
+        "tenant_admin",
+        "member"
+      ],
+      "groups": [
+        "/tnt_01J5DEVXX00000000000000001"
+      ],
+      "attributes": {
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000001"
+        ]
+      }
     },
     {
       "username": "bob@tenant-a.local",
@@ -180,11 +266,23 @@
       "firstName": "Bob",
       "lastName": "Member (Tenant A)",
       "credentials": [
-        { "type": "password", "value": "Tenant-A-Bob-Pwd-15chars!", "temporary": false }
+        {
+          "type": "password",
+          "value": "Tenant-A-Bob-Pwd-15chars!",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["member"],
-      "groups": ["/tnt_01J5DEV0000000000000000AA"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000AA"] }
+      "realmRoles": [
+        "member"
+      ],
+      "groups": [
+        "/tnt_01J5DEVXX00000000000000001"
+      ],
+      "attributes": {
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000001"
+        ]
+      }
     },
     {
       "username": "carol@tenant-b.local",
@@ -194,14 +292,26 @@
       "firstName": "Carol",
       "lastName": "Admin (Tenant B)",
       "credentials": [
-        { "type": "password", "value": "Tenant-B-Dev-Pwd-15chars!", "temporary": false }
+        {
+          "type": "password",
+          "value": "Tenant-B-Dev-Pwd-15chars!",
+          "temporary": false
+        }
       ],
-      "realmRoles": ["tenant_admin", "member"],
-      "groups": ["/tnt_01J5DEV0000000000000000BB"],
-      "attributes": { "tenant_id": ["tnt_01J5DEV0000000000000000BB"] }
+      "realmRoles": [
+        "tenant_admin",
+        "member"
+      ],
+      "groups": [
+        "/tnt_01J5DEVXX00000000000000002"
+      ],
+      "attributes": {
+        "tenant_id": [
+          "tnt_01J5DEVXX00000000000000002"
+        ]
+      }
     }
   ],
-
   "scopeMappings": [],
   "clientScopes": [
     {
@@ -226,13 +336,67 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "user_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "user_id",
+            "claim.name": "user_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "email_claim",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "email",
+            "claim.name": "email",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm_roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String"
+          }
         }
       ]
     }
   ],
-  "defaultDefaultClientScopes": ["tenant_id", "profile", "email", "roles", "web-origins"],
-  "defaultOptionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"],
-
+  "defaultDefaultClientScopes": [
+    "tenant_id",
+    "profile",
+    "email",
+    "roles",
+    "web-origins"
+  ],
+  "defaultOptionalClientScopes": [
+    "address",
+    "phone",
+    "offline_access",
+    "microprofile-jwt"
+  ],
   "smtpServer": {
     "host": "mailhog",
     "port": "1025",
@@ -243,20 +407,33 @@
     "starttls": "false",
     "auth": "false"
   },
-
   "eventsEnabled": true,
   "eventsExpiration": 604800,
   "enabledEventTypes": [
-    "LOGIN", "LOGIN_ERROR", "LOGOUT", "LOGOUT_ERROR",
-    "REGISTER", "REGISTER_ERROR",
-    "UPDATE_PASSWORD", "UPDATE_PASSWORD_ERROR",
-    "UPDATE_TOTP", "REMOVE_TOTP",
-    "GRANT_CONSENT", "REVOKE_GRANT",
-    "CLIENT_LOGIN", "CLIENT_LOGIN_ERROR",
-    "REFRESH_TOKEN", "REFRESH_TOKEN_ERROR",
-    "PERMISSION_TOKEN", "TOKEN_EXCHANGE",
-    "CODE_TO_TOKEN", "CODE_TO_TOKEN_ERROR"
+    "LOGIN",
+    "LOGIN_ERROR",
+    "LOGOUT",
+    "LOGOUT_ERROR",
+    "REGISTER",
+    "REGISTER_ERROR",
+    "UPDATE_PASSWORD",
+    "UPDATE_PASSWORD_ERROR",
+    "UPDATE_TOTP",
+    "REMOVE_TOTP",
+    "GRANT_CONSENT",
+    "REVOKE_GRANT",
+    "CLIENT_LOGIN",
+    "CLIENT_LOGIN_ERROR",
+    "REFRESH_TOKEN",
+    "REFRESH_TOKEN_ERROR",
+    "PERMISSION_TOKEN",
+    "TOKEN_EXCHANGE",
+    "CODE_TO_TOKEN",
+    "CODE_TO_TOKEN_ERROR"
   ],
   "adminEventsEnabled": true,
-  "adminEventsDetailsEnabled": true
+  "adminEventsDetailsEnabled": true,
+  "attributes": {
+    "userProfileConfig": "{\"attributes\": [{\"name\": \"username\", \"displayName\": \"${username}\", \"validations\": {\"length\": {\"min\": 3, \"max\": 255}, \"username-prohibited-characters\": {}, \"up-username-not-idn-homograph\": {}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"email\", \"displayName\": \"${email}\", \"validations\": {\"email\": {}, \"length\": {\"max\": 255}}, \"required\": {\"roles\": [\"user\"]}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"firstName\", \"displayName\": \"${firstName}\", \"validations\": {\"length\": {\"max\": 255}, \"person-name-prohibited-characters\": {}}, \"required\": {\"roles\": [\"user\"]}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"lastName\", \"displayName\": \"${lastName}\", \"validations\": {\"length\": {\"max\": 255}, \"person-name-prohibited-characters\": {}}, \"required\": {\"roles\": [\"user\"]}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"user_id\", \"displayName\": \"Foundation User ID\", \"permissions\": {\"view\": [\"admin\"], \"edit\": [\"admin\"]}, \"multivalued\": false, \"annotations\": {}}, {\"name\": \"tenant_id\", \"displayName\": \"Foundation Tenant ID\", \"permissions\": {\"view\": [\"admin\"], \"edit\": [\"admin\"]}, \"multivalued\": false, \"annotations\": {}}], \"groups\": [{\"name\": \"user-metadata\", \"displayHeader\": \"User metadata\", \"displayDescription\": \"Attributes, which refer to user metadata\"}]}"
+  }
 }

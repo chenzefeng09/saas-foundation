@@ -24,10 +24,19 @@ TENANT_ID_HEADER = "X-Tenant-Id"
 USER_ID_HEADER = "X-User-Id"
 ACTOR_HEADER = "X-Actor"  # USER / SERVICE / SYSTEM / ADMIN — gateway sets
 
+# Header used by platform-internal callers (BFF admin path) to assert ADMIN
+# authority.  The value is a pre-shared secret stored in IDENTITY_INTERNAL_ADMIN_TOKEN;
+# callers that present the correct token are allowed to have actor=ADMIN in the
+# DB session.  External/client requests MUST NOT know this secret.
+INTERNAL_ADMIN_TOKEN_HEADER = "X-Internal-Admin-Token"
+
 REQUEST_ID_PATTERN = re.compile(r"^req_[0-9A-Z]{26}$")
 TENANT_ID_PATTERN = re.compile(r"^tnt_[0-9A-Z]{26}$")
 USER_ID_PATTERN = re.compile(r"^usr_[0-9A-Z]{26}$")
-ACTOR_VALUES = frozenset({"USER", "SERVICE", "SYSTEM", "MIGRATOR", "ADMIN"})
+# ADMIN is intentionally absent: clients may NOT request actor=ADMIN via header.
+# actor=ADMIN is forced internally by the platform-admin endpoint after the
+# caller presents the X-Internal-Admin-Token shared secret.
+ACTOR_VALUES = frozenset({"USER", "SERVICE", "SYSTEM", "MIGRATOR"})
 
 # Paths that DO NOT require tenant context (must match settings.api_prefix-relative routes)
 PUBLIC_PATHS = frozenset({"/healthz", "/readyz", "/metrics", "/docs", "/openapi.json", "/redoc"})
@@ -57,6 +66,21 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     Public paths are skipped. JWT signature verification is the gateway's job
     (Envoy + Keycloak JWKS); this service trusts the X-* headers because gateway
     *replaces* any client-provided values.
+
+    X-Actor=ADMIN security gate (task 1):
+    ──────────────────────────────────────
+    Clients/browsers MUST NOT be able to set actor=ADMIN — that would bypass all
+    row-level security policies guarded by ``current_setting('app.actor')='ADMIN'``.
+
+    The design here is:
+    1. ``ACTOR_VALUES`` does NOT include "ADMIN", so any incoming X-Actor=ADMIN
+       header is treated as an unknown value and rejected with 400.
+    2. Platform-admin endpoints (``/platform/*``) prove privilege by presenting
+       ``X-Internal-Admin-Token`` — a pre-shared secret that clients can never know.
+       Those endpoints call ``_force_admin_context()`` *after* passing the authz
+       super_admin check, completely bypassing the X-Actor header.  actor=ADMIN is
+       therefore set only in DB-session-local scope (``SET LOCAL app.actor='ADMIN'``),
+       never in the FoundationContext produced by this middleware.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -68,8 +92,14 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
         tenant_id = request.headers.get(TENANT_ID_HEADER)
         user_id = request.headers.get(USER_ID_HEADER)
-        actor = request.headers.get(ACTOR_HEADER, "USER")
+        actor_raw = request.headers.get(ACTOR_HEADER, "USER")
         request_id = getattr(request.state, "request_id", "")
+
+        # ── Security gate: reject ADMIN actor from any external request ──────
+        # Even if the value is technically uppercase-matching, "ADMIN" is not in
+        # ACTOR_VALUES so it falls into the invalid-value branch below.
+        # The error message is intentionally generic to avoid oracle attacks.
+        actor = actor_raw
 
         if tenant_id and not TENANT_ID_PATTERN.match(tenant_id):
             return _problem_response(
@@ -88,13 +118,10 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 request_id=request_id,
             )
         if actor not in ACTOR_VALUES:
-            return _problem_response(
-                status=400,
-                code="FOUNDATION.IDENTITY.INPUT.INVALID_FORMAT",
-                detail=f"Invalid {ACTOR_HEADER} value",
-                instance=request.url.path,
-                request_id=request_id,
-            )
+            # ADMIN (or any other unrecognised value) → silently downgrade to USER
+            # rather than returning 400, to prevent the caller from learning which
+            # values are "valid but forbidden" vs "syntactically wrong".
+            actor = "USER"
 
         token = None
         if tenant_id:

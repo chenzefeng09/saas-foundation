@@ -24,7 +24,7 @@ from foundation_billing.observability import get_logger
 
 log = get_logger(__name__)
 
-QuotaDimension = Literal["user_seats", "storage_gb", "agent_sessions", "llm_tokens", "api_calls"]
+QuotaDimension = Literal["user_seats", "storage_gb", "agent_sessions", "llm_tokens", "api_calls", "sessions", "skills"]
 
 
 class BillingService:
@@ -90,6 +90,7 @@ class BillingService:
             free_tier: dict[str, int] = {
                 "user_seats": 5, "storage_gb": 1,
                 "agent_sessions": 10, "llm_tokens": 1_000_000, "api_calls": 1000,
+                "sessions": 20, "skills": 50,
             }
             limit = free_tier.get(dimension, 100)
         else:
@@ -113,6 +114,28 @@ class BillingService:
             "remaining": max(0, limit - current),
             "dimension": dimension,
         }
+
+    async def list_usage(
+        self, session: AsyncSession, *, tenant_id: str,
+    ) -> dict[str, float]:
+        """Return the tenant's current usage summed per dimension.
+
+        Aggregates the ``quota_usage`` rows for the tenant into a flat
+        ``{dimension: current_value}`` mapping, summing any duplicate rows for
+        the same dimension.  Tenant scoping is enforced by RLS (the session is
+        bound to the caller's tenant context).
+        """
+        rows = list(
+            (
+                await session.scalars(
+                    select(QuotaUsage).where(QuotaUsage.tenant_id == tenant_id)
+                )
+            ).all()
+        )
+        usage: dict[str, float] = {}
+        for row in rows:
+            usage[row.dimension] = usage.get(row.dimension, 0) + row.current_value
+        return usage
 
     async def record_usage(
         self, session: AsyncSession, *, tenant_id: str,

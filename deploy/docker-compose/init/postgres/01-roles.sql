@@ -65,5 +65,4 @@ WHERE rolname LIKE 'app_%' ORDER BY rolname;
 -- alembic 迁移需 CREATE 权限（即使 schema 已存在）
 GRANT CREATE ON DATABASE foundation TO app_migrator;
 
--- alembic 创建 FK 引用 tenant.tenant 需要 REFERENCES 权限
-GRANT REFERENCES ON tenant.tenant TO app_migrator;
+-- Note: GRANT REFERENCES ON tenant.tenant is done in 02-tenant-table.sql after the table is created.

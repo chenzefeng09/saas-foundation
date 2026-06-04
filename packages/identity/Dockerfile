@@ -11,13 +11,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_CREATE=true \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
       libpq-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir "poetry==${POETRY_VERSION}"
+    && pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "poetry==${POETRY_VERSION}"
 
 WORKDIR /app
 
@@ -33,8 +35,17 @@ COPY alembic.ini ./
 
 RUN poetry install --only main
 
-# ---------- Stage 2: runtime (distroless) ----------
-FROM gcr.io/distroless/python3-debian12:nonroot
+# ---------- Stage 2: runtime ----------
+# NOTE: distroless python3-debian12 ships Python 3.11 which conflicts with
+# pyproject's python = "^3.12" requirement and breaks the venv symlinks.
+# Switched to the slim 3.12 image to match the builder; revisit once
+# distroless ships 3.12.
+FROM python:3.12-slim-bookworm AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r nonroot && useradd -r -g nonroot -u 65532 -m -d /home/nonroot nonroot
 
 WORKDIR /app
 
@@ -52,7 +63,6 @@ USER nonroot
 
 EXPOSE 8001
 
-# distroless 没有 shell，CMD 必须是 exec 形式
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "uvicorn"]
 CMD ["foundation_identity.main:app", \
      "--host", "0.0.0.0", \

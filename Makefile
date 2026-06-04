@@ -259,6 +259,25 @@ integration-all: env ## 一条龙：起栈 → 等就绪 → 跑测试 → 清�
 	@echo "$(YELLOW)Stack still running. Run 'make integration-down' to clean up.$(RESET)"
 
 # -----------------------------------------------------------------------------
+# foundation-sdk 发布（详见 docs/sdk-release.md）
+# -----------------------------------------------------------------------------
+SDK_DIR := sdks/python
+
+.PHONY: sdk-build
+sdk-build: ## 构建 foundation-sdk wheel + sdist 到 sdks/python/dist/
+	cd $(SDK_DIR) && ./build.sh
+
+.PHONY: sdk-publish-dry
+sdk-publish-dry: sdk-build ## twine check，不上传（用于 PR 验证）
+	cd $(SDK_DIR) && ./publish.sh --dry-run
+
+.PHONY: sdk-publish
+sdk-publish: sdk-build ## 上传到内部 PyPI（需 FOUNDATION_PYPI_URL/TOKEN）
+	@test -n "$$FOUNDATION_PYPI_URL"   || { echo "$(RED)FOUNDATION_PYPI_URL not set$(RESET)"; exit 1; }
+	@test -n "$$FOUNDATION_PYPI_TOKEN" || { echo "$(RED)FOUNDATION_PYPI_TOKEN not set$(RESET)"; exit 1; }
+	cd $(SDK_DIR) && ./publish.sh
+
+# -----------------------------------------------------------------------------
 # 文档
 # -----------------------------------------------------------------------------
 .PHONY: docs-serve

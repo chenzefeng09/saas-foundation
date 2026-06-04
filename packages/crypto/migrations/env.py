@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+import sqlalchemy as sa
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -64,6 +65,13 @@ async def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # Create the schema first on a separate autocommit connection so it is
+    # visible to alembic's _ensure_version_table() which runs before upgrade().
+    async with connectable.connect() as pre_conn:
+        await pre_conn.execute(
+            sa.text("CREATE SCHEMA IF NOT EXISTS crypto")
+        )
+        await pre_conn.commit()
     async with connectable.connect() as connection:
         await connection.run_sync(_do_migrations)
     await connectable.dispose()

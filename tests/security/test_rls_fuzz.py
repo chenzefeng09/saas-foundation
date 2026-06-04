@@ -114,8 +114,8 @@ PACKAGE_TABLES: dict[str, list[TenantTable]] = {
     ],
 }
 
-TENANT_A = "tnt_01J5DEV0000000000000000AA"
-TENANT_B = "tnt_01J5DEV0000000000000000BB"
+TENANT_A = "tnt_01J5DEVXX00000000000000001"
+TENANT_B = "tnt_01J5DEVXX00000000000000002"
 
 
 # ---------------------------------------------------------------------------

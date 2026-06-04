@@ -30,7 +30,7 @@ services:
   # 生产 medium+ 改 Patroni 集群
   # ===========================================================================
   postgres:
-    image: postgres:${POSTGRES_VERSION:-16-alpine}
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
     container_name: foundation-postgres
     restart: unless-stopped
     environment:
@@ -174,11 +174,13 @@ services:
 
   # ===========================================================================
   # OpenSearch — 搜索；单节点开发模式（生产 3 节点）
+  # 默认不启动：无服务连接它。需要时加 --profile extras
   # ===========================================================================
   opensearch:
     image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.16.0}
     container_name: foundation-opensearch
     restart: unless-stopped
+    profiles: ["extras"]
     environment:
       discovery.type: single-node
       bootstrap.memory_lock: "true"
@@ -227,12 +229,14 @@ services:
       retries: 10
 
   # ===========================================================================
-  # MinIO — S3 兼容对象存储；测试 WORM Object Lock
+  # MinIO — S3 兼容对象存储；带 Object Lock 支持（WORM）
+  # 必须在 server 命令中加 --console-address 且不传 --no-lock 才能开启 Object Lock
   # ===========================================================================
   minio:
     image: minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
     container_name: foundation-minio
     restart: unless-stopped
+    # --console-address enables the UI; Object Lock requires no extra server flag in RELEASE.2024+
     command: ["server", "/data", "--console-address", ":9002"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-foundation}
@@ -244,10 +248,33 @@ services:
       - minio_data:/data
     networks: [foundation]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -sf http://127.0.0.1:9000/minio/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # ---------------------------------------------------------------------------
+  # minio-init — 建 WORM bucket（一次性 job）
+  # mc mb --with-lock 建带 Object Lock 的 bucket；--ignore-existing 确保幂等
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: foundation-minio-init
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-foundation} ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+        # Create WORM bucket with Object Lock enabled (--with-lock)
+        mc mb --with-lock --ignore-existing local/foundation-audit-worm
+        # Set default COMPLIANCE retention: 7 years
+        mc retention set --default COMPLIANCE "7y" local/foundation-audit-worm
+        echo "=== minio-init: foundation-audit-worm bucket ready ==="
+    networks: [foundation]
 
   # ===========================================================================
   # OPA — 授权策略引擎
@@ -271,19 +298,227 @@ services:
     ports:
       - "8181:8181"
     networks: [foundation]
+    # opa:1.x-static is distroless (no wget/shell/curl).  The healthcheck
+    # cannot run inside the container.  OPA starts in <1 s and is stable,
+    # so we rely on service_started for dependents rather than service_healthy.
+    # (If a native health probe is needed in future, switch to a non-static tag.)
+
+  # ===========================================================================
+  # migration-runner — 按序跑所有 foundation 服务的 Alembic 迁移（一次性 job）
+  #
+  # 顺序：identity → authz → org → billing（billing 依赖 tenant.tenant FK）
+  # 每个服务从自己的 builder stage 跑，builder 有 shell + 完整 Python 包
+  # billing 的 Dockerfile 未打包 migrations/alembic.ini，用 volume 挂载补全
+  # ===========================================================================
+  migration-runner:
+    image: python:3.12-slim-bookworm
+    container_name: foundation-migration-runner
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      ORG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      BILLING_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_VAULT_URL: http://vault:8200
+      CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      AUDIT_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # 走清华源，避开默认 PyPI 在国内的 hash 不匹配问题
+        export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        pip install --quiet -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn poetry
+        # Put venvs in /tmp so we don't write into the read-only source mounts
+        export POETRY_VIRTUALENVS_PATH=/tmp/poetry-venvs
+        export POETRY_VIRTUALENVS_IN_PROJECT=false
+        run_migration() {
+          svc="$$1"; pkg_dir="$$2"
+          echo "=== Running $${svc} migrations ==="
+          # Copy to /tmp so poetry can write lock updates (source mounts are :ro)
+          cp -r "$${pkg_dir}" /tmp/$${svc}
+          cd /tmp/$${svc}
+          poetry install --only main --quiet
+          poetry run alembic upgrade head
+          echo "=== $${svc} migrations done ==="
+        }
+        run_migration identity /mnt/identity
+        run_migration authz    /mnt/authz
+        run_migration org      /mnt/org
+        run_migration billing  /mnt/billing
+        run_migration crypto   /mnt/crypto
+        run_migration audit    /mnt/audit
+        echo "=== All migrations complete ==="
+    networks: [foundation]
+    volumes:
+      - ../../packages/identity:/mnt/identity:ro
+      - ../../packages/authz:/mnt/authz:ro
+      - ../../packages/org:/mnt/org:ro
+      - ../../packages/billing:/mnt/billing:ro
+      - ../../packages/crypto:/mnt/crypto:ro
+      - ../../packages/audit:/mnt/audit:ro
+
+  # ===========================================================================
+  # foundation-identity — 身份服务   (port 8001)
+  # ===========================================================================
+  identity:
+    build:
+      context: ../../packages/identity
+      dockerfile: Dockerfile
+    container_name: foundation-identity
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      IDENTITY_ENV: dev
+      IDENTITY_LOG_LEVEL: INFO
+      IDENTITY_LOG_FORMAT: console
+      IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
+      IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      IDENTITY_KEYCLOAK_BASE_URL: http://keycloak:8080
+      IDENTITY_KEYCLOAK_REALM: foundation
+      IDENTITY_KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+      # Tokens issued via the internal Docker hostname carry iss=keycloak:8080
+      IDENTITY_JWT_ISSUER: http://keycloak:8080/realms/foundation
+      IDENTITY_VAULT_URL: http://vault:8200
+      IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      IDENTITY_OTEL_ENABLED: "true"
+      IDENTITY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      IDENTITY_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
+    ports:
+      - "${PORT_IDENTITY:-8001}:8001"
+    networks:
+      foundation:
+        aliases:
+          - identity-service
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8181/health | grep -q '{}'"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8001/api/identity/v1/healthz\").read()' || exit 1"]
       interval: 10s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-authz — 授权服务   (port 8002)
+  # ===========================================================================
+  authz:
+    build:
+      context: ../../packages/authz
+      dockerfile: Dockerfile
+    container_name: foundation-authz
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_started   # static image has no healthcheck tool; OPA starts in <1s
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      AUTHZ_ENV: dev
+      AUTHZ_LOG_LEVEL: INFO
+      AUTHZ_LOG_FORMAT: console
+      AUTHZ_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUTHZ_OPA_URL: http://opa:8181/v1
+      AUTHZ_OTEL_ENABLED: "true"
+      AUTHZ_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_AUTHZ:-8002}:8002"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8002/api/authz/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-org — 组织服务   (port 8003)
+  # ===========================================================================
+  org:
+    build:
+      context: ../../packages/org
+      dockerfile: Dockerfile
+    container_name: foundation-org
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      ORG_ENV: dev
+      ORG_LOG_LEVEL: INFO
+      ORG_LOG_FORMAT: console
+      ORG_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      ORG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      ORG_OTEL_ENABLED: "true"
+      ORG_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_ORG:-8003}:8003"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8003/api/org/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-billing — 计费服务   (port 8007)
+  # ===========================================================================
+  billing:
+    build:
+      context: ../../packages/billing
+      dockerfile: Dockerfile
+    container_name: foundation-billing
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      billing-init:
+        condition: service_completed_successfully
+    environment:
+      BILLING_ENV: dev
+      BILLING_LOG_LEVEL: INFO
+      BILLING_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      BILLING_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      BILLING_OTEL_ENABLED: "true"
+      BILLING_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      # host 端口用 8017 避开 agent-platform 的 agent-scheduler(host 8007)；
+      # 容器内仍 8007，服务间用 billing:8007 互访不受影响
+      - "${PORT_BILLING:-8017}:8007"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8007/api/billing/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   # ===========================================================================
   # Unleash — Feature Flag
+  # 默认不启动：无服务连接它。需要时加 --profile extras
   # ===========================================================================
   unleash:
     image: unleashorg/unleash-server:${UNLEASH_VERSION:-6.4}
     container_name: foundation-unleash
     restart: unless-stopped
+    profiles: ["extras"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -333,12 +568,422 @@ services:
     networks: [foundation]
 
   # ===========================================================================
+  # vault-init — 启用 Vault transit secrets engine（一次性 job）
+  # crypto 服务依赖 transit engine 已开启才能创建/使用 KEK
+  # ===========================================================================
+  vault-init:
+    image: hashicorp/vault:${VAULT_VERSION:-1.17}
+    container_name: foundation-vault-init
+    restart: "no"
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Initialising Vault transit engine ==="
+        vault secrets enable transit || true
+        echo "=== Vault transit ready ==="
+        # TODO: create audit.hashchain signing key for audit worker
+        # vault write -f transit/keys/audit.hashchain type=ed25519
+        # (omitted: key label is tenant-scoped in production; for dev, audit
+        # worker will fail signing until the KEK exists in the crypto.kek table
+        # AND vault has the corresponding transit key. Use the crypto service
+        # POST /api/crypto/v1/keks endpoint to bootstrap the key before running
+        # the audit worker in a fresh dev environment.)
+    networks: [foundation]
+
+  # ===========================================================================
+  # foundation-crypto — 密码学服务   (port 8004)
+  # ===========================================================================
+  crypto:
+    build:
+      context: ../../packages/crypto
+      dockerfile: Dockerfile
+    container_name: foundation-crypto
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      CRYPTO_ENV: dev
+      CRYPTO_LOG_LEVEL: INFO
+      CRYPTO_LOG_FORMAT: console
+      CRYPTO_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      CRYPTO_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      CRYPTO_VAULT_URL: http://vault:8200
+      CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      CRYPTO_PROVIDER: vault
+      CRYPTO_OTEL_ENABLED: "true"
+      CRYPTO_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_CRYPTO:-8004}:8004"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8004/api/crypto/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-audit — 审计 API 服务   (port 8013, 避免与 BFF 8005 冲突)
+  # ===========================================================================
+  audit:
+    build:
+      context: ../../packages/audit
+      dockerfile: Dockerfile
+    container_name: foundation-audit
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      crypto:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      AUDIT_ENV: dev
+      AUDIT_LOG_LEVEL: INFO
+      AUDIT_LOG_FORMAT: console
+      AUDIT_HTTP_PORT: "8013"
+      AUDIT_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      AUDIT_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUDIT_CLICKHOUSE_HOST: clickhouse
+      AUDIT_CLICKHOUSE_PORT: "8123"
+      AUDIT_CLICKHOUSE_USER: ${CLICKHOUSE_USER:-foundation}
+      AUDIT_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_change_me}
+      AUDIT_CLICKHOUSE_DATABASE: audit
+      AUDIT_CRYPTO_URL: http://crypto:8004/api/crypto/v1
+      AUDIT_CRYPTO_SIGNING_KEY_LABEL: audit.hashchain
+      AUDIT_S3_ENDPOINT: http://minio:9000
+      AUDIT_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      AUDIT_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      AUDIT_WORM_ENABLED: "false"
+      AUDIT_TSA_ENABLED: "false"
+      AUDIT_OTEL_ENABLED: "true"
+      AUDIT_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    command:
+      - "foundation_audit.main:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8013"
+      - "--no-access-log"
+    ports:
+      - "${PORT_AUDIT:-8013}:8013"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8013/api/audit/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # audit-init — 为两个 dev 租户建 audit.hashchain KEK（一次性 job）
+  # 必须在 crypto healthy 之后、audit-worker 启动之前完成。
+  # 已存在时 crypto 返回 409 → grep -v 过滤掉，curl 返回码取第一次创建的结果；
+  # 整体用 "|| true" 使幂等：重跑不报错。
+  # ===========================================================================
+  audit-init:
+    image: curlimages/curl:8.8.0
+    container_name: foundation-audit-init
+    restart: "no"
+    depends_on:
+      crypto:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        CRYPTO_URL=http://crypto:8004/api/crypto/v1/keks
+
+        create_kek() {
+          TENANT_ID="$$1"
+          echo "=== audit-init: creating KEK for tenant $${TENANT_ID} ==="
+          HTTP_CODE=$$(curl -s -o /tmp/kek_resp.txt -w "%{http_code}" \
+            -X POST "$${CRYPTO_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Tenant-Id: $${TENANT_ID}" \
+            -H "X-Actor: SYSTEM" \
+            -d '{"label":"audit.hashchain","purpose":"AUDIT_HMAC","algorithm_id":"Ed25519","auto_rotate_days":90}')
+          if [ "$${HTTP_CODE}" = "201" ]; then
+            echo "=== audit-init: KEK created for $${TENANT_ID} ==="
+          elif [ "$${HTTP_CODE}" = "409" ]; then
+            echo "=== audit-init: KEK already exists for $${TENANT_ID} (idempotent) ==="
+          else
+            echo "=== audit-init: unexpected HTTP $${HTTP_CODE} for $${TENANT_ID} ===" >&2
+            cat /tmp/kek_resp.txt >&2
+            exit 1
+          fi
+        }
+
+        create_kek tnt_01J5DEVXX00000000000000001
+        create_kek tnt_01J5DEVXX00000000000000002
+        echo "=== audit-init: all KEKs ready ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # authz-init — 为 dev 租户建系统角色 + 绑定 admin super_admin（一次性 job）
+  # 依赖 migration-runner 完成（authz schema 已建好）+ postgres healthy。
+  # 幂等：角色/绑定已存在时静默跳过（ON CONFLICT 逻辑在脚本里）。
+  # ===========================================================================
+  authz-init:
+    image: python:3.12-slim-bookworm
+    container_name: foundation-authz-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      # app_admin 拥有 RLS bypass（admin_all policy），可写 authz.role / role_binding
+      AUTHZ_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@postgres:5432/foundation
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        pip install --quiet sqlalchemy[asyncio] asyncpg ulid-py
+        echo "=== authz-init: installing tenant roles ==="
+        run_bootstrap() {
+          TENANT_ID="$$1"
+          ADMIN_USER_ID="$$2"
+          echo "--- tenant $${TENANT_ID} ---"
+          python /mnt/authz/scripts/bootstrap_tenant_roles.py \
+            --tenant-id "$${TENANT_ID}" \
+            $${ADMIN_USER_ID:+--admin-user-id "$${ADMIN_USER_ID}"} \
+            --db-url "$${AUTHZ_DB_DSN_ADMIN}"
+        }
+        # Dev Tenant A: admin@foundation.local 绑 super_admin
+        run_bootstrap tnt_01J5DEVXX00000000000000001 usr_01KT7TZ70AM2RK8P0C01KMBPRR
+        # Dev Tenant B: 只建角色，无需 admin 绑定
+        run_bootstrap tnt_01J5DEVXX00000000000000002 ""
+        echo "=== authz-init: all done ==="
+    volumes:
+      - ../../packages/authz:/mnt/authz:ro
+    networks: [foundation]
+
+  # ===========================================================================
+  # billing-init — 为 dev 租户塞 PRO 订阅计划 + tenant_subscription + quota_usage（一次性 job）
+  # 依赖 migration-runner 完成（billing schema 已建好）+ postgres healthy。
+  # 幂等：ON CONFLICT DO NOTHING，重复跑无副作用。
+  # ===========================================================================
+  billing-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-billing-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== billing-init: seeding PRO plan + dev tenant subscriptions ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) PRO 订阅计划（固定 ID，幂等）
+        INSERT INTO billing.subscription_plan (id, name, tier, quotas, price_monthly_usd, active)
+        VALUES (
+          'pln_01DEVPRO0000000000000001',
+          'Pro Plan',
+          'PRO',
+          '{"user_seats":50,"storage_gb":100,"agent_sessions":1000,"llm_tokens":10000000,"api_calls":100000,"sessions":500,"skills":200}'::jsonb,
+          99.0,
+          true
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) Dev Tenant A: PRO 订阅
+        INSERT INTO billing.tenant_subscription (id, tenant_id, plan_id, mode, status, current_period_start, current_period_end)
+        VALUES (
+          'sub_01DEVTNA0000000000000001',
+          'tnt_01J5DEVXX00000000000000001',
+          'pln_01DEVPRO0000000000000001',
+          'PRIVATE',
+          'ACTIVE',
+          now(),
+          now() + interval '1 year'
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 3) Dev Tenant B: PRO 订阅
+        INSERT INTO billing.tenant_subscription (id, tenant_id, plan_id, mode, status, current_period_start, current_period_end)
+        VALUES (
+          'sub_01DEVTNB0000000000000002',
+          'tnt_01J5DEVXX00000000000000002',
+          'pln_01DEVPRO0000000000000001',
+          'PRIVATE',
+          'ACTIVE',
+          now(),
+          now() + interval '1 year'
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 4) quota_usage: Dev Tenant A（几个维度的示例用量）
+        INSERT INTO billing.quota_usage (id, tenant_id, dimension, current_value)
+        VALUES
+          ('qus_01DEVTNA_SEATS000000001', 'tnt_01J5DEVXX00000000000000001', 'user_seats',      3),
+          ('qus_01DEVTNA_STORAGE0000001', 'tnt_01J5DEVXX00000000000000001', 'storage_gb',      12),
+          ('qus_01DEVTNA_SESSIONS000001', 'tnt_01J5DEVXX00000000000000001', 'agent_sessions',  47),
+          ('qus_01DEVTNA_TOKENS0000001', 'tnt_01J5DEVXX00000000000000001', 'llm_tokens',      823400),
+          ('qus_01DEVTNA_API000000001', 'tnt_01J5DEVXX00000000000000001', 'api_calls',        1205)
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 5) quota_usage: Dev Tenant B
+        INSERT INTO billing.quota_usage (id, tenant_id, dimension, current_value)
+        VALUES
+          ('qus_01DEVTNB_SEATS000000002', 'tnt_01J5DEVXX00000000000000002', 'user_seats',      1),
+          ('qus_01DEVTNB_STORAGE0000002', 'tnt_01J5DEVXX00000000000000002', 'storage_gb',      5),
+          ('qus_01DEVTNB_SESSIONS000002', 'tnt_01J5DEVXX00000000000000002', 'agent_sessions',  10),
+          ('qus_01DEVTNB_TOKENS0000002', 'tnt_01J5DEVXX00000000000000002', 'llm_tokens',      200000),
+          ('qus_01DEVTNB_API000000002', 'tnt_01J5DEVXX00000000000000002', 'api_calls',        300)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== billing-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # identity-init — 为 dev 用户在 identity.user 表中建立初始行（一次性 job）
+  # 依赖 migration-runner 完成（identity schema 已建好）+ postgres healthy。
+  # 幂等：ON CONFLICT (id) DO NOTHING，重复跑无副作用（INSERT 0 0）。
+  # 以 postgres 超级用户连接，绕过 FORCE RLS（超级用户不受 RLS 约束）。
+  # ===========================================================================
+  identity-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-identity-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== identity-init: seeding 4 dev users into identity.user ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 4 dev users (mapped from Keycloak realm seed)
+        -- 连接为 postgres 超级用户，FORCE RLS 对超级用户不生效，无需 SET app.actor
+        INSERT INTO identity."user"
+          (id, tenant_id, email, display_name, status, keycloak_user_id, roles,
+           mfa_enabled, failed_login_count)
+        VALUES
+          -- admin@foundation.local → Tenant A → super_admin
+          -- id 必须与 authz-init 里 --admin-user-id 完全一致
+          ('usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           'tnt_01J5DEVXX00000000000000001',
+           'admin@foundation.local',
+           'Admin',
+           'ACTIVE',
+           '9c5b9300-73b6-49b2-911e-ece4675e9c29',
+           '{"super_admin"}',
+           false, 0),
+          -- alice@tenant-a.local → Tenant A → member
+          ('usr_01J5DEVUSRALICE00000000000',
+           'tnt_01J5DEVXX00000000000000001',
+           'alice@tenant-a.local',
+           'Alice',
+           'ACTIVE',
+           'f354d276-886d-4d3b-828f-003ff1112919',
+           '{"member"}',
+           false, 0),
+          -- bob@tenant-a.local → Tenant A → member
+          ('usr_01J5DEVUSR0BOB000000000000',
+           'tnt_01J5DEVXX00000000000000001',
+           'bob@tenant-a.local',
+           'Bob',
+           'ACTIVE',
+           'fa1ec69a-8e64-472b-aafd-aea23118d62e',
+           '{"member"}',
+           false, 0),
+          -- carol@tenant-b.local → Tenant B → member
+          ('usr_01J5DEVUSRCAROL00000000000',
+           'tnt_01J5DEVXX00000000000000002',
+           'carol@tenant-b.local',
+           'Carol',
+           'ACTIVE',
+           '3b873c91-eb45-4d6b-b63c-8b1a81f5b3ab',
+           '{"member"}',
+           false, 0)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== identity-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # foundation-audit-worker — 审计 Batch Worker（outbox → ClickHouse + 签名）
+  # 与 audit api 共用同一镜像，执行不同 entrypoint（worker console script）
+  # ===========================================================================
+  audit-worker:
+    build:
+      context: ../../packages/audit
+      dockerfile: Dockerfile
+    container_name: foundation-audit-worker
+    restart: unless-stopped
+    entrypoint: ["/app/.venv/bin/python", "-c", "from foundation_audit.worker.batch_processor import run; run()"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      crypto:
+        condition: service_healthy
+      audit-init:
+        condition: service_completed_successfully
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      AUDIT_ENV: dev
+      AUDIT_LOG_LEVEL: INFO
+      AUDIT_LOG_FORMAT: console
+      AUDIT_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      AUDIT_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      AUDIT_CLICKHOUSE_HOST: clickhouse
+      AUDIT_CLICKHOUSE_PORT: "8123"
+      AUDIT_CLICKHOUSE_USER: ${CLICKHOUSE_USER:-foundation}
+      AUDIT_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_change_me}
+      AUDIT_CLICKHOUSE_DATABASE: audit
+      AUDIT_CRYPTO_URL: http://crypto:8004/api/crypto/v1
+      AUDIT_CRYPTO_SIGNING_KEY_LABEL: audit.hashchain
+      AUDIT_S3_ENDPOINT: http://minio:9000
+      AUDIT_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      AUDIT_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      AUDIT_WORM_ENABLED: "false"
+      AUDIT_TSA_ENABLED: "false"
+      AUDIT_OTEL_ENABLED: "true"
+      AUDIT_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    networks: [foundation]
+
+  # ===========================================================================
   # Mailhog — 本地 SMTP 测试
+  # 默认不启动：无服务连接它。需要时加 --profile extras
   # ===========================================================================
   mailhog:
     image: mailhog/mailhog:${MAILHOG_VERSION:-v1.0.1}
     container_name: foundation-mailhog
     restart: unless-stopped
+    profiles: ["extras"]
     ports:
       - "${PORT_MAILHOG_UI:-8025}:8025"
       - "${PORT_MAILHOG_SMTP:-1025}:1025"

@@ -61,6 +61,21 @@ class Settings(BaseSettings):
     # Multi-tenancy
     require_tenant_context: bool = True
 
+    # TSA (RFC 3161 Time-Stamp Authority)
+    # Default: FreeTSA (free, public, RFC 3161 compliant)
+    # Override with NTSC for finance/equal-protection-4 compliance mode
+    tsa_url: AnyHttpUrl = Field(default=AnyHttpUrl("https://freetsa.org/tsr"))
+    tsa_provider: str = "freetsa"
+    tsa_enabled: bool = True  # set False in dev if FreeTSA is unreachable
+
+    # S3 / MinIO WORM Object Lock
+    s3_endpoint: str = "http://127.0.0.1:9001"
+    s3_access_key: str = "foundation"
+    s3_secret_key: str = "minio_change_me_min_12_chars"
+    worm_bucket: str = "foundation-audit-worm"
+    worm_enabled: bool = False   # disabled by default; enable in production
+    worm_retention_years: int = 7
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

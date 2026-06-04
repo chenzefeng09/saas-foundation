@@ -132,6 +132,29 @@ class TestQuota:
         assert result["limit"] == 500
         assert result["allowed"] is True
 
+    async def test_list_usage_aggregates_all_dimensions(self, svc, fake_session, tenant_id):
+        """list_usage returns a {dimension: current_value} map, summing duplicate rows."""
+        rows = [
+            QuotaUsage(id="qus_1", tenant_id=tenant_id, dimension="llm_tokens", current_value=125000),
+            QuotaUsage(id="qus_2", tenant_id=tenant_id, dimension="api_calls", current_value=42),
+            QuotaUsage(id="qus_3", tenant_id=tenant_id, dimension="user_seats", current_value=3),
+            # Duplicate dimension rows are summed into one entry.
+            QuotaUsage(id="qus_4", tenant_id=tenant_id, dimension="agent_sessions", current_value=1),
+            QuotaUsage(id="qus_5", tenant_id=tenant_id, dimension="agent_sessions", current_value=47),
+        ]
+        fake_session.queue_scalars(rows)
+
+        usage = await svc.list_usage(fake_session, tenant_id=tenant_id)
+        assert usage == {
+            "llm_tokens": 125000, "api_calls": 42, "user_seats": 3, "agent_sessions": 48,
+        }
+
+    async def test_list_usage_empty(self, svc, fake_session, tenant_id):
+        """No usage rows → empty map (not an error)."""
+        fake_session.queue_scalars([])
+        usage = await svc.list_usage(fake_session, tenant_id=tenant_id)
+        assert usage == {}
+
     async def test_record_usage_new(self, svc, fake_session, tenant_id, request_id):
         fake_session.queue_scalar(None)  # No existing usage
 
