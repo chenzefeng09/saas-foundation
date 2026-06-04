@@ -490,6 +490,8 @@ services:
         condition: service_healthy
       migration-runner:
         condition: service_completed_successfully
+      billing-init:
+        condition: service_completed_successfully
     environment:
       BILLING_ENV: dev
       BILLING_LOG_LEVEL: INFO
@@ -773,6 +775,160 @@ services:
         echo "=== authz-init: all done ==="
     volumes:
       - ../../packages/authz:/mnt/authz:ro
+    networks: [foundation]
+
+  # ===========================================================================
+  # billing-init — 为 dev 租户塞 PRO 订阅计划 + tenant_subscription + quota_usage（一次性 job）
+  # 依赖 migration-runner 完成（billing schema 已建好）+ postgres healthy。
+  # 幂等：ON CONFLICT DO NOTHING，重复跑无副作用。
+  # ===========================================================================
+  billing-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-billing-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== billing-init: seeding PRO plan + dev tenant subscriptions ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) PRO 订阅计划（固定 ID，幂等）
+        INSERT INTO billing.subscription_plan (id, name, tier, quotas, price_monthly_usd, active)
+        VALUES (
+          'pln_01DEVPRO0000000000000001',
+          'Pro Plan',
+          'PRO',
+          '{"user_seats":50,"storage_gb":100,"agent_sessions":1000,"llm_tokens":10000000,"api_calls":100000,"sessions":500,"skills":200}'::jsonb,
+          99.0,
+          true
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) Dev Tenant A: PRO 订阅
+        INSERT INTO billing.tenant_subscription (id, tenant_id, plan_id, mode, status, current_period_start, current_period_end)
+        VALUES (
+          'sub_01DEVTNA0000000000000001',
+          'tnt_01J5DEVXX00000000000000001',
+          'pln_01DEVPRO0000000000000001',
+          'PRIVATE',
+          'ACTIVE',
+          now(),
+          now() + interval '1 year'
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 3) Dev Tenant B: PRO 订阅
+        INSERT INTO billing.tenant_subscription (id, tenant_id, plan_id, mode, status, current_period_start, current_period_end)
+        VALUES (
+          'sub_01DEVTNB0000000000000002',
+          'tnt_01J5DEVXX00000000000000002',
+          'pln_01DEVPRO0000000000000001',
+          'PRIVATE',
+          'ACTIVE',
+          now(),
+          now() + interval '1 year'
+        )
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 4) quota_usage: Dev Tenant A（几个维度的示例用量）
+        INSERT INTO billing.quota_usage (id, tenant_id, dimension, current_value)
+        VALUES
+          ('qus_01DEVTNA_SEATS000000001', 'tnt_01J5DEVXX00000000000000001', 'user_seats',      3),
+          ('qus_01DEVTNA_STORAGE0000001', 'tnt_01J5DEVXX00000000000000001', 'storage_gb',      12),
+          ('qus_01DEVTNA_SESSIONS000001', 'tnt_01J5DEVXX00000000000000001', 'agent_sessions',  47),
+          ('qus_01DEVTNA_TOKENS0000001', 'tnt_01J5DEVXX00000000000000001', 'llm_tokens',      823400),
+          ('qus_01DEVTNA_API000000001', 'tnt_01J5DEVXX00000000000000001', 'api_calls',        1205)
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 5) quota_usage: Dev Tenant B
+        INSERT INTO billing.quota_usage (id, tenant_id, dimension, current_value)
+        VALUES
+          ('qus_01DEVTNB_SEATS000000002', 'tnt_01J5DEVXX00000000000000002', 'user_seats',      1),
+          ('qus_01DEVTNB_STORAGE0000002', 'tnt_01J5DEVXX00000000000000002', 'storage_gb',      5),
+          ('qus_01DEVTNB_SESSIONS000002', 'tnt_01J5DEVXX00000000000000002', 'agent_sessions',  10),
+          ('qus_01DEVTNB_TOKENS0000002', 'tnt_01J5DEVXX00000000000000002', 'llm_tokens',      200000),
+          ('qus_01DEVTNB_API000000002', 'tnt_01J5DEVXX00000000000000002', 'api_calls',        300)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== billing-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # identity-init — 为 dev 用户在 identity.user 表中建立初始行（一次性 job）
+  # 依赖 migration-runner 完成（identity schema 已建好）+ postgres healthy。
+  # 幂等：ON CONFLICT (id) DO NOTHING，重复跑无副作用（INSERT 0 0）。
+  # 以 postgres 超级用户连接，绕过 FORCE RLS（超级用户不受 RLS 约束）。
+  # ===========================================================================
+  identity-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-identity-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== identity-init: seeding 4 dev users into identity.user ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 4 dev users (mapped from Keycloak realm seed)
+        -- 连接为 postgres 超级用户，FORCE RLS 对超级用户不生效，无需 SET app.actor
+        INSERT INTO identity."user"
+          (id, tenant_id, email, display_name, status, keycloak_user_id, roles,
+           mfa_enabled, failed_login_count)
+        VALUES
+          -- admin@foundation.local → Tenant A → super_admin
+          -- id 必须与 authz-init 里 --admin-user-id 完全一致
+          ('usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           'tnt_01J5DEVXX00000000000000001',
+           'admin@foundation.local',
+           'Admin',
+           'ACTIVE',
+           '9c5b9300-73b6-49b2-911e-ece4675e9c29',
+           '{"super_admin"}',
+           false, 0),
+          -- alice@tenant-a.local → Tenant A → member
+          ('usr_01J5DEVUSRALICE00000000000',
+           'tnt_01J5DEVXX00000000000000001',
+           'alice@tenant-a.local',
+           'Alice',
+           'ACTIVE',
+           'f354d276-886d-4d3b-828f-003ff1112919',
+           '{"member"}',
+           false, 0),
+          -- bob@tenant-a.local → Tenant A → member
+          ('usr_01J5DEVUSR0BOB000000000000',
+           'tnt_01J5DEVXX00000000000000001',
+           'bob@tenant-a.local',
+           'Bob',
+           'ACTIVE',
+           'fa1ec69a-8e64-472b-aafd-aea23118d62e',
+           '{"member"}',
+           false, 0),
+          -- carol@tenant-b.local → Tenant B → member
+          ('usr_01J5DEVUSRCAROL00000000000',
+           'tnt_01J5DEVXX00000000000000002',
+           'carol@tenant-b.local',
+           'Carol',
+           'ACTIVE',
+           '3b873c91-eb45-4d6b-b63c-8b1a81f5b3ab',
+           '{"member"}',
+           false, 0)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== identity-init: all done ==="
     networks: [foundation]
 
   # ===========================================================================

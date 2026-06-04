@@ -115,6 +115,28 @@ class BillingService:
             "dimension": dimension,
         }
 
+    async def list_usage(
+        self, session: AsyncSession, *, tenant_id: str,
+    ) -> dict[str, float]:
+        """Return the tenant's current usage summed per dimension.
+
+        Aggregates the ``quota_usage`` rows for the tenant into a flat
+        ``{dimension: current_value}`` mapping, summing any duplicate rows for
+        the same dimension.  Tenant scoping is enforced by RLS (the session is
+        bound to the caller's tenant context).
+        """
+        rows = list(
+            (
+                await session.scalars(
+                    select(QuotaUsage).where(QuotaUsage.tenant_id == tenant_id)
+                )
+            ).all()
+        )
+        usage: dict[str, float] = {}
+        for row in rows:
+            usage[row.dimension] = usage.get(row.dimension, 0) + row.current_value
+        return usage
+
     async def record_usage(
         self, session: AsyncSession, *, tenant_id: str,
         dimension: QuotaDimension, amount: float,

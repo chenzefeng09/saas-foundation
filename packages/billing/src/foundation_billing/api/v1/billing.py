@@ -116,6 +116,21 @@ async def check_quota(
     )
 
 
+@router.get("/quota/usage", tags=["billing"])
+async def get_usage(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: BillingService = Depends(billing_service),
+) -> dict[str, Any]:
+    """Return the caller-tenant's current usage across all dimensions.
+
+    Tenant scoping comes from the X-Tenant-Id context (RLS), never a query
+    param.  Response shape: ``{"usage": {"<dimension>": <current_value>, ...}}``.
+    """
+    usage = await svc.list_usage(session, tenant_id=ctx.tenant_id)
+    return {"usage": usage}
+
+
 @router.post("/quota/usage", tags=["billing"])
 async def record_usage(
     body: RecordUsageRequest,

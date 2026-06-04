@@ -27,14 +27,18 @@ from typing import Any
 import ulid
 from fastapi import APIRouter, Depends, Header, Path, status
 from fastapi.responses import Response
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_identity.adapters.keycloak_oidc import (
     KeycloakOIDCAdapter,
     get_keycloak_oidc,
 )
-from foundation_identity.api.dependencies import current_context
+from foundation_identity.api.dependencies import current_context, db_session
 from foundation_identity.config import get_settings
 from foundation_identity.domain.base import FoundationContext
+from foundation_identity.domain.models import Session as SessionModel
 from foundation_identity.errors import (
     INVALID_CREDENTIALS,
     SCOPE_NOT_ALLOWED,
@@ -217,6 +221,117 @@ async def revoke_session(
     if not session_id.startswith("sess_"):
         raise FoundationError(SESSION_NOT_FOUND)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------------- #
+# GET /sessions — list all active login sessions for the current user
+# --------------------------------------------------------------------------- #
+
+
+class ActiveSessionRead(BaseModel):
+    """Minimal session info returned to the frontend ProfilePage."""
+
+    id: str
+    ip: str | None = None
+    user_agent: str | None = None
+    device: str  # parsed from user_agent
+    last_seen_at: str | None = None
+    issued_at: str
+    current: bool = False
+
+
+def _parse_device(user_agent: str | None) -> str:
+    """Extract a human-readable device label from a User-Agent string.
+
+    Does NOT do geo-lookup.  Returns a short label like:
+      "Chrome · macOS", "Safari · iOS", "Firefox · Windows",
+      "Unknown device" if UA is absent or unrecognised.
+    """
+    if not user_agent:
+        return "Unknown device"
+
+    ua = user_agent.lower()
+
+    # Browser detection (order matters — more specific first)
+    if "edg/" in ua or "edge/" in ua:
+        browser = "Edge"
+    elif "opr/" in ua or "opera" in ua:
+        browser = "Opera"
+    elif "firefox/" in ua or "fxios/" in ua:
+        browser = "Firefox"
+    elif "chrome/" in ua or "crios/" in ua:
+        browser = "Chrome"
+    elif "safari/" in ua:
+        browser = "Safari"
+    else:
+        browser = "Browser"
+
+    # OS / platform detection
+    if "iphone" in ua or "ipad" in ua:
+        os_label = "iOS"
+    elif "android" in ua:
+        os_label = "Android"
+    elif "windows" in ua:
+        os_label = "Windows"
+    elif "macintosh" in ua or "mac os" in ua:
+        os_label = "macOS"
+    elif "linux" in ua:
+        os_label = "Linux"
+    else:
+        os_label = "Unknown OS"
+
+    return f"{browser} · {os_label}"
+
+
+@router.get(
+    "",
+    response_model=list[ActiveSessionRead],
+    operation_id="listSessions",
+    summary="List all active login sessions for the current user",
+)
+async def list_sessions(
+    ctx: FoundationContext = Depends(current_context),
+    db: AsyncSession = Depends(db_session),
+) -> list[ActiveSessionRead]:
+    """Return all non-revoked, non-expired sessions for the authenticated user.
+
+    Reads from identity.session table.  RLS ensures only the caller's tenant's
+    rows are visible.  We additionally filter to user_id = ctx.user_id so users
+    only see their own sessions (not other users in the same tenant).
+
+    The ``current`` flag is always ``False`` here — the BFF does not pass the
+    current session_id, so we cannot identify which session is "this one".
+    The frontend can mark the most-recent one as current.
+    """
+    now = datetime.now(UTC)
+
+    stmt = (
+        select(SessionModel)
+        .where(
+            SessionModel.user_id == ctx.user_id,
+            SessionModel.revoked_at.is_(None),
+            SessionModel.expires_at > now,
+        )
+        .order_by(SessionModel.issued_at.desc())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    rows = list(result.scalars().all())
+
+    items: list[ActiveSessionRead] = []
+    for i, row in enumerate(rows):
+        items.append(
+            ActiveSessionRead(
+                id=row.id,
+                ip=row.ip,
+                user_agent=row.user_agent,
+                device=_parse_device(row.user_agent),
+                last_seen_at=row.last_seen_at.isoformat() if row.last_seen_at else None,
+                issued_at=row.issued_at.isoformat(),
+                current=(i == 0),  # most recent session assumed current
+            )
+        )
+    return items
 
 
 # --------------------------------------------------------------------------- #
