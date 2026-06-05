@@ -42,10 +42,19 @@ metadata:
     app.kubernetes.io/part-of: saas-foundation
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
     foundation.example.com/profile: {{ $.Values.global.profile | default "small" }}
+  annotations:
+    # owner 邮箱（kube-linter required-annotation-email）
+    email: {{ $.Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   {{- if not (and $svc.autoscaling $svc.autoscaling.enabled) }}
   replicas: {{ $svc.replicaCount | default 1 }}
   {{- end }}
+  # 滚动更新策略（kube-linter no-rolling-update-strategy）—— 更新时逐个替换 Pod 不中断服务
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}
@@ -202,8 +211,16 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+  annotations:
+    email: {{ $.Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   minAvailable: {{ $svc.podDisruptionBudget.minAvailable | default 1 }}
+  # 不健康 Pod 驱逐策略（kube-linter pdb-unhealthy-pod-eviction-policy）——
+  # 允许驱逐尚未 Ready 的 Pod，避免滚动/排空时被 PDB 卡死
+  unhealthyPodEvictionPolicy: IfHealthyBudget
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}

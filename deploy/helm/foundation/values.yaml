@@ -13,6 +13,10 @@ global:
   # 部署形态：small | medium | large
   profile: small
 
+  # 资源 owner 邮箱（写入各 Deployment 的 email annotation，满足 kube-linter
+  # required-annotation-email；生产可覆盖为真实 owner/团队邮箱）
+  ownerEmail: foundation@example.com
+
   # 镜像拉取
   imageRegistry: registry.example.com/saas-foundation
   imagePullPolicy: IfNotPresent

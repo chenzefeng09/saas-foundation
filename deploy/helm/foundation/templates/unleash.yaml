@@ -22,8 +22,17 @@ metadata:
     app.kubernetes.io/part-of: saas-foundation
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     foundation.example.com/profile: {{ .Values.global.profile | default "small" }}
+  annotations:
+    # owner 邮箱（kube-linter required-annotation-email）
+    email: {{ .Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   replicas: {{ .Values.unleash.replicaCount | default 1 }}
+  # 滚动更新策略（kube-linter no-rolling-update-strategy）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: unleash
@@ -47,6 +56,7 @@ spec:
           imagePullPolicy: {{ .Values.unleash.image.pullPolicy | default "IfNotPresent" }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true   # 根文件系统只读（kube-linter no-read-only-root-fs）；可写路径走 /tmp emptyDir
             capabilities:
               drop: [ALL]
           ports:
@@ -134,8 +144,14 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: foundation-unleash
+  labels:
+    app.kubernetes.io/name: unleash
+    app.kubernetes.io/part-of: saas-foundation
+  annotations:
+    email: {{ .Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   minAvailable: 1
+  unhealthyPodEvictionPolicy: IfHealthyBudget
   selector:
     matchLabels:
       app.kubernetes.io/name: unleash

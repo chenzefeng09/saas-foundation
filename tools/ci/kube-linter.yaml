@@ -10,6 +10,8 @@ checks:
     - "default-service-account"          # 我们显式建了 SA，false positive
     - "unset-cpu-requirements"           # values 已配
     - "unset-memory-requirements"        # values 已配
+    - "pdb-min-available"                # large 启用 HPA 时 Deployment 不渲染静态 replicas，
+                                         # 该 check 误把 PDB.minAvailable 与默认副本数比较→false positive
   include:
     - "privileged-container"
     - "run-as-non-root"
