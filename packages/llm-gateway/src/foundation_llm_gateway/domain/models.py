@@ -9,7 +9,7 @@ from foundation_llm_gateway.domain.base import Base
 class LLMProvider(Base):
     __tablename__ = "llm_provider"
     __table_args__ = (Index("llmp_tenant_idx", "tenant_id"), {"schema": "llm_gateway"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -24,9 +24,9 @@ class LLMProvider(Base):
 class LLMTenantKey(Base):
     __tablename__ = "llm_tenant_key"
     __table_args__ = (Index("llmk_tenant_idx", "tenant_id"), {"schema": "llm_gateway"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
-    provider_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(40), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     virtual_key: Mapped[str] = mapped_column(String(200), nullable=False)
     rate_limit_rpm: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
@@ -36,9 +36,9 @@ class LLMTenantKey(Base):
 class LLMUsageRecord(Base):
     __tablename__ = "llm_usage_record"
     __table_args__ = (Index("llmu_tenant_time_idx", "tenant_id", "recorded_at"), {"schema": "llm_gateway"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(30), nullable=False)
-    provider_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(40), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

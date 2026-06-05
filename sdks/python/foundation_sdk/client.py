@@ -25,6 +25,7 @@ from foundation_sdk.resources.crypto import CryptoResource
 from foundation_sdk.resources.compliance import ComplianceResource
 from foundation_sdk.resources.pam import PAMResource
 from foundation_sdk.resources.data_protection import DataProtectionResource
+from foundation_sdk.resources.security_ops import SecurityOpsResource
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class FoundationClientSettings(BaseSettings):
 
 
 class FoundationClient:
-    """High-level client that aggregates all 16 Foundation service resource groups."""
+    """High-level client that aggregates all 17 Foundation service resource groups."""
 
     def __init__(
         self,
@@ -79,6 +80,7 @@ class FoundationClient:
         self.compliance = ComplianceResource(self._transport)
         self.pam = PAMResource(self._transport)
         self.data_protection = DataProtectionResource(self._transport)
+        self.security_ops = SecurityOpsResource(self._transport)
 
     @classmethod
     def from_env(cls) -> Self:

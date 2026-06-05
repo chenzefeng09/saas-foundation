@@ -24,7 +24,7 @@ def upgrade() -> None:
 
     op.create_table(
         "llm_provider",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("kind", sa.String(30), nullable=False),
@@ -41,9 +41,9 @@ def upgrade() -> None:
 
     op.create_table(
         "llm_tenant_key",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("provider_id", sa.String(30), nullable=False),
+        sa.Column("provider_id", sa.String(40), nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("virtual_key", sa.String(200), nullable=False),
         sa.Column("rate_limit_rpm", sa.Integer(), nullable=False, server_default="60"),
@@ -55,9 +55,9 @@ def upgrade() -> None:
 
     op.create_table(
         "llm_usage_record",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),
         sa.Column("tenant_id", sa.String(30), nullable=False),
-        sa.Column("provider_id", sa.String(30), nullable=False),
+        sa.Column("provider_id", sa.String(40), nullable=False),
         sa.Column("model", sa.String(100), nullable=False),
         sa.Column("prompt_tokens", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("completion_tokens", sa.BigInteger(), nullable=False, server_default="0"),

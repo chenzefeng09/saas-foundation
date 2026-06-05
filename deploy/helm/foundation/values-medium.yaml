@@ -57,10 +57,39 @@ clickhouse:
 
 opensearch:
   enabled: true
-  replicas: 3
-  masterCount: 3
+  # medium: 3 dedicated master + 3 data nodes (单 AZ HA)
+  # 使用 opensearch-project/helm-charts/opensearch chart
+  # master 角色: 选主, 不存数据
+  # data 角色: 存储 + 搜索
+  masterCount: 3          # 3 master-eligible nodes → quorum=2
+  replicas: 3             # data nodes (若 chart 将 replicas 映射到 data 节点)
+  # 若所用 chart 用 nodeGroups 区分角色:
+  # nodeGroups:
+  #   - name: masters
+  #     roles: [master]
+  #     replicas: 3
+  #     resources:
+  #       requests: { cpu: 500m, memory: 2Gi }
+  #       limits:   { cpu: 1,    memory: 4Gi }
+  #   - name: data
+  #     roles: [data, ingest]
+  #     replicas: 3
+  #     resources:
+  #       requests: { cpu: 1,    memory: 4Gi }
+  #       limits:   { cpu: 2,    memory: 8Gi }
+  #     persistence:
+  #       enabled: true
+  #       size: 100Gi
+  security:
+    enabled: true         # 生产开启 TLS + basic auth
   persistence:
+    enabled: true
     size: 100Gi
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits:   { cpu: 2,    memory: 4Gi }
+  # 反亲和: 确保 master/data 分散到不同节点
+  antiAffinity: soft      # medium 用 soft (节点数可能不够 hard)
 
 vault:
   enabled: true
@@ -77,6 +106,17 @@ minio:
   replicas: 4
   persistence:
     size: 200Gi
+
+# Unleash — medium 内嵌，单副本（HA 靠 DB 事务；Unleash 无状态）
+unleash:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: 1,    memory: 1Gi }
+  config:
+    logLevel: warn
+    databaseSsl: "true"   # medium+ 强制 TLS 连 PG
 
 # Service 副本 + 资源底线
 _serviceDefaults: &serviceDefaults

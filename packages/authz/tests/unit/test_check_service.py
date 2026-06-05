@@ -453,3 +453,230 @@ async def test_latency_ms_is_populated(
         context={},
     )
     assert resp.latency_ms >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# list_accessible_ids
+# ---------------------------------------------------------------------------
+
+async def test_list_ids_no_binding_returns_empty_complete(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """User with no bindings gets empty list + complete=True (not truncated)."""
+    _stage_effective_roles(fake_session, bindings=[])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == []
+    assert resp.complete is True
+    assert resp.all_in_tenant is False
+
+
+async def test_list_ids_team_scope_returns_scope_id(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """User bound to TEAM scope returns that team id; complete=True."""
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=role.id,
+        scope_kind="TEAM",
+        scope_id="team_abc",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == ["team_abc"]
+    assert resp.complete is True
+    assert resp.all_in_tenant is False
+
+
+async def test_list_ids_tenant_scope_returns_all_in_tenant(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """User with TENANT-scoped binding signals all_in_tenant=True."""
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=role.id,
+        scope_kind="TENANT",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == []
+    assert resp.complete is True
+    assert resp.all_in_tenant is True
+
+
+async def test_list_ids_global_system_scope_returns_all_in_tenant(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """User with GLOBAL_SYSTEM-scoped binding also signals all_in_tenant=True."""
+    role = make_role(tenant_id=tenant_id, permissions=["*"])
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=role.id,
+        scope_kind="GLOBAL_SYSTEM",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.all_in_tenant is True
+    assert resp.complete is True
+
+
+async def test_list_ids_truncated_when_exceeds_max(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """When the number of collected ids exceeds max, result is truncated + complete=False."""
+    # Create 5 RESOURCE-scoped bindings but max=3
+    bindings = []
+    for i in range(5):
+        role = make_role(
+            role_id=f"rol_0000000000000000000000R{i:03d}",
+            tenant_id=tenant_id,
+            permissions=["document.read"],
+        )
+        b = make_binding(
+            binding_id=f"rbd_0000000000000000000000B{i:03d}",
+            tenant_id=tenant_id,
+            principal_id=user_id,
+            role_id=role.id,
+            scope_kind="RESOURCE",
+            scope_id=f"doc_{i:03d}",
+        )
+        bindings.append((b, role))
+
+    _stage_effective_roles(fake_session, bindings=bindings)
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=3,
+    )
+
+    assert len(resp.ids) == 3
+    assert resp.complete is False
+    assert resp.all_in_tenant is False
+
+
+async def test_list_ids_wildcard_action_matches(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Wildcard permissions in role still grant access when checked via list_accessible_ids."""
+    role = make_role(tenant_id=tenant_id, permissions=["document.*"])
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=role.id,
+        scope_kind="ORG_UNIT",
+        scope_id="org_unit_xyz",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == ["org_unit_xyz"]
+    assert resp.complete is True
+    assert resp.all_in_tenant is False
+
+
+async def test_list_ids_action_mismatch_no_ids(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Binding grants a different action; requested action yields no IDs."""
+    role = make_role(tenant_id=tenant_id, permissions=["document.write"])
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=role.id,
+        scope_kind="RESOURCE",
+        scope_id="doc_001",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == []
+    assert resp.complete is True
+    assert resp.all_in_tenant is False

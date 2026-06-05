@@ -161,9 +161,12 @@ class VaultKeyProvider:
             )
         )
         data = result["data"]
+        # NB: Vault's `ciphertext` is an opaque token string ("vault:vN:<b64>") that
+        # must round-trip verbatim — it is NOT a base64 blob. Store it as UTF-8 bytes
+        # in DataKey.wrapped (only `plaintext`, the raw DEK, is genuinely base64).
         return DataKey(
             plaintext=_b64decode(data["plaintext"]),
-            wrapped=_b64decode(data["ciphertext"]),
+            wrapped=data["ciphertext"].encode(),
             kek_version=int(data["key_version"]),
         )
 
@@ -173,11 +176,13 @@ class VaultKeyProvider:
         name = self._st._key_path(vault_path)
         params: dict[str, Any] = {
             "name": name,
-            "ciphertext": _b64encode(wrapped),
+            # `wrapped` is the verbatim "vault:vN:..." token (see generate_data_key).
+            "ciphertext": wrapped.decode(),
             "mount_point": self._st.mount,
         }
-        if kek_version is not None:
-            params["key_version"] = kek_version
+        # kek_version is intentionally not forwarded: hvac's Transit.decrypt_data()
+        # does not accept a key_version kwarg, and Vault auto-detects the key
+        # version from the "vault:vN:..." ciphertext prefix.
         result = await self._exec(
             lambda: self._st.client.secrets.transit.decrypt_data(**params)  # type: ignore[arg-type]
         )
@@ -190,13 +195,13 @@ class VaultKeyProvider:
         result = await self._exec(
             lambda: self._st.client.secrets.transit.rewrap_data(
                 name=name,
-                ciphertext=_b64encode(wrapped),
+                ciphertext=wrapped.decode(),
                 mount_point=self._st.mount,
             )
         )
         data = result["data"]
         return (
-            _b64decode(data["ciphertext"]),
+            data["ciphertext"].encode(),
             int(data["key_version"]),
         )
 

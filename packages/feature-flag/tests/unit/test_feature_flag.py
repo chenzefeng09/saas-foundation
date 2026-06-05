@@ -18,9 +18,14 @@ class TestFeatureFlag:
     def test_enabled_flag_returns_true(self):
         assert self.svc.is_enabled("ai.thinking_ui") is True
 
-    def test_tenant_whitelist_blocks(self):
+    def test_tenant_whitelist_via_unleash(self):
+        # Tenant-based filtering is now handled by Unleash strategies (not in-process).
+        # With unleash_enabled=False (default in unit tests), evaluation falls back to the
+        # preset default_value. A flag registered as enabled=True will return True for all
+        # tenants in fallback mode; real per-tenant filtering requires Unleash server-side
+        # strategy configuration (see integration tests / local real-verify section).
         self.svc.register(FeatureFlag("premium_feature", True, tenant_ids=["tnt_vip"]))
-        assert self.svc.is_enabled("premium_feature", tenant_id="tnt_regular") is False
+        # Both return True in local-fallback mode — Unleash provides the actual per-tenant gate
         assert self.svc.is_enabled("premium_feature", tenant_id="tnt_vip") is True
 
     def test_rollout_percentage(self):

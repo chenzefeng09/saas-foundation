@@ -8,6 +8,7 @@ packages = [{ include = "foundation_llm_gateway", from = "src" }]
 [tool.poetry.dependencies]
 python = "^3.12"
 fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
 pydantic = "^2.9.0"
 pydantic-settings = "^2.6.0"
 sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
@@ -15,10 +16,16 @@ asyncpg = "^0.30.0"
 httpx = "^0.27.0"
 structlog = "^24.4.0"
 ulid-py = "^1.1.0"
+alembic = "^1.14.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
 pytest-asyncio = "^0.24.0"
+
+[[tool.poetry.source]]
+name = "tuna"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+priority = "primary"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

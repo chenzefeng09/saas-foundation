@@ -81,6 +81,9 @@ global:
     endpoint: http://foundation-otel-collector:4317
   opa:
     url: http://foundation-opa:8181
+  unleash:
+    # 服务内地址；large profile 关闭 subchart 时改为外置 Unleash URL
+    url: http://foundation-unleash:4242
 
 # =============================================================================
 # 第三方依赖开关（按 profile 启停）
@@ -142,6 +145,39 @@ otel-collector:
 
 opa:
   enabled: true
+
+# Unleash — Feature Flag 后端
+unleash:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: unleashorg/unleash-server
+    tag: "6.4"
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+  # 生产通过 external-secrets / Vault Agent Injector 挂载真实凭据；
+  # small/medium 明文 placeholder，上线前必须替换。
+  # 数据库连接：指向 foundation 同实例的 unleash 逻辑库（medium+ 建议独立实例）
+  postgresql:
+    enabled: false   # 复用 global postgresql，不内嵌 sub-Postgres
+  # 连接信息通过 secret 注入（见 templates/unleash-secret.yaml）
+  existingSecret: foundation-unleash-credentials
+  # admin token / client token 从 secret key 读
+  adminTokenSecretKey: admin-token
+  clientTokenSecretKey: client-token
+  # 非 secret 配置
+  config:
+    logLevel: warn
+    databaseSsl: "false"
+
+# feature-flag 服务连接 Unleash 的 secret 引用（凭据不明文出现在 values）
+featureFlagUnleash:
+  existingSecret: foundation-unleash-credentials
+  urlSecretKey: url              # optional；未设置则用 global unleash service DNS
+  clientTokenSecretKey: client-token
+  adminTokenSecretKey: admin-token
 
 # =============================================================================
 # Service 列表 — 每个 service 一段

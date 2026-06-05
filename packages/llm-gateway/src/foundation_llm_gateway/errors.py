@@ -7,3 +7,8 @@ class FoundationError(Exception):
         self.user_message=user_message or error_code.default_user_message; self.extra=extra or {}; super().__init__(f"{error_code.code}: {self.detail}")
 VALIDATION_FAILED:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.INPUT.VALIDATION_FAILED",422,"Validation failed","Input failed semantic validation.","输入校验未通过。")
 UNEXPECTED:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.INTERNAL.UNEXPECTED",500,"Unexpected error","An unexpected internal error occurred.","服务异常。")
+# P1 enterprise gateway error codes
+QUOTA_EXCEEDED:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.QUOTA.EXCEEDED",402,"Quota exceeded","LLM token quota exceeded for this tenant.","LLM token 配额已用尽，请联系管理员升级计划。")
+VIRTUAL_KEY_MISMATCH:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.AUTH.VIRTUAL_KEY_MISMATCH",403,"Virtual key mismatch","The virtual key does not belong to the authenticated tenant.","虚拟 Key 与租户不匹配。")
+PROVIDER_NOT_FOUND:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.PROVIDER.NOT_FOUND",404,"Provider not found","No enabled provider found for this model/tenant.","未找到匹配的 LLM Provider。")
+PROVIDER_UPSTREAM_ERROR:Final=ErrorCode("FOUNDATION.LLM_GATEWAY.PROVIDER.UPSTREAM_ERROR",502,"Provider upstream error","The upstream LLM provider returned an error.","上游 LLM 服务异常。")

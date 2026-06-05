@@ -8,5 +8,8 @@ class Settings(BaseSettings):
     db_dsn_migrator:PostgresDsn=PostgresDsn("postgresql+asyncpg://app_migrator:app_migrator_change_me@127.0.0.1:5432/foundation")
     db_pool_size:int=10; db_max_overflow:int=10; db_pool_timeout_seconds:int=30; db_echo:bool=False
     otel_enabled:bool=True; otel_exporter_endpoint:str="http://127.0.0.1:4317"; require_tenant_context:bool=True
+    # P1: External service URLs (fail-open when unreachable)
+    billing_url:str="http://127.0.0.1:8017"; crypto_url:str="http://127.0.0.1:8004"
+    audit_url:str="http://127.0.0.1:8013"; external_timeout_seconds:float=5.0
 @lru_cache(maxsize=1)
 def get_settings()->Settings:return Settings()

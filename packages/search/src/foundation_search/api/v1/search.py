@@ -28,6 +28,10 @@ class IndexRequest(BaseModel):
     content: str
     tags: list[str] = []
     acl_user_ids: list[str] = []
+    # M2: ACL expansion fields
+    acl_team_ids: list[str] = []
+    owner_id: str | None = None
+    visibility: str | None = None  # "PUBLIC_IN_TENANT" | "PRIVATE" | etc.
     metadata: dict[str, Any] = {}
 
 
@@ -65,6 +69,9 @@ async def index(
         content=body.content,
         tags=body.tags,
         acl_user_ids=body.acl_user_ids,
+        acl_team_ids=body.acl_team_ids,
+        owner_id=body.owner_id,
+        visibility=body.visibility,
         metadata=body.metadata,
         request_id=request_id,
     )
@@ -76,17 +83,12 @@ async def deindex(
     resource_id: str,
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
+    svc: SearchService = Depends(search_service),
+    request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
-    from sqlalchemy import select
-    from foundation_search.domain.models import SearchIndex
-    from datetime import UTC, datetime
-    rows = list((await session.scalars(
-        select(SearchIndex).where(
-            SearchIndex.tenant_id == ctx.tenant_id,
-            SearchIndex.resource_id == resource_id,
-            SearchIndex.deleted_at.is_(None),
-        )
-    )).all())
-    for row in rows:
-        row.deleted_at = datetime.now(UTC)
-    return {"resource_id": resource_id, "deindexed": len(rows)}
+    count = await svc.deindex(
+        session, tenant_id=ctx.tenant_id,
+        resource_id=resource_id,
+        request_id=request_id,
+    )
+    return {"resource_id": resource_id, "deindexed": count}

@@ -3,26 +3,26 @@
 Endpoint: POST {crypto_url}/sign
 Request body:
   {
-    "key_label": "<settings.crypto_signing_key_label>",
+    "key_label": "<key_label>",
     "data_b64": "<base64(bytes.fromhex(merkle_root))>",
     "prehash": true
   }
 Response:
   {
-    "signature_b64": "<base64-encoded Ed25519 signature>",
-    "key_id": "<key version / fingerprint>"
+    "algorithm": "<Ed25519|SM2|...>",
+    "kek_id": "<key version / fingerprint>",
+    "kek_version": <int>,
+    "signature_b64": "<base64-encoded signature>"
   }
 
-Ed25519 is chosen by the KEK algorithm stored in crypto-service;
-the client does not need to specify the algorithm.
+Algorithm selection:
+  - hash_algorithm == "SHA-256" (default): uses `crypto_signing_key_label`
+    (Ed25519 or ECDSA-P256 KEK in crypto-service).
+  - hash_algorithm == "SM3" (国密优先): uses `crypto_signing_key_label_sm2`
+    (SM2 KEK in crypto-service). Signature encoding is DER (ASN.1).
 
-# TODO(SM2/SM3 — crypto v1.1):
-#   When crypto-service adds Tongsuo PKCS#11 backend support for SM2:
-#   - Set key_label to the SM2 KEK (e.g. "audit.hashchain.sm2")
-#   - Pass "algorithm": "sm2" in the request body (crypto v1.1 API extension)
-#   - Signature encoding changes to DER (ASN.1), adjust verify accordingly
-#   - This code path is gated by settings.hash_algorithm == "SM3"
-#   No implementation here — dependency: crypto-service v1.1 + Tongsuo build.
+The algorithm is fully determined by the KEK stored in crypto-service;
+the client selects the correct key label based on hash_algorithm config.
 """
 
 from __future__ import annotations
@@ -53,6 +53,18 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def _active_key_label() -> str:
+    """Return the key label for the current hash_algorithm mode.
+
+    - SHA-256 mode → crypto_signing_key_label (Ed25519 / ECDSA-P256)
+    - SM3 mode     → crypto_signing_key_label_sm2 (SM2, 国密优先)
+    """
+    s = get_settings()
+    if s.hash_algorithm == "SM3":
+        return s.crypto_signing_key_label_sm2
+    return s.crypto_signing_key_label
+
+
 async def sign_merkle_root(
     root_hex: str,
     *,
@@ -61,30 +73,40 @@ async def sign_merkle_root(
     """Sign the Merkle root via crypto-service.
 
     Args:
-        root_hex: 64-char hex string (SHA-256 Merkle root).
+        root_hex: 64-char hex string (SHA-256 or SM3 Merkle root).
         tenant_id: Used for X-Tenant-Id header routing.
 
     Returns:
-        (signature_b64, key_id) — both strings.
+        (signature_b64, kek_id) — both strings.
 
     Raises:
         httpx.HTTPStatusError: on non-2xx responses.
         httpx.RequestError: on network failures.
+
+    Algorithm selection:
+        The key label sent to crypto-service determines the signing algorithm.
+        When hash_algorithm == "SM3", the SM2 key label is used automatically;
+        crypto-service signs with SM2 (DER-encoded signature) using the KEK's
+        algorithm. No explicit "algorithm" field is required in the request —
+        crypto-service derives it from the KEK record.
     """
-    s = get_settings()
     client = _get_http_client()
+    key_label = _active_key_label()
 
     root_bytes = bytes.fromhex(root_hex)
     data_b64 = base64.b64encode(root_bytes).decode()
 
     payload: dict[str, Any] = {
-        "key_label": s.crypto_signing_key_label,
+        "key_label": key_label,
         "data_b64": data_b64,
         "prehash": True,
     }
 
-    # TODO(SM2/SM3): when hash_algorithm == "SM3", add "algorithm": "sm2"
-    # and ensure key_label points to an SM2 KEK (crypto v1.1 required).
+    log.debug(
+        "crypto.sign.request",
+        key_label=key_label,
+        hash_algorithm=get_settings().hash_algorithm,
+    )
 
     resp = await client.post(
         "/sign",
@@ -93,25 +115,29 @@ async def sign_merkle_root(
     )
     resp.raise_for_status()
     body = resp.json()
-    # Crypto API returns kek_id (not key_id); handle both for compatibility
-    key_id = body.get("key_id") or body.get("kek_id") or ""
-    return body["signature_b64"], key_id
+    # Crypto API returns kek_id; handle both kek_id and key_id for compatibility
+    kek_id = body.get("kek_id") or body.get("key_id") or ""
+    return body["signature_b64"], kek_id
 
 
 async def verify_signature(
     root_hex: str,
     signature_b64: str,
-    key_id: str,
+    kek_id: str,  # kept as positional arg name for backwards compat; unused by API
     *,
     tenant_id: str,
+    key_label: str | None = None,
 ) -> bool:
-    """Verify an Ed25519 signature via crypto-service.
+    """Verify a signature via crypto-service.
 
     Args:
-        root_hex: 64-char hex Merkle root.
+        root_hex: 64-char hex Merkle root (SHA-256 or SM3).
         signature_b64: base64-encoded signature from sign_merkle_root.
-        key_id: key version / fingerprint returned by sign.
+        kek_id: Kept for backward-compatibility; not sent to the API.
+                The crypto VerifyRequest identifies keys by key_label + kek_version.
         tenant_id: X-Tenant-Id routing header.
+        key_label: Override the key label (e.g. when verifying historical batches
+                   signed with a specific key). Defaults to _active_key_label().
 
     Returns:
         True if signature is valid, False otherwise.
@@ -119,16 +145,16 @@ async def verify_signature(
     Note:
         If crypto-service is unreachable, logs a warning and returns False
         (conservative — treat as invalid for integrity checks).
-
-    # TODO(SM2/SM3): Add "algorithm": "sm2" to verify payload when using SM2 key.
+        Works for both Ed25519 (SHA-256 mode) and SM2/DER (SM3 mode).
     """
     client = _get_http_client()
+    used_label = key_label if key_label is not None else _active_key_label()
 
     root_bytes = bytes.fromhex(root_hex)
     data_b64 = base64.b64encode(root_bytes).decode()
 
     payload: dict[str, Any] = {
-        "key_id": key_id,
+        "key_label": used_label,
         "data_b64": data_b64,
         "signature_b64": signature_b64,
         "prehash": True,
@@ -144,7 +170,11 @@ async def verify_signature(
         body = resp.json()
         return bool(body.get("valid", False))
     except (httpx.HTTPStatusError, httpx.RequestError):
-        log.warning("crypto.verify.failed", key_id=key_id, tenant_id=tenant_id)
+        log.warning(
+            "crypto.verify.failed",
+            key_label=used_label,
+            tenant_id=tenant_id,
+        )
         return False
 
 

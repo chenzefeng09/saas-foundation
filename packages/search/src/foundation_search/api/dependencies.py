@@ -21,4 +21,6 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 def search_service() -> SearchService:
-    return SearchService()
+    from foundation_search.adapters.opensearch_client import get_opensearch_client
+    from foundation_search.adapters.authz_client import get_authz_client
+    return SearchService(os_client=get_opensearch_client(), authz_client=get_authz_client())
