@@ -48,7 +48,7 @@ def ok(name: str, detail: str = "") -> None:
     msg = f"  {PASS} PASS: {name}"
     if detail:
         msg += f" — {detail}"
-    print(msg)
+    print(msg)  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     results.append((True, name))
 
 
@@ -56,7 +56,7 @@ def fail(name: str, detail: str = "") -> None:
     msg = f"  {FAIL} FAIL: {name}"
     if detail:
         msg += f" — {detail}"
-    print(msg)
+    print(msg)  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     results.append((False, name))
 
 
@@ -167,12 +167,12 @@ async def index_docs(os_client: OpenSearchClient) -> None:
 
     # Wait for OS to index
     await asyncio.sleep(1.5)
-    print("  Indexed 3 Tenant-A docs + 1 Tenant-B doc into OpenSearch")
+    print("  Indexed 3 Tenant-A docs + 1 Tenant-B doc into OpenSearch")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
 
 async def test_real_fulltext(os_client: OpenSearchClient) -> None:
     """Test 1: full-text search returns scored hits (not ILIKE)."""
-    print("\n[Test 1] Real full-text search (keyword → scored hits)")
+    print("\n[Test 1] Real full-text search (keyword → scored hits)")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     query_body = {
         "query": {
             "bool": {
@@ -198,7 +198,7 @@ async def test_real_fulltext(os_client: OpenSearchClient) -> None:
 
 async def test_cross_tenant_isolation(os_client: OpenSearchClient) -> None:
     """Test 2: tenant A user cannot see tenant B documents."""
-    print("\n[Test 2] Cross-tenant isolation")
+    print("\n[Test 2] Cross-tenant isolation")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     # Search with broad query but scoped to tenant A
     query_body = {
         "query": {
@@ -233,7 +233,7 @@ async def test_cross_tenant_isolation(os_client: OpenSearchClient) -> None:
 
 async def test_acl_filtering_service(os_client: OpenSearchClient) -> None:
     """Test 3: Tenant-internal ACL — alice sees public+own but NOT team-only doc."""
-    print("\n[Test 3] Tenant-internal ACL filtering")
+    print("\n[Test 3] Tenant-internal ACL filtering")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     # Alice has: no team membership
     authz_alice = AccessibleIds(ids=[], complete=True, all_in_tenant=False)
@@ -253,7 +253,7 @@ async def test_acl_filtering_service(os_client: OpenSearchClient) -> None:
         limit=20,
     )
     alice_ids = {item["resource_id"] for item in result_alice["items"]}
-    print(f"  Alice sees: {alice_ids}")
+    print(f"  Alice sees: {alice_ids}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     if "doc_pub_a" in alice_ids:
         ok("alice sees PUBLIC_IN_TENANT doc")
@@ -282,7 +282,7 @@ async def test_acl_filtering_service(os_client: OpenSearchClient) -> None:
         limit=20,
     )
     bob_ids = {item["resource_id"] for item in result_bob["items"]}
-    print(f"  Bob sees: {bob_ids}")
+    print(f"  Bob sees: {bob_ids}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     if "doc_eng_team" in bob_ids:
         ok("bob (TEAM_ENG member) sees team-only doc")
@@ -297,7 +297,7 @@ async def test_acl_filtering_service(os_client: OpenSearchClient) -> None:
 
 async def test_failclose_os_down() -> None:
     """Test 4: OS down → 503, no PG fallback."""
-    print("\n[Test 4] fail-close: OS unavailable → 503")
+    print("\n[Test 4] fail-close: OS unavailable → 503")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     # Use a mock OS client that raises SEARCH_BACKEND_UNAVAILABLE
     broken_os = MagicMock()
@@ -355,7 +355,7 @@ async def test_failclose_os_down() -> None:
 
 async def test_failclose_authz_down(os_client: OpenSearchClient) -> None:
     """Test 5: authz down → fail-close (no team ACL), alice still cannot see team doc."""
-    print("\n[Test 5] fail-close: authz down → narrow ACL (no team grants)")
+    print("\n[Test 5] fail-close: authz down → narrow ACL (no team grants)")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     # Authz returns fail-close result (complete=False, all_in_tenant=False)
     broken_authz = MagicMock()
@@ -371,7 +371,7 @@ async def test_failclose_authz_down(os_client: OpenSearchClient) -> None:
         limit=20,
     )
     ids = {item["resource_id"] for item in result["items"]}
-    print(f"  Alice (authz=down) sees: {ids}")
+    print(f"  Alice (authz=down) sees: {ids}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     if "doc_eng_team" not in ids:
         ok("authz down → alice still cannot see team-only doc (fail-close works)")
@@ -391,39 +391,39 @@ async def cleanup(os_client: OpenSearchClient) -> None:
         await os_client.delete_doc(tenant_id=TENANT_A, resource_id=doc["resource_id"])
     for doc in DOCS_B:
         await os_client.delete_doc(tenant_id=TENANT_B, resource_id=doc["resource_id"])
-    print("\n  Cleaned up test documents from OpenSearch")
+    print("\n  Cleaned up test documents from OpenSearch")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
 
 async def main() -> None:
-    print("=" * 60)
-    print("M2 Real Verification: OpenSearch + ACL")
-    print("=" * 60)
-    print(f"  OS URL:    http://localhost:9200")
-    print(f"  Authz URL: http://localhost:8002/api/authz/v1")
-    print()
+    print("=" * 60)  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
+    print("M2 Real Verification: OpenSearch + ACL")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
+    print("=" * 60)  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
+    print(f"  OS URL:    http://localhost:9200")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
+    print(f"  Authz URL: http://localhost:8002/api/authz/v1")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
+    print()  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     # Check OS health
     try:
         resp = httpx.get("http://localhost:9200/_cluster/health", timeout=3.0)
         os_status = resp.json().get("status", "?")
-        print(f"  OpenSearch cluster status: {os_status}")
+        print(f"  OpenSearch cluster status: {os_status}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
         if os_status not in ("green", "yellow"):
-            print("  ERROR: OpenSearch not healthy, aborting")
+            print("  ERROR: OpenSearch not healthy, aborting")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
             sys.exit(1)
     except Exception as e:
-        print(f"  ERROR: Cannot reach OpenSearch: {e}")
+        print(f"  ERROR: Cannot reach OpenSearch: {e}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
         sys.exit(1)
 
     # Check authz health
     try:
         resp = httpx.get("http://localhost:8002/api/authz/v1/healthz", timeout=3.0)
-        print(f"  Authz health: {resp.json().get('status', '?')}")
+        print(f"  Authz health: {resp.json().get('status', '?')}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     except Exception as e:
-        print(f"  WARNING: Cannot reach authz ({e}), tests 3+5 will use mock authz anyway")
+        print(f"  WARNING: Cannot reach authz ({e}), tests 3+5 will use mock authz anyway")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
     os_client = OpenSearchClient()
 
-    print("\n--- Indexing test documents ---")
+    print("\n--- Indexing test documents ---")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     await index_docs(os_client)
 
     await test_real_fulltext(os_client)
@@ -435,18 +435,18 @@ async def main() -> None:
     await cleanup(os_client)
 
     # Summary
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 60)  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     passed = sum(1 for ok, _ in results if ok)
     failed = sum(1 for ok, _ in results if not ok)
-    print(f"RESULTS: {passed} passed, {failed} failed out of {len(results)}")
+    print(f"RESULTS: {passed} passed, {failed} failed out of {len(results)}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
     if failed:
-        print("\nFailed tests:")
+        print("\nFailed tests:")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
         for ok_flag, name in results:
             if not ok_flag:
-                print(f"  {FAIL} {name}")
+                print(f"  {FAIL} {name}")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
         sys.exit(1)
     else:
-        print("All tests passed.")
+        print("All tests passed.")  # nosemgrep: forbid-print-in-production-code  # CLI verification script output
 
 
 if __name__ == "__main__":

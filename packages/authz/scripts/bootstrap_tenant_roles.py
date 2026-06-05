@@ -138,9 +138,9 @@ async def _bootstrap(
             # Set RLS context so INSERT passes tenant_insert policy and
             # admin_all SELECT policy allows us to see rows within the
             # same transaction.
-            await conn.execute(text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))
-            await conn.execute(text("SET LOCAL app.actor = 'ADMIN'"))
-            await conn.execute(text("SET LOCAL app.user_id = 'BOOTSTRAP'"))
+            await conn.execute(text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))  # nosemgrep: avoid-sqlalchemy-text  # SET LOCAL; tenant_id validated by CLI argparse
+            await conn.execute(text("SET LOCAL app.actor = 'ADMIN'"))  # nosemgrep: avoid-sqlalchemy-text  # static literal
+            await conn.execute(text("SET LOCAL app.user_id = 'BOOTSTRAP'"))  # nosemgrep: avoid-sqlalchemy-text  # static literal
 
             role_ids: dict[str, str] = {}
 
@@ -158,14 +158,14 @@ async def _bootstrap(
                 row = existing.fetchone()
                 if row:
                     role_id = row[0]
-                    print(f"  [skip] role '{name}' already exists ({role_id})")
+                    print(f"  [skip] role '{name}' already exists ({role_id})")  # nosemgrep: forbid-print-in-production-code  # CLI user output
                     role_ids[name] = role_id
                     continue
 
                 role_id = _new_role_id()
                 role_ids[name] = role_id
                 if dry_run:
-                    print(f"  [dry-run] would INSERT role '{name}' id={role_id}")
+                    print(f"  [dry-run] would INSERT role '{name}' id={role_id}")  # nosemgrep: forbid-print-in-production-code  # CLI user output
                 else:
                     await conn.execute(
                         text(
@@ -188,13 +188,13 @@ async def _bootstrap(
                             "permissions": list(role_def["permissions"]),
                         },
                     )
-                    print(f"  [created] role '{name}' id={role_id}")
+                    print(f"  [created] role '{name}' id={role_id}")  # nosemgrep: forbid-print-in-production-code  # CLI user output
 
             # Optionally bind admin_user_id → super_admin.
             if admin_user_id:
                 super_admin_id = role_ids.get("super_admin")
                 if not super_admin_id:
-                    print("  [skip] cannot bind admin: super_admin role not found")
+                    print("  [skip] cannot bind admin: super_admin role not found")  # nosemgrep: forbid-print-in-production-code  # CLI user output
                 else:
                     existing_binding = await conn.execute(
                         text(
@@ -208,11 +208,11 @@ async def _bootstrap(
                         {"tid": tenant_id, "uid": admin_user_id, "rid": super_admin_id},
                     )
                     if existing_binding.fetchone():
-                        print(
+                        print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
                             f"  [skip] binding {admin_user_id} → super_admin already exists"
                         )
                     elif dry_run:
-                        print(
+                        print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
                             f"  [dry-run] would INSERT binding "
                             f"{admin_user_id} → super_admin (role_id={super_admin_id})"
                         )
@@ -235,7 +235,7 @@ async def _bootstrap(
                                 "scope_id": tenant_id,
                             },
                         )
-                        print(
+                        print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
                             f"  [created] binding {admin_user_id} → super_admin "
                             f"(binding_id={binding_id})"
                         )
@@ -288,7 +288,7 @@ def main() -> None:
 
     db_url = os.environ.get("AUTHZ_DB_DSN_ADMIN") or args.db_url
 
-    print(f"bootstrap_tenant_roles: tenant_id={args.tenant_id} dry_run={args.dry_run}")
+    print(f"bootstrap_tenant_roles: tenant_id={args.tenant_id} dry_run={args.dry_run}")  # nosemgrep: forbid-print-in-production-code  # CLI user output
     asyncio.run(
         _bootstrap(
             tenant_id=args.tenant_id,
@@ -297,7 +297,7 @@ def main() -> None:
             dry_run=args.dry_run,
         )
     )
-    print("done.")
+    print("done.")  # nosemgrep: forbid-print-in-production-code  # CLI user output
 
 
 if __name__ == "__main__":

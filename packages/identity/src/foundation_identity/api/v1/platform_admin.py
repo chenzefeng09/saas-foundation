@@ -276,9 +276,11 @@ async def patch_tenant(
     set_clause = ", ".join(updates)
     async with admin_session_scope(tenant_id="", user_id=actor_user_id) as session:
         result = await session.execute(
-            text(
+            text(  # nosemgrep: avoid-sqlalchemy-text
                 f"UPDATE tenant.tenant SET {set_clause}, updated_at = now() "
                 "WHERE id = :id RETURNING id, name, tier, status, created_at"
+                # set_clause is built from a fixed allowlist of column-name literals;
+                # all values travel via named bind params — no user input is interpolated.
             ),
             params,
         )
@@ -321,7 +323,7 @@ async def list_users_cross_tenant(
     )
 
     async with admin_session_scope(tenant_id=tenant_id or "", user_id=actor_user_id) as session:
-        rows = (await session.execute(text(q), params)).fetchall()
+        rows = (await session.execute(text(q), params)).fetchall()  # nosemgrep: avoid-sqlalchemy-text  # where_clauses are hardcoded literals; values use :param binds
 
     next_cursor = rows[-1][0] if len(rows) > limit else None
     items = [

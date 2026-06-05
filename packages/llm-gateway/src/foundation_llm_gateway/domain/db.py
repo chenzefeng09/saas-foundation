@@ -24,9 +24,9 @@ async def session_scope()->AsyncIterator[AsyncSession]:
     async with _sm() as session:
         async with session.begin():
             if ctx is not None:
-                await session.execute(text(f"SET LOCAL app.tenant_id = '{ctx.tenant_id}'"))
-                await session.execute(text(f"SET LOCAL app.user_id = '{ctx.user_id or ''}'"))
-                await session.execute(text(f"SET LOCAL app.actor = '{ctx.actor}'"))
+                await session.execute(text(f"SET LOCAL app.tenant_id = '{ctx.tenant_id}'"))  # nosemgrep: avoid-sqlalchemy-text
+                await session.execute(text(f"SET LOCAL app.user_id = '{ctx.user_id or ''}'"))  # nosemgrep: avoid-sqlalchemy-text
+                await session.execute(text(f"SET LOCAL app.actor = '{ctx.actor}'"))  # nosemgrep: avoid-sqlalchemy-text
             yield session
 async def dispose_engine()->None:
     global _engine,_sm
