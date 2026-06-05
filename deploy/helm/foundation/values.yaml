@@ -18,6 +18,13 @@ global:
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
 
+  # global.imageRegistry 把 bitnami 子 chart（postgresql/redis/clickhouse→zookeeper 等）
+  # 的镜像重写到私有 registry，触发 bitnami 新版的非标准镜像校验，渲染会直接报错。
+  # 私有 registry 即官方镜像的内部镜像源，显式放行。
+  # 见 https://github.com/bitnami/charts/issues/30850
+  security:
+    allowInsecureImages: true
+
   # 域名 / Ingress
   ingress:
     enabled: true
@@ -142,6 +149,14 @@ minio:
 otel-collector:
   enabled: true
   mode: deployment
+  # opentelemetry-collector chart 0.100.x 起 image.repository 无默认值，必须显式设置
+  # （见 chart UPGRADING.md），否则 NOTES.txt 渲染直接报错。
+  # 与 docker-compose dev 栈保持一致：使用 contrib 镜像，command.name 须为 otelcol-contrib。
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.108.0"
+  command:
+    name: otelcol-contrib
 
 opa:
   enabled: true

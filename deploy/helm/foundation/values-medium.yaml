@@ -43,7 +43,15 @@ keycloak:
   enabled: true
   replicaCount: 2
   production: true
-  cache: ispn
+  # production=true 时子 chart 强制要求 TLS；本栈在 ingress(nginx) 层终止 TLS、
+  # keycloak 自身走 HTTP，故用标准的 edge 代理模式满足校验（无需给 pod 塞 keystore）。
+  proxy: edge
+  # cache 必须是 map（子 chart 默认 {enabled,stackName,stackFile}）；
+  # 写成标量 "ispn" 会覆盖 table 导致 .Values.cache.enabled 取值失败、渲染报错。
+  # enabled=true 即启用 ispn 集群缓存栈（多副本必需），stackName=kubernetes 走 DNS 发现。
+  cache:
+    enabled: true
+    stackName: kubernetes
 
 clickhouse:
   enabled: true
