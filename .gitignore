@@ -64,3 +64,6 @@ logs/
 # Database
 *.sqlite
 *.db
+
+# Helm CI 渲染产物(workflow 写到工作区根)
+/render-*.yaml
