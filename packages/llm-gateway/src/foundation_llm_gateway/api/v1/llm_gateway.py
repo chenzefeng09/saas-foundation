@@ -27,8 +27,8 @@ from foundation_llm_gateway.api.dependencies import (
 from foundation_llm_gateway.config import get_settings
 from foundation_llm_gateway.domain.base import FoundationContext
 from foundation_llm_gateway.errors import (
-    PROVIDER_NOT_FOUND, PROVIDER_UPSTREAM_ERROR,
-    QUOTA_EXCEEDED, VIRTUAL_KEY_MISMATCH, FoundationError,
+    PROVIDER_UPSTREAM_ERROR,
+    QUOTA_EXCEEDED, VIRTUAL_KEY_MISMATCH, VIRTUAL_KEY_REQUIRED, FoundationError,
 )
 from foundation_llm_gateway.observability import get_logger
 from foundation_llm_gateway.services.llm_gateway_service import (
@@ -309,9 +309,8 @@ async def chat_completions(
 
     Security pipeline:
       1. Resolve tenant_id from context (middleware).
-      2. If X-LLM-Virtual-Key present: resolve provider via virtual key + model.
+      2. Require X-LLM-Virtual-Key and resolve provider via virtual key + model.
          Virtual key tenant_id cross-checked against request tenant_id (→ 403 on mismatch).
-         If no virtual key: fall back to first enabled provider (legacy/internal path).
       3. Quota check via billing service (fail-close on EXCEEDED, fail-open on unavailability).
       4. Decrypt api_key envelope (migration-compatible: plaintext tolerated).
       5. Forward to provider (streaming or non-streaming).
@@ -323,24 +322,15 @@ async def chat_completions(
     run_id = (body.metadata or {}).get("run_id")
     user_id = (body.metadata or {}).get("user_id") or ctx.user_id
 
-    # -- Step 2: Provider resolution
-    if x_llm_virtual_key:
-        _, provider = await svc.resolve_provider(
-            session, virtual_key=x_llm_virtual_key, model=body.model, tenant_id=tenant_id
-        )
-    else:
-        # Legacy/internal path: pick first enabled provider for tenant
-        from sqlalchemy import select
-        from foundation_llm_gateway.domain.models import LLMProvider
-        provider = await session.scalar(
-            select(LLMProvider).where(
-                LLMProvider.tenant_id == tenant_id,
-                LLMProvider.enabled.is_(True),
-            ).limit(1)
-        )
-        if provider is None:
-            raise FoundationError(PROVIDER_NOT_FOUND,
-                detail=f"No enabled provider for tenant={tenant_id!r}. Register a provider first.")
+    # -- Step 2: Provider resolution.  Enterprise mode is fail-closed: the
+    # gateway never falls back to an arbitrary tenant provider when a virtual
+    # key is missing, because that exposes provider credentials and bypasses
+    # per-key rate controls.
+    if not x_llm_virtual_key:
+        raise FoundationError(VIRTUAL_KEY_REQUIRED)
+    _, provider = await svc.resolve_provider(
+        session, virtual_key=x_llm_virtual_key, model=body.model, tenant_id=tenant_id
+    )
 
     # Estimate token budget for quota check (rough: 1 token ≈ 4 chars)
     messages_wire = _serialize_messages(body.messages)
@@ -647,21 +637,11 @@ async def chat(
     settings = get_settings()
     tenant_id = ctx.tenant_id
 
-    if x_llm_virtual_key:
-        _, provider = await svc.resolve_provider(
-            session, virtual_key=x_llm_virtual_key, model=body.model, tenant_id=tenant_id
-        )
-    else:
-        from sqlalchemy import select
-        from foundation_llm_gateway.domain.models import LLMProvider
-        provider = await session.scalar(
-            select(LLMProvider).where(
-                LLMProvider.tenant_id == tenant_id,
-                LLMProvider.enabled.is_(True),
-            ).limit(1)
-        )
-        if provider is None:
-            return {"error": "No LLM provider registered", "model": body.model, "choices": []}
+    if not x_llm_virtual_key:
+        raise FoundationError(VIRTUAL_KEY_REQUIRED)
+    _, provider = await svc.resolve_provider(
+        session, virtual_key=x_llm_virtual_key, model=body.model, tenant_id=tenant_id
+    )
 
     messages_wire = [{"role": m.role, "content": m.content} for m in body.messages]
     tokens_estimate = max(1, sum(len(m["content"]) for m in messages_wire) // 4) + (body.max_tokens or 1024)

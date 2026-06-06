@@ -45,15 +45,12 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 r.url.path,
                 rid,
             )
-        token = None
-        if tid:
-            ctx = FoundationContext(tenant_id=tid, user_id=uid, actor=actor, request_id=rid)
-            token = foundation_context.set(ctx)
+        ctx = FoundationContext(tenant_id=tid or "", user_id=uid, actor=actor, request_id=rid)
+        token = foundation_context.set(ctx)
         try:
             return await call_next(r)
         finally:
-            if token is not None:
-                foundation_context.reset(token)
+            foundation_context.reset(token)
 
 
 def _problem(status: int, code: str, detail: str, instance: str, rid: str) -> Response:

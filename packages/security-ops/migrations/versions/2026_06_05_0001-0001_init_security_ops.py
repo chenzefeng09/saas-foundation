@@ -19,6 +19,25 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _platform_actor_allowed() -> str:
+    return "current_setting('app.actor', true) IN ('ADMIN', 'SYSTEM', 'SERVICE')"
+
+
+def _enable_platform_rls(table: str) -> None:
+    op.execute(f"ALTER TABLE security_ops.{table} ENABLE ROW LEVEL SECURITY")
+    op.execute(f"ALTER TABLE security_ops.{table} FORCE ROW LEVEL SECURITY")
+    allowed = _platform_actor_allowed()
+    op.execute(
+        f"CREATE POLICY platform_all ON security_ops.{table} "
+        f"FOR ALL TO app_user, app_admin "
+        f"USING ({allowed}) WITH CHECK ({allowed})"
+    )
+    op.execute(
+        f"CREATE POLICY platform_observability_select ON security_ops.{table} "
+        f"FOR SELECT TO app_observability USING ({allowed})"
+    )
+
+
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS security_ops")
 
@@ -202,8 +221,7 @@ def upgrade() -> None:
         "drill",
         "security_ops_event_outbox",
     ):
-        op.execute(f"ALTER TABLE security_ops.{table} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE security_ops.{table} FORCE ROW LEVEL SECURITY")
+        _enable_platform_rls(table)
 
     # ── Grants ────────────────────────────────────────────────────────────────
     op.execute(

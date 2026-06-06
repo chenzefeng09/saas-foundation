@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from foundation_feature_flag.domain.base import foundation_context
 from foundation_feature_flag.domain.db import session_scope
 from foundation_feature_flag.domain.models import Flag, KillSwitchLog
+from foundation_feature_flag.errors import ACCESS_DENIED, FoundationError
 from foundation_feature_flag.observability import get_logger
 from foundation_feature_flag.services.feature_flag_service import FeatureFlagService
 from foundation_feature_flag.services.unleash_gateway import UnleashGateway
@@ -100,6 +101,12 @@ def _tenant_id() -> str | None:
     return ctx.tenant_id if ctx else None
 
 
+def _require_admin() -> None:
+    ctx = foundation_context.get()
+    if ctx is None or ctx.actor != "ADMIN":
+        raise FoundationError(ACCESS_DENIED, detail="ADMIN actor required")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -161,6 +168,7 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
     Writes to the local DB and syncs to Unleash admin API.
     SDK call: set_flag(flag=str, enabled=bool, rollout_percentage=int, tenant_whitelist=list)
     """
+    _require_admin()
     gateway: UnleashGateway = request.app.state.unleash_gateway
 
     # Build Unleash strategy based on SDK parameters
@@ -254,6 +262,7 @@ async def kill_switch(flag: str, body: KillSwitchRequest, request: Request) -> K
 
     reason is required (min 5 chars enforced by Pydantic).
     """
+    _require_admin()
     if len(body.reason.strip()) < 5:
         raise HTTPException(status_code=422, detail="reason must be at least 5 characters")
 

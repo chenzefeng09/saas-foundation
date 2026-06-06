@@ -19,6 +19,39 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _enable_flag_rls() -> None:
+    op.execute('ALTER TABLE feature_flag."flag" ENABLE ROW LEVEL SECURITY')
+    op.execute('ALTER TABLE feature_flag."flag" FORCE ROW LEVEL SECURITY')
+    op.execute(
+        'CREATE POLICY flag_read ON feature_flag."flag" '
+        "FOR SELECT TO app_user, app_admin, app_observability USING (true)"
+    )
+    op.execute(
+        'CREATE POLICY flag_admin_write ON feature_flag."flag" '
+        "FOR ALL TO app_user, app_admin "
+        "USING (current_setting('app.actor', true) = 'ADMIN') "
+        "WITH CHECK (current_setting('app.actor', true) = 'ADMIN')"
+    )
+
+
+def _enable_kill_switch_log_rls() -> None:
+    op.execute('ALTER TABLE feature_flag."kill_switch_log" ENABLE ROW LEVEL SECURITY')
+    op.execute('ALTER TABLE feature_flag."kill_switch_log" FORCE ROW LEVEL SECURITY')
+    tenant_or_global = "tenant_id IS NULL OR tenant_id = current_setting('app.tenant_id', true)"
+    admin_actor = "current_setting('app.actor', true) = 'ADMIN'"
+    op.execute(
+        'CREATE POLICY kill_switch_admin_all ON feature_flag."kill_switch_log" '
+        "FOR ALL TO app_user, app_admin "
+        f"USING ({admin_actor} AND ({tenant_or_global})) "
+        f"WITH CHECK ({admin_actor} AND ({tenant_or_global}))"
+    )
+    op.execute(
+        'CREATE POLICY kill_switch_system_select ON feature_flag."kill_switch_log" '
+        "FOR SELECT TO app_observability, app_admin "
+        "USING (current_setting('app.actor', true) = 'SYSTEM')"
+    )
+
+
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS feature_flag")
 
@@ -73,6 +106,9 @@ def upgrade() -> None:
         " TO app_user, app_admin"
     )
     op.execute("GRANT SELECT ON ALL TABLES IN SCHEMA feature_flag TO app_observability")
+
+    _enable_flag_rls()
+    _enable_kill_switch_log_rls()
 
 
 def downgrade() -> None:

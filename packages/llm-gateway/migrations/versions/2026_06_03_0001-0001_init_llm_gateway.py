@@ -18,6 +18,55 @@ down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_TENANT_TABLES = ("llm_provider", "llm_tenant_key", "llm_usage_record")
+
+
+def _enable_tenant_rls(table: str) -> None:
+    op.execute(f'ALTER TABLE llm_gateway."{table}" ENABLE ROW LEVEL SECURITY')
+    op.execute(f'ALTER TABLE llm_gateway."{table}" FORCE ROW LEVEL SECURITY')
+    tenant_match = "tenant_id = current_setting('app.tenant_id', true)"
+    for cmd in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        policy_name = f"tenant_{cmd.lower()}"
+        if cmd == "INSERT":
+            clauses = f"WITH CHECK ({tenant_match})"
+        elif cmd == "UPDATE":
+            clauses = f"USING ({tenant_match}) WITH CHECK ({tenant_match})"
+        else:
+            clauses = f"USING ({tenant_match})"
+        op.execute(
+            f'CREATE POLICY {policy_name} ON llm_gateway."{table}" '
+            f"FOR {cmd} TO app_user, app_admin {clauses}"
+        )
+    op.execute(
+        f'CREATE POLICY admin_all ON llm_gateway."{table}" '
+        f"FOR ALL TO app_admin "
+        f"USING (current_setting('app.actor', true) = 'ADMIN') "
+        f"WITH CHECK (current_setting('app.actor', true) = 'ADMIN')"
+    )
+
+
+def _enable_outbox_rls() -> None:
+    op.execute("ALTER TABLE llm_gateway.llm_gateway_event_outbox ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE llm_gateway.llm_gateway_event_outbox FORCE ROW LEVEL SECURITY")
+    op.execute(
+        "CREATE POLICY outbox_tenant_insert ON llm_gateway.llm_gateway_event_outbox "
+        "FOR INSERT TO app_user, app_admin "
+        "WITH CHECK ("
+        "  tenant_id IS NULL OR tenant_id = current_setting('app.tenant_id', true)"
+        ")"
+    )
+    op.execute(
+        "CREATE POLICY outbox_tenant_select ON llm_gateway.llm_gateway_event_outbox "
+        "FOR SELECT TO app_user, app_admin "
+        "USING (tenant_id = current_setting('app.tenant_id', true))"
+    )
+    op.execute(
+        "CREATE POLICY outbox_system_all ON llm_gateway.llm_gateway_event_outbox "
+        "FOR ALL TO app_observability, app_admin "
+        "USING (current_setting('app.actor', true) = 'SYSTEM') "
+        "WITH CHECK (current_setting('app.actor', true) = 'SYSTEM')"
+    )
+
 
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS llm_gateway")
@@ -81,6 +130,10 @@ def upgrade() -> None:
         sa.Column("occurred_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
         schema="llm_gateway",
     )
+
+    for table in _TENANT_TABLES:
+        _enable_tenant_rls(table)
+    _enable_outbox_rls()
 
     op.execute("GRANT USAGE ON SCHEMA llm_gateway TO app_user, app_admin, app_observability")
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA llm_gateway TO app_user, app_admin")

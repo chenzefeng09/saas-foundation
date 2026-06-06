@@ -10,7 +10,7 @@ authz.permission_definition (global catalog; no RLS).
 Actions catalogued
 ------------------
 session: read, create, update, delete
-session.message: read, create
+session.message: read, create, delete
 session.attachment: read, create
 run: create, read, cancel
 sandbox: read, stop
@@ -80,6 +80,13 @@ _PERMISSIONS = [
         "resource_type": "session.message",
         "action": "create",
         "description": "Post a new message to a session.",
+    },
+    {
+        "id": "session.message.delete",
+        "service": "session",
+        "resource_type": "session.message",
+        "action": "delete",
+        "description": "Delete (rewind/truncate) messages in a session.",
     },
     # ── session.attachment ─────────────────────────────────────────────────
     {

@@ -62,6 +62,7 @@ _MEMBER_PERMISSIONS = [
     "session.update",
     "session.message.read",
     "session.message.create",
+    "session.message.delete",
     "session.attachment.read",
     "session.attachment.create",
     "run.create",
