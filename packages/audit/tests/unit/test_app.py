@@ -87,8 +87,17 @@ class TestMiddleware:
 class TestExceptionHandlers:
     def test_validation_error_returns_422(self) -> None:
         """Pydantic validation error returns 422 with problem+json."""
+        from collections.abc import AsyncIterator
+
+        from foundation_audit.api.dependencies import db_session
         from foundation_audit.main import create_app
-        client = TestClient(create_app(), raise_server_exceptions=False)
+
+        async def fake_db_session() -> AsyncIterator[object]:
+            yield object()
+
+        app = create_app()
+        app.dependency_overrides[db_session] = fake_db_session
+        client = TestClient(app, raise_server_exceptions=False)
         # POST with invalid body triggers validation
         resp = client.post(
             "/api/audit/v1/events",

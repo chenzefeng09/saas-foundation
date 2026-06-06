@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -13,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
 from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
-from foundation_identity.api.dependencies import audit, keycloak
+from foundation_identity.api.dependencies import audit, db_session, keycloak
 from foundation_identity.api.v1.sessions import _oidc_adapter
 from foundation_identity.main import create_app
 
@@ -74,6 +75,42 @@ STUB_OIDC_CLAIMS: dict[str, Any] = {
 }
 
 
+class _ScalarResult:
+    def __init__(self, rows: list[Any] | None = None) -> None:
+        self._rows = rows or []
+
+    def all(self) -> list[Any]:
+        return self._rows
+
+
+class FakeAsyncSession:
+    """Small SQLAlchemy AsyncSession stand-in for API tests that do not need DB."""
+
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+
+    async def scalar(self, *_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    async def scalars(self, *_args: Any, **_kwargs: Any) -> _ScalarResult:
+        return _ScalarResult()
+
+    async def get(self, *_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def add(self, obj: Any) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        now = datetime.now(UTC)
+        for obj in self.added:
+            if hasattr(obj, "created_at") and getattr(obj, "created_at") is None:
+                setattr(obj, "created_at", now)
+            if hasattr(obj, "updated_at") and getattr(obj, "updated_at") is None:
+                setattr(obj, "updated_at", now)
+        return None
+
+
 @pytest.fixture
 def mock_oidc() -> AsyncMock:
     """Stub OIDC adapter: verify_token returns STUB_OIDC_CLAIMS; grants return
@@ -94,8 +131,13 @@ def mock_oidc() -> AsyncMock:
 @pytest.fixture
 def app(mock_keycloak: AsyncMock, mock_audit: AsyncMock, mock_oidc: AsyncMock) -> FastAPI:
     application = create_app()
+
+    async def _db_override() -> AsyncIterator[FakeAsyncSession]:
+        yield FakeAsyncSession()
+
     application.dependency_overrides[keycloak] = lambda: mock_keycloak
     application.dependency_overrides[audit] = lambda: mock_audit
+    application.dependency_overrides[db_session] = _db_override
     application.dependency_overrides[_oidc_adapter] = lambda: mock_oidc
     return application
 

@@ -81,8 +81,16 @@ class FakeAsyncSession:
     _execute_queue: list[list[Any]] = field(default_factory=list)
 
     # ---- staging helpers ----
+    def _primary_key(self, obj: Any) -> Any:
+        mapper = getattr(obj, "__mapper__", None)
+        if mapper is None:
+            return getattr(obj, "id")
+
+        values = tuple(getattr(obj, column.key) for column in mapper.primary_key)
+        return values[0] if len(values) == 1 else values
+
     def put(self, obj: Any) -> None:
-        self.pk_store[type(obj)][obj.id] = obj
+        self.pk_store[type(obj)][self._primary_key(obj)] = obj
 
     def queue_scalar(self, value: Any) -> None:
         self._scalar_queue.append(value)
@@ -114,9 +122,7 @@ class FakeAsyncSession:
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
-        pk = getattr(obj, "id", None)
-        if pk is not None:
-            self.pk_store[type(obj)][pk] = obj
+        self.pk_store[type(obj)][self._primary_key(obj)] = obj
 
     async def flush(self) -> None:
         self.flush_calls += 1

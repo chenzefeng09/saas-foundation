@@ -14,6 +14,11 @@ COMPOSE_FILE := deploy/docker-compose/dev.yml
 COMPOSE := docker compose -f $(COMPOSE_FILE) --env-file deploy/docker-compose/.env
 
 PACKAGES := $(shell find packages -mindepth 1 -maxdepth 1 -type d -not -name '.*' 2>/dev/null)
+PACKAGE_SRC_PATHS := $(shell find $(CURDIR)/packages -mindepth 2 -maxdepth 2 -type d -name src 2>/dev/null | paste -sd ':' -)
+POETRY_VIRTUALENVS_PATH ?= $(or $(TMPDIR),/tmp)/poetry-venvs
+export POETRY_VIRTUALENVS_PATH
+PYTHONPATH ?= src:$(PACKAGE_SRC_PATHS)
+export PYTHONPATH
 
 # Colorize
 BOLD := \033[1m
@@ -111,7 +116,14 @@ format: ## ruff format（所有 package）
 test: ## pytest（所有 package）
 	@for pkg in $(PACKAGES); do \
 	  echo "$(BOLD)→ $$pkg$(RESET)"; \
-	  $(MAKE) -C $$pkg test || exit 1; \
+	  if [ -f $$pkg/Makefile ]; then \
+	    $(MAKE) -C $$pkg test || exit 1; \
+	  elif [ -f $$pkg/pyproject.toml ]; then \
+	    cd $$pkg && poetry run pytest || exit 1; \
+	    cd - > /dev/null; \
+	  else \
+	    echo "$(YELLOW)skip $$pkg: no Makefile or pyproject.toml$(RESET)"; \
+	  fi; \
 	done
 
 .PHONY: test-rls-fuzz

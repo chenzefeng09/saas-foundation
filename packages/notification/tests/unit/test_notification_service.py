@@ -1,6 +1,7 @@
 """Unit tests for NotificationService."""
 
 from __future__ import annotations
+from typing import Any
 import pytest
 from foundation_notification.services.notification_service import NotificationService, _event_matches
 from foundation_notification.domain.models import NotificationTemplate, NotificationChannel
@@ -70,6 +71,86 @@ class TestSend:
         assert len(logs) == 1
         # In test without a real webhook, will fail to connect
         assert logs[0].channel == "WEBHOOK"
+
+
+class TestDeliveryChannels:
+    @pytest.fixture
+    def svc(self):
+        return NotificationService()
+
+    async def test_webhook_without_url_fails(self, svc):
+        status, detail = await svc._deliver(
+            channel="WEBHOOK",
+            channel_config=None,
+            recipient="hook",
+            subject="Subject",
+            body="Body",
+        )
+        assert status == "FAILED"
+        assert detail == "No webhook URL configured"
+
+    async def test_robot_channels_without_url_fail(self, svc):
+        for channel, expected in (
+            ("DINGTALK", "No DingTalk webhook configured"),
+            ("FEISHU", "No Feishu webhook configured"),
+            ("WECOM", "No WeCom webhook configured"),
+        ):
+            status, detail = await svc._deliver(
+                channel=channel,
+                channel_config=None,
+                recipient="robot",
+                subject="Subject",
+                body="Body",
+            )
+            assert status == "FAILED"
+            assert detail == expected
+
+    async def test_robot_channels_post_payloads(self, svc, monkeypatch):
+        calls = []
+
+        class Response:
+            status_code = 200
+            text = "ok"
+
+        class Client:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, url: str, *, json: dict[str, Any]):
+                calls.append((url, json))
+                return Response()
+
+        monkeypatch.setattr(
+            "foundation_notification.services.notification_service.httpx.AsyncClient",
+            Client,
+        )
+
+        for channel in ("DINGTALK", "FEISHU", "WECOM"):
+            ch = NotificationChannel(
+                id=f"nc_{channel}", tenant_id="tnt_01J0000000000000000000TNT1",
+                channel=channel, config={"webhook_url": f"http://{channel.lower()}"},
+                enabled=True)
+            status, detail = await svc._deliver(
+                channel=channel,
+                channel_config=ch,
+                recipient="robot",
+                subject="Subject",
+                body="Body",
+            )
+            assert status == "DELIVERED"
+            assert detail == "HTTP 200"
+
+        assert [call[0] for call in calls] == [
+            "http://dingtalk",
+            "http://feishu",
+            "http://wecom",
+        ]
 
 
 class TestSubscription:

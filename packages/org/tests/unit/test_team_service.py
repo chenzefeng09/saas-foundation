@@ -108,6 +108,66 @@ class TestCreate:
         assert exc.value.error_code is TEAM_CODE_CONFLICT
 
 
+class TestList:
+    async def test_list_returns_page_and_next_cursor(
+        self, svc: TeamService, fake_session, tenant_id: str,
+    ) -> None:
+        first = make_team(team_id="tm_01J00000000000000000000A1", tenant_id=tenant_id)
+        second = make_team(team_id="tm_01J00000000000000000000A2", tenant_id=tenant_id)
+        fake_session.queue_scalars([first, second])
+
+        rows, cursor = await svc.list(
+            fake_session,
+            tenant_id=tenant_id,
+            org_unit_id=first.org_unit_id,
+            cursor="tm_01J0000000000000000000000",
+            limit=1,
+        )
+
+        assert rows == [first]
+        assert cursor == second.id
+
+
+class TestUpdate:
+    async def test_update_changes_mutable_fields(
+        self, svc: TeamService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        team = make_team(tenant_id=tenant_id)
+        fake_session.put(team)
+
+        result = await svc.update(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            team_id=team.id,
+            patch={"name": "Platform", "metadata": {"tier": "core"}},
+        )
+
+        assert result.name == "Platform"
+        assert result.metadata_json == {"tier": "core"}
+        assert result.updated_by == actor_id
+
+    async def test_update_no_changes_skips_audit(
+        self, svc: TeamService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+        audit_publisher: AsyncMock,
+    ) -> None:
+        team = make_team(tenant_id=tenant_id)
+        fake_session.put(team)
+
+        result = await svc.update(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            team_id=team.id,
+            patch={"name": team.name},
+        )
+
+        assert result is team
+        audit_publisher.publish.assert_not_awaited()
+
+
 class TestMembers:
     async def test_add_member_success(
         self, svc: TeamService, fake_session, tenant_id: str, actor_id: str, request_id: str,
@@ -136,6 +196,41 @@ class TestMembers:
                 team_id=team.id, user_id="usr_new", role_in_team="MEMBER",
             )
         assert exc.value.error_code is MEMBER_ALREADY_IN_TEAM
+
+    async def test_add_member_reactivates_left_membership(
+        self, svc: TeamService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        team = make_team(tenant_id=tenant_id)
+        existing = make_team_membership(team_id=team.id, user_id="usr_new", left=True)
+        fake_session.put(team)
+        fake_session.put(existing)
+
+        result = await svc.add_member(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            team_id=team.id,
+            user_id="usr_new",
+            role_in_team="LEAD",
+        )
+
+        assert result is existing
+        assert existing.left_at is None
+        assert existing.role_in_team == "LEAD"
+        assert existing.granted_by == actor_id
+
+    async def test_list_members_excludes_left_by_default(
+        self, svc: TeamService, fake_session, tenant_id: str,
+    ) -> None:
+        team = make_team(tenant_id=tenant_id)
+        member = make_team_membership(tenant_id=tenant_id, team_id=team.id)
+        fake_session.put(team)
+        fake_session.queue_scalars([member])
+
+        rows = await svc.list_members(fake_session, tenant_id=tenant_id, team_id=team.id)
+
+        assert rows == [member]
 
     async def test_remove_member_success(
         self, svc: TeamService, fake_session, tenant_id: str, actor_id: str, request_id: str,

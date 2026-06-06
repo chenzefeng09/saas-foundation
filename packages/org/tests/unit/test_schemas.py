@@ -36,12 +36,20 @@ class TestOrgUnitSchema:
 
 class TestTeamSchema:
     def test_valid_create_request(self) -> None:
-        req = CreateTeamRequest(code="backend", name="Backend Team", org_unit_id="ou_test")
+        req = CreateTeamRequest(
+            code="backend",
+            name="Backend Team",
+            org_unit_id="ou_01J0000000000000000000OU01",
+        )
         assert req.code == "backend"
 
     def test_invalid_team_code(self) -> None:
         with pytest.raises(ValidationError):
-            CreateTeamRequest(code="INVALID", name="Team", org_unit_id="ou_test")
+            CreateTeamRequest(
+                code="INVALID",
+                name="Team",
+                org_unit_id="ou_01J0000000000000000000OU01",
+            )
 
 
 class TestMembershipSchema:
