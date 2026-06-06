@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -33,7 +34,8 @@ import pytest
 from foundation_sdk import FoundationClient, tenant_context
 from foundation_sdk.errors import FoundationError
 
-from tests.e2e.conftest import E2EConfig
+if TYPE_CHECKING:
+    from tests.e2e.conftest import E2EConfig
 
 
 # ---------------------------------------------------------------------------

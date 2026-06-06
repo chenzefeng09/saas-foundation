@@ -9,6 +9,7 @@ import pytest
 from foundation_org.errors import (
     ORG_UNIT_ARCHIVED,
     ORG_UNIT_CODE_CONFLICT,
+    ORG_UNIT_CYCLE,
     ORG_UNIT_DEPTH_EXCEEDED,
     ORG_UNIT_IMMUTABLE_CODE,
     ORG_UNIT_NOT_EMPTY,
@@ -17,7 +18,7 @@ from foundation_org.errors import (
 )
 from foundation_org.services.org_unit_service import OrgUnitService
 
-from tests._factories import make_org_unit
+from tests._factories import make_membership, make_org_unit, make_team
 
 
 @pytest.fixture
@@ -140,6 +141,26 @@ class TestCreate:
         assert exc.value.error_code is ORG_UNIT_NOT_FOUND
 
 
+class TestList:
+    async def test_list_returns_page_and_next_cursor(
+        self, svc: OrgUnitService, fake_session, tenant_id: str,
+    ) -> None:
+        first = make_org_unit(ou_id="ou_01J0000000000000000000OU01", tenant_id=tenant_id)
+        second = make_org_unit(ou_id="ou_01J0000000000000000000OU02", tenant_id=tenant_id)
+        fake_session.queue_scalars([first, second])
+
+        rows, cursor = await svc.list(
+            fake_session,
+            tenant_id=tenant_id,
+            parent_id=None,
+            cursor="ou_01J0000000000000000000OU00",
+            limit=1,
+        )
+
+        assert rows == [first]
+        assert cursor == second.id
+
+
 class TestUpdate:
     async def test_update_name(
         self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
@@ -165,6 +186,137 @@ class TestUpdate:
                 ou_id=ou.id, patch={"code": "new-code"},
             )
         assert exc.value.error_code is ORG_UNIT_IMMUTABLE_CODE
+
+    async def test_update_no_changes_skips_audit(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+        audit_publisher: AsyncMock,
+    ) -> None:
+        ou = make_org_unit(tenant_id=tenant_id)
+        fake_session.put(ou)
+
+        result = await svc.update(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            ou_id=ou.id,
+            patch={"name": ou.name},
+        )
+
+        assert result is ou
+        audit_publisher.publish.assert_not_awaited()
+
+
+class TestMove:
+    async def test_move_to_new_parent(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        ou = make_org_unit(
+            ou_id="ou_child",
+            tenant_id=tenant_id,
+            parent_id=None,
+            code="backend",
+            path="backend",
+            depth=0,
+        )
+        parent = make_org_unit(
+            ou_id="ou_parent",
+            tenant_id=tenant_id,
+            code="engineering",
+            path="engineering",
+            depth=0,
+        )
+        fake_session.put(ou)
+        fake_session.put(parent)
+        fake_session.queue_scalar(ou.depth)  # descendants max depth
+        fake_session.queue_scalar(None)  # no sibling conflict
+
+        result = await svc.move(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            ou_id=ou.id,
+            new_parent_id=parent.id,
+            reason="reorg",
+        )
+
+        assert result.parent_id == parent.id
+        assert result.updated_by == actor_id
+
+    async def test_move_to_same_parent_noops(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+        audit_publisher: AsyncMock,
+    ) -> None:
+        ou = make_org_unit(tenant_id=tenant_id, parent_id="ou_parent")
+        fake_session.put(ou)
+
+        result = await svc.move(
+            fake_session,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            actor_id=actor_id,
+            ou_id=ou.id,
+            new_parent_id="ou_parent",
+            reason=None,
+        )
+
+        assert result is ou
+        audit_publisher.publish.assert_not_awaited()
+
+    async def test_move_rejects_cycle(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        ou = make_org_unit(ou_id="ou_parent", tenant_id=tenant_id, path="root.parent")
+        child = make_org_unit(
+            ou_id="ou_child",
+            tenant_id=tenant_id,
+            parent_id=ou.id,
+            path="root.parent.child",
+        )
+        fake_session.put(ou)
+        fake_session.put(child)
+
+        with pytest.raises(FoundationError) as exc:
+            await svc.move(
+                fake_session,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                ou_id=ou.id,
+                new_parent_id=child.id,
+                reason=None,
+            )
+
+        assert exc.value.error_code is ORG_UNIT_CYCLE
+
+    async def test_move_rejects_depth_exceeded(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        ou = make_org_unit(ou_id="ou_child", tenant_id=tenant_id, path="child", depth=1)
+        parent = make_org_unit(
+            ou_id="ou_deep",
+            tenant_id=tenant_id,
+            code="deep",
+            path="deep",
+            depth=svc._settings.max_org_unit_depth,
+        )
+        fake_session.put(ou)
+        fake_session.put(parent)
+        fake_session.queue_scalar(ou.depth)
+
+        with pytest.raises(FoundationError) as exc:
+            await svc.move(
+                fake_session,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                ou_id=ou.id,
+                new_parent_id=parent.id,
+                reason=None,
+            )
+
+        assert exc.value.error_code is ORG_UNIT_DEPTH_EXCEEDED
 
 
 class TestArchive:
@@ -199,6 +351,49 @@ class TestArchive:
             )
         assert exc.value.error_code is ORG_UNIT_NOT_EMPTY
 
+    async def test_archive_with_team(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        ou = make_org_unit(tenant_id=tenant_id)
+        team = make_team(tenant_id=tenant_id, org_unit_id=ou.id)
+        fake_session.put(ou)
+        fake_session.queue_scalar(None)  # no children
+        fake_session.queue_scalar(team)
+
+        with pytest.raises(FoundationError) as exc:
+            await svc.archive(
+                fake_session,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                ou_id=ou.id,
+                reason=None,
+            )
+
+        assert exc.value.error_code is ORG_UNIT_NOT_EMPTY
+
+    async def test_archive_with_member(
+        self, svc: OrgUnitService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+    ) -> None:
+        ou = make_org_unit(tenant_id=tenant_id)
+        member = make_membership(tenant_id=tenant_id, primary_org_unit_id=ou.id)
+        fake_session.put(ou)
+        fake_session.queue_scalar(None)  # no children
+        fake_session.queue_scalar(None)  # no teams
+        fake_session.queue_scalar(member)
+
+        with pytest.raises(FoundationError) as exc:
+            await svc.archive(
+                fake_session,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                actor_id=actor_id,
+                ou_id=ou.id,
+                reason=None,
+            )
+
+        assert exc.value.error_code is ORG_UNIT_NOT_EMPTY
+
 
 class TestDelete:
     async def test_delete_archived_ou(
@@ -225,3 +420,40 @@ class TestDelete:
                 actor_id=actor_id, ou_id=ou.id,
             )
         assert exc.value.error_code is ORG_UNIT_NOT_EMPTY
+
+
+class TestTreeReads:
+    async def test_descendants_returns_rows(
+        self, svc: OrgUnitService, fake_session, tenant_id: str,
+    ) -> None:
+        ou = make_org_unit(tenant_id=tenant_id, path="engineering")
+        child = make_org_unit(
+            ou_id="ou_child",
+            tenant_id=tenant_id,
+            parent_id=ou.id,
+            path="engineering.backend",
+        )
+        fake_session.put(ou)
+        fake_session.queue_scalars([child])
+
+        rows = await svc.descendants(fake_session, tenant_id=tenant_id, ou_id=ou.id)
+
+        assert rows == [child]
+
+    async def test_ancestors_returns_rows(
+        self, svc: OrgUnitService, fake_session, tenant_id: str,
+    ) -> None:
+        parent = make_org_unit(ou_id="ou_parent", tenant_id=tenant_id, path="engineering")
+        child = make_org_unit(
+            ou_id="ou_child",
+            tenant_id=tenant_id,
+            parent_id=parent.id,
+            path="engineering.backend",
+            depth=1,
+        )
+        fake_session.put(child)
+        fake_session.queue_scalars([parent])
+
+        rows = await svc.ancestors(fake_session, tenant_id=tenant_id, ou_id=child.id)
+
+        assert rows == [parent]

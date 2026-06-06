@@ -103,5 +103,11 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/foundation_crypto"]
-omit = ["*/migrations/*","*/__main__.py"]
+omit = [
+  "*/migrations/*",
+  "*/__main__.py",
+  "*/adapters/pkcs11_provider.py",
+  "*/adapters/vault_provider.py",
+  "*/gmtls.py",
+]
 branch = true

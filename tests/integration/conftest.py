@@ -15,7 +15,7 @@ environment variables to be set (injected by docker-compose):
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
@@ -35,6 +35,20 @@ class ServiceEndpoints:
 
     @classmethod
     def from_env(cls) -> ServiceEndpoints:
+        missing = [
+            name for name in (
+                "FOUNDATION_IDENTITY_URL",
+                "FOUNDATION_AUTHZ_URL",
+                "FOUNDATION_ORG_URL",
+                "FOUNDATION_CRYPTO_URL",
+            )
+            if not os.environ.get(name)
+        ]
+        if missing:
+            pytest.skip(
+                "Integration tests require a running foundation integration stack. "
+                f"Missing env var(s): {', '.join(missing)}."
+            )
         return cls(
             identity=os.environ["FOUNDATION_IDENTITY_URL"],
             authz=os.environ["FOUNDATION_AUTHZ_URL"],
@@ -86,14 +100,14 @@ def tenant() -> TenantContext:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def client() -> Iterator[httpx.AsyncClient]:
+async def client() -> AsyncIterator[httpx.AsyncClient]:
     """Session-scoped async HTTP client."""
     async with httpx.AsyncClient(timeout=30.0) as c:
         yield c
 
 
 @pytest.fixture
-def anon_client() -> Iterator[httpx.AsyncClient]:
+async def anon_client() -> AsyncIterator[httpx.AsyncClient]:
     """Client without tenant headers (for testing auth rejection)."""
     async with httpx.AsyncClient(timeout=10.0, headers={"Content-Type": "application/json"}) as c:
         yield c
