@@ -83,5 +83,27 @@ def make_signing_kek(
     )
 
 
+def make_sm2_signing_kek(
+    *,
+    kek_id: str = "kek_01J00000000000000000000003",
+    tenant_id: str = "tnt_01J0000000000000000000TNT1",
+    label: str = "audit.hashchain.sm2",
+    purpose: str = "AUDIT_HMAC",
+    algorithm_id: str = "SM2",
+    vault_path: str = "transit/keys/audit.hashchain.sm2_kek_01J00000000000000000000003",
+    status: str = "ACTIVE",
+) -> KEK:
+    """Factory for an SM2 signing KEK (国密优先模式)."""
+    return make_kek(
+        kek_id=kek_id,
+        tenant_id=tenant_id,
+        label=label,
+        purpose=purpose,
+        algorithm_id=algorithm_id,
+        vault_path=vault_path,
+        status=status,
+    )
+
+
 def outbox_events_of_type(added: list[object], event_type: str) -> list[Outbox]:
     return [o for o in added if isinstance(o, Outbox) and o.event_type == event_type]

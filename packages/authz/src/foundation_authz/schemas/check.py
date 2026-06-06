@@ -50,3 +50,7 @@ class ListAccessibleIdsRequest(BaseModel):
 class ListAccessibleIdsResponse(BaseModel):
     ids: list[str]
     complete: bool = True
+    # True when the user has a TENANT- or GLOBAL_SYSTEM-scoped binding that
+    # grants the requested action, meaning they can access ALL resources of that
+    # type within the tenant.  Callers should treat this as "no ACL filter needed".
+    all_in_tenant: bool = False

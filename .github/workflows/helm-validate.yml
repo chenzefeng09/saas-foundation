@@ -48,27 +48,42 @@ jobs:
       - name: Helm template
         working-directory: deploy/helm/foundation
         run: |
+          # 渲染产物写到工作区根（$GITHUB_WORKSPACE），而非 runner 主机 /tmp：
+          # 后续 kubeconform / kube-linter 以 docker:// 容器形式运行，仅挂载
+          # /github/workspace，主机 /tmp 不可见，会报 "no such file or directory"。
           helm template foundation . \
             -f values-${{ matrix.profile }}.yaml \
             --namespace foundation \
-            > /tmp/render-${{ matrix.profile }}.yaml
-          echo "Rendered $(grep -c '^---' /tmp/render-${{ matrix.profile }}.yaml) documents"
+            > "$GITHUB_WORKSPACE/render-${{ matrix.profile }}.yaml"
+          echo "Rendered $(grep -c '^---' "$GITHUB_WORKSPACE/render-${{ matrix.profile }}.yaml") documents"
 
       - name: kubeconform
         uses: docker://ghcr.io/yannh/kubeconform:latest
         with:
-          args: -strict -ignore-missing-schemas -summary /tmp/render-${{ matrix.profile }}.yaml
+          # 路径相对容器 workdir /github/workspace（= 仓库根）
+          # schema 校验对全部对象（含第三方子 chart）执行
+          args: -strict -ignore-missing-schemas -summary render-${{ matrix.profile }}.yaml
+
+      - name: Extract own objects for lint
+        run: |
+          # kube-linter 只校验本仓库自有的 manifest（带 app.kubernetes.io/part-of=saas-foundation）。
+          # 第三方子 chart（keycloak/minio/postgresql/redis/vault/otel/opa/unleash-subchart…）
+          # 渲染的对象不受我们控制，其 best-practice 由上游负责，排除出 lint 范围。
+          yq ea 'select(.metadata.labels."app.kubernetes.io/part-of" == "saas-foundation")' \
+            "$GITHUB_WORKSPACE/render-${{ matrix.profile }}.yaml" \
+            > "$GITHUB_WORKSPACE/render-${{ matrix.profile }}-own.yaml"
+          echo "Own objects: $(grep -c '^---' "$GITHUB_WORKSPACE/render-${{ matrix.profile }}-own.yaml" || true) docs"
 
       - name: kube-linter
         uses: stackrox/kube-linter-action@v1.0.5
         continue-on-error: ${{ matrix.profile == 'small' }}   # small 容忍 best-practice 警告
         with:
-          directory: /tmp/render-${{ matrix.profile }}.yaml
+          directory: render-${{ matrix.profile }}-own.yaml
           config: tools/ci/kube-linter.yaml
 
       - name: Upload render artifact
         uses: actions/upload-artifact@v4
         with:
           name: helm-render-${{ matrix.profile }}-${{ github.sha }}
-          path: /tmp/render-${{ matrix.profile }}.yaml
+          path: render-${{ matrix.profile }}.yaml
           retention-days: 7

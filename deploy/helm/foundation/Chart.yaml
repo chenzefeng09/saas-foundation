@@ -62,3 +62,9 @@ dependencies:
     version: "1.x"
     repository: https://open-policy-agent.github.io/kube-mgmt/charts
     condition: opa.enabled
+  # Unleash — Feature Flag 后端（中小档内嵌；大档关闭用外置）
+  # 官方 helm chart: https://docs.getunleash.io/how-to/how-to-use-the-unleash-helm-chart
+  - name: unleash
+    version: "2.x"
+    repository: https://docs.getunleash.io/helm-charts
+    condition: unleash.enabled

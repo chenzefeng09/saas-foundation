@@ -1,0 +1,160 @@
+{{- /*
+  Unleash — Feature Flag 后端部署
+  条件：unleash.enabled=true 且 Unleash subchart 不可用时用本模板直接部署
+  （Unleash 官方 helm chart 尚未在所有版本稳定发布；本模板作为 fallback）
+
+  生产 secret 注入：
+    admin-token / client-token 从 foundation-unleash-credentials Secret 读取
+    DATABASE_URL 从同一 Secret 读（如已配置 url key）或由 global.database 拼接
+*/}}
+{{- if .Values.unleash.enabled }}
+---
+# ============================================================================
+# Unleash Deployment
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundation-unleash
+  labels:
+    app.kubernetes.io/name: unleash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: saas-foundation
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    foundation.example.com/profile: {{ .Values.global.profile | default "small" }}
+  annotations:
+    # owner 邮箱（kube-linter required-annotation-email）
+    email: {{ .Values.global.ownerEmail | default "foundation@example.com" | quote }}
+spec:
+  replicas: {{ .Values.unleash.replicaCount | default 1 }}
+  # 滚动更新策略（kube-linter no-rolling-update-strategy）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: unleash
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: unleash
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/part-of: saas-foundation
+      annotations:
+        prometheus.io/scrape: "false"  # Unleash 无标准 /metrics；生产可加 sidecar
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: unleash
+          image: "{{ .Values.unleash.image.repository | default "unleashorg/unleash-server" }}:{{ .Values.unleash.image.tag | default "6.4" }}"
+          imagePullPolicy: {{ .Values.unleash.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true   # 根文件系统只读（kube-linter no-read-only-root-fs）；可写路径走 /tmp emptyDir
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 4242
+          env:
+            # DATABASE_URL — 指向 foundation postgres 的 unleash 逻辑库
+            # 生产从 Vault / external-secrets 注入；此处用 global db 信息拼接占位
+            - name: DATABASE_URL
+              value: "postgresql://$(DB_USER):$(DB_PASS)@{{ .Values.global.database.host }}:{{ .Values.global.database.port }}/unleash"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.database.existingSecret }}
+                  key: username
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.database.existingSecret }}
+                  key: password
+            - name: DATABASE_SSL
+              value: {{ .Values.unleash.config.databaseSsl | default "false" | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.unleash.config.logLevel | default "warn" | quote }}
+            # Admin API token（用于 init job 和 feature-flag 服务管理接口）
+            - name: INIT_ADMIN_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.unleash.existingSecret | default "foundation-unleash-credentials" }}
+                  key: {{ .Values.unleash.adminTokenSecretKey | default "admin-token" }}
+            # Client token（SDK 评估接口）
+            - name: INIT_CLIENT_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.unleash.existingSecret | default "foundation-unleash-credentials" }}
+                  key: {{ .Values.unleash.clientTokenSecretKey | default "client-token" }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml (.Values.unleash.resources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# ============================================================================
+# Unleash Service (ClusterIP)
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: foundation-unleash
+  labels:
+    app.kubernetes.io/name: unleash
+    app.kubernetes.io/part-of: saas-foundation
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: unleash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 4242
+      targetPort: http
+{{- if gt (int (.Values.unleash.replicaCount | default 1)) 1 }}
+---
+# ============================================================================
+# Unleash PodDisruptionBudget (medium+ 多副本时启用)
+# ============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: foundation-unleash
+  labels:
+    app.kubernetes.io/name: unleash
+    app.kubernetes.io/part-of: saas-foundation
+  annotations:
+    email: {{ .Values.global.ownerEmail | default "foundation@example.com" | quote }}
+spec:
+  minAvailable: 1
+  unhealthyPodEvictionPolicy: IfHealthyBudget
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: unleash
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- end }}

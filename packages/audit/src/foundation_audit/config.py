@@ -40,7 +40,11 @@ class Settings(BaseSettings):
 
     # Crypto service (for signing batches)
     crypto_url: AnyHttpUrl = Field(default=AnyHttpUrl("http://127.0.0.1:8004/api/crypto/v1"))
+    # Key label for the Ed25519/ECDSA signing key (default / SHA-256 mode).
     crypto_signing_key_label: str = "audit.hashchain"
+    # Key label for SM2 signing key (国密优先模式; used when hash_algorithm == "SM3").
+    # Must be an SM2 KEK created in crypto-service (algorithm_id="SM2").
+    crypto_signing_key_label_sm2: str = "audit.hashchain.sm2"
 
     # Batch worker
     batch_max_events: int = 10000
@@ -48,6 +52,8 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 5.0
 
     # Hash chain
+    # "SHA-256": SHA-256 hash + Ed25519/ECDSA signature (FIPS 140-2 mode).
+    # "SM3":     SM3 hash (GB/T 32905) + SM2 signature (GB/T 32918) — 国密优先.
     hash_algorithm: Literal["SHA-256", "SM3"] = "SHA-256"
 
     # Retention (default; per-tenant override in compliance)

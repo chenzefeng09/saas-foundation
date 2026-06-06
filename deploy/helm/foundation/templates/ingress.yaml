@@ -9,7 +9,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: saas-foundation
   annotations:
+    {{- if .Values.global.ingress.annotations }}
     {{- toYaml .Values.global.ingress.annotations | nindent 4 }}
+    {{- end }}
     nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.global.ingress.tls | quote }}
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
@@ -156,7 +158,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ .Values.adminConsole.service.name | default "foundation-admin-console" }}
+                name: {{ "foundation-admin-console" }}
                 port:
                   number: 80
 {{- end }}

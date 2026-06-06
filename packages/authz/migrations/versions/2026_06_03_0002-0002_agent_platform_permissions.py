@@ -275,7 +275,7 @@ def upgrade() -> None:
     op.execute(
         perm_table.insert().prefix_with("OR IGNORE")
         if _is_sqlite()
-        else sa.text(
+        else sa.text(  # nosemgrep: avoid-sqlalchemy-text  # DDL migration; all values are module-level constants, no user input
             "INSERT INTO authz.permission_definition "
             "(id, service, resource_type, action, description, risk_level, "
             " requires_mfa, requires_4eyes, requires_pam_jit, requires_business_hours, is_system) "
@@ -302,5 +302,5 @@ def _is_sqlite() -> bool:
 def downgrade() -> None:
     ids = ", ".join(f"'{p['id']}'" for p in _PERMISSIONS)
     op.execute(
-        sa.text(f"DELETE FROM authz.permission_definition WHERE id IN ({ids})")
+        sa.text(f"DELETE FROM authz.permission_definition WHERE id IN ({ids})")  # nosemgrep: avoid-sqlalchemy-text  # DDL migration; ids are module-level permission id constants, no user input
     )

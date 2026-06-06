@@ -174,19 +174,22 @@ services:
 
   # ===========================================================================
   # OpenSearch — 搜索；单节点开发模式（生产 3 节点）
-  # 默认不启动：无服务连接它。需要时加 --profile extras
+  # dev 关闭 security plugin：HTTP 无 auth，ACL 隔离靠应用层 tenant_id filter
   # ===========================================================================
   opensearch:
     image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.16.0}
     container_name: foundation-opensearch
     restart: unless-stopped
-    profiles: ["extras"]
     environment:
       discovery.type: single-node
       bootstrap.memory_lock: "true"
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-OpenSearch_Change_Me_123!}
-      plugins.security.disabled: "false"
+      # Security plugin disabled in dev — simplifies client config and healthcheck;
+      # production uses TLS + basic auth (plugins.security.disabled: "false").
+      plugins.security.disabled: "true"
+      # Required by OpenSearch 2.12+ even when security plugin is disabled.
+      # This is a dummy value used only during first-time setup; auth is disabled at runtime.
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: "${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-Admin@1234567890}"
     ulimits:
       memlock:
         soft: -1
@@ -200,7 +203,7 @@ services:
       - opensearch_data:/usr/share/opensearch/data
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sk -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://127.0.0.1:9200/_cluster/health | grep -E 'yellow|green'"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -E '\"status\":\"(yellow|green)\"'"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -328,6 +331,8 @@ services:
       CRYPTO_VAULT_URL: http://vault:8200
       CRYPTO_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
       AUDIT_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      FEATURE_FLAG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      SEARCH_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -349,12 +354,15 @@ services:
           poetry run alembic upgrade head
           echo "=== $${svc} migrations done ==="
         }
-        run_migration identity /mnt/identity
-        run_migration authz    /mnt/authz
-        run_migration org      /mnt/org
-        run_migration billing  /mnt/billing
-        run_migration crypto   /mnt/crypto
-        run_migration audit    /mnt/audit
+        run_migration identity    /mnt/identity
+        run_migration authz       /mnt/authz
+        run_migration org         /mnt/org
+        run_migration billing     /mnt/billing
+        run_migration crypto      /mnt/crypto
+        run_migration audit       /mnt/audit
+        run_migration feature-flag /mnt/feature-flag
+        run_migration search       /mnt/search
+        run_migration llm-gateway  /mnt/llm-gateway
         echo "=== All migrations complete ==="
     networks: [foundation]
     volumes:
@@ -364,6 +372,9 @@ services:
       - ../../packages/billing:/mnt/billing:ro
       - ../../packages/crypto:/mnt/crypto:ro
       - ../../packages/audit:/mnt/audit:ro
+      - ../../packages/feature-flag:/mnt/feature-flag:ro
+      - ../../packages/search:/mnt/search:ro
+      - ../../packages/llm-gateway:/mnt/llm-gateway:ro
 
   # ===========================================================================
   # foundation-identity — 身份服务   (port 8001)
@@ -511,14 +522,12 @@ services:
       retries: 20
 
   # ===========================================================================
-  # Unleash — Feature Flag
-  # 默认不启动：无服务连接它。需要时加 --profile extras
+  # Unleash — Feature Flag（默认栈，feature-flag 服务依赖它）
   # ===========================================================================
   unleash:
     image: unleashorg/unleash-server:${UNLEASH_VERSION:-6.4}
     container_name: foundation-unleash
     restart: unless-stopped
-    profiles: ["extras"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -536,6 +545,73 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
+
+  # ===========================================================================
+  # unleash-init — 幂等同步 flag preset + strategy 到 Unleash（一次性 job）
+  #
+  # 处理 Unleash v6 坑：环境启用后会自动插入 flexibleRollout 100% default strategy，
+  # 本脚本在写入业务 strategy 前先删除已有 strategies，防止 100% 兜底覆盖业务约束。
+  # 幂等：flag 已存在时跳过创建，strategy 每次先 delete + 重写，保证状态确定。
+  # ===========================================================================
+  unleash-init:
+    image: curlimages/curl:8.8.0
+    container_name: foundation-unleash-init
+    restart: "no"
+    depends_on:
+      unleash:
+        condition: service_healthy
+    environment:
+      UNLEASH_URL: http://unleash:4242
+      UNLEASH_ADMIN_TOKEN: ${UNLEASH_ADMIN_TOKEN:-*:*.unleash-insecure-admin-api-token}
+      UNLEASH_PROJECT: default
+      UNLEASH_ENV: development
+    volumes:
+      - ./config/unleash/init-flags.sh:/init-flags.sh:ro
+    entrypoint: ["/bin/sh", "/init-flags.sh"]
+    networks: [foundation]
+
+  # ===========================================================================
+  # foundation-feature-flag — Feature Flag 服务   (port 8012)
+  # ===========================================================================
+  feature-flag:
+    build:
+      context: ../../packages/feature-flag
+      dockerfile: Dockerfile
+    container_name: foundation-feature-flag
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      unleash:
+        condition: service_healthy
+      unleash-init:
+        condition: service_completed_successfully
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      FEATURE_FLAG_ENV: dev
+      FEATURE_FLAG_LOG_LEVEL: INFO
+      FEATURE_FLAG_LOG_FORMAT: console
+      FEATURE_FLAG_HTTP_PORT: "8012"
+      FEATURE_FLAG_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      FEATURE_FLAG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      FEATURE_FLAG_UNLEASH_ENABLED: "true"
+      FEATURE_FLAG_UNLEASH_URL: http://unleash:4242
+      # client token（只需 client features 权限）
+      FEATURE_FLAG_UNLEASH_API_TOKEN: ${UNLEASH_CLIENT_TOKEN:-*:development.unleash-insecure-frontend-api-token}
+      # admin token（flags 管理 / kill-switch 写回）
+      FEATURE_FLAG_UNLEASH_ADMIN_TOKEN: ${UNLEASH_ADMIN_TOKEN:-*:*.unleash-insecure-admin-api-token}
+      FEATURE_FLAG_UNLEASH_APP_NAME: feature-flag-service
+      FEATURE_FLAG_OTEL_ENABLED: "true"
+      FEATURE_FLAG_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_FEATURE_FLAG:-8012}:8012"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8012/api/feature-flag/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   # ===========================================================================
   # OTel Collector — 收口所有 trace/log/metric，转发到 Jaeger（本地）
@@ -588,13 +664,85 @@ services:
         echo "=== Initialising Vault transit engine ==="
         vault secrets enable transit || true
         echo "=== Vault transit ready ==="
-        # TODO: create audit.hashchain signing key for audit worker
-        # vault write -f transit/keys/audit.hashchain type=ed25519
-        # (omitted: key label is tenant-scoped in production; for dev, audit
-        # worker will fail signing until the KEK exists in the crypto.kek table
-        # AND vault has the corresponding transit key. Use the crypto service
-        # POST /api/crypto/v1/keks endpoint to bootstrap the key before running
-        # the audit worker in a fresh dev environment.)
+    networks: [foundation]
+
+  # ===========================================================================
+  # vault-transit-reconcile — Vault 重启自愈：补建 DB 中已存在但 Vault 里丢失的 transit key
+  #
+  # Vault DEV 模式重启后 transit keys 全部丢失，但 crypto.kek 行仍在。
+  # 此 job 查询所有 ACTIVE KEK 行，对每个 vault_path 检查 transit key 是否存在；
+  # 若缺失则按 label 推断类型重建（audit.hashchain→ed25519，其余→aes256-gcm96）。
+  # NOTE: 重建 transit key 只能封装新 data key；旧版本数据在 DEV 下视为可接受损失。
+  # ===========================================================================
+  vault-transit-reconcile:
+    image: python:3.12-slim-bookworm
+    container_name: foundation-vault-transit-reconcile
+    restart: "no"
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
+      PG_DSN: postgresql://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+        pip install --quiet psycopg2-binary requests
+        python - <<'PYEOF'
+        import os, sys, requests, psycopg2
+
+        vault_addr  = os.environ["VAULT_ADDR"]
+        vault_token = os.environ["VAULT_TOKEN"]
+        pg_dsn      = os.environ["PG_DSN"]
+
+        headers = {"X-Vault-Token": vault_token}
+
+        def vault_key_exists(key_name):
+            r = requests.get(f"{vault_addr}/v1/transit/keys/{key_name}", headers=headers)
+            return r.status_code == 200
+
+        def vault_create_key(key_name, key_type):
+            r = requests.post(
+                f"{vault_addr}/v1/transit/keys/{key_name}",
+                headers=headers,
+                json={"type": key_type},
+            )
+            if r.status_code not in (200, 204):
+                raise RuntimeError(f"Failed to create transit key {key_name}: {r.status_code} {r.text}")
+
+        def label_to_vault_type(label):
+            if label == "audit.hashchain":
+                return "ed25519"
+            return "aes256-gcm96"
+
+        conn = psycopg2.connect(pg_dsn)
+        cur  = conn.cursor()
+        cur.execute("SELECT label, vault_path FROM crypto.kek WHERE status = 'ACTIVE'")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        print(f"=== vault-transit-reconcile: found {len(rows)} ACTIVE KEK(s) ===")
+        for label, vault_path in rows:
+            # vault_path looks like "transit/keys/<key_name>"
+            key_name = vault_path.split("/")[-1]
+            if vault_key_exists(key_name):
+                print(f"  [ok]     {key_name} (label={label}) — transit key present")
+            else:
+                key_type = label_to_vault_type(label)
+                print(f"  [repair] {key_name} (label={label}) — missing, recreating as {key_type}")
+                vault_create_key(key_name, key_type)
+                print(f"  [repair] {key_name} — recreated")
+
+        print("=== vault-transit-reconcile: done ===")
+        sys.exit(0)
+        PYEOF
     networks: [foundation]
 
   # ===========================================================================
@@ -612,6 +760,8 @@ services:
       vault:
         condition: service_healthy
       vault-init:
+        condition: service_completed_successfully
+      vault-transit-reconcile:
         condition: service_completed_successfully
       migration-runner:
         condition: service_completed_successfully
@@ -732,6 +882,50 @@ services:
         create_kek tnt_01J5DEVXX00000000000000001
         create_kek tnt_01J5DEVXX00000000000000002
         echo "=== audit-init: all KEKs ready ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # crypto-fieldencrypt-init — 为两个 dev 租户建 default FIELD_ENCRYPT KEK（一次性 job）
+  # LLM gateway 在注册 provider API key 时使用 label=default, purpose=FIELD_ENCRYPT 的 KEK
+  # 做信封加密；若缺失则明文存储。此 job 确保 dev 栈始终有该 KEK。
+  # 幂等：201 created 或 409 label conflict 均为成功；其余状态打印响应体后 exit 1。
+  # ===========================================================================
+  crypto-fieldencrypt-init:
+    image: curlimages/curl:8.8.0
+    container_name: foundation-crypto-fieldencrypt-init
+    restart: "no"
+    depends_on:
+      crypto:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        CRYPTO_URL=http://crypto:8004/api/crypto/v1/keks
+
+        create_kek() {
+          TENANT_ID="$$1"
+          echo "=== crypto-fieldencrypt-init: creating default KEK for tenant $${TENANT_ID} ==="
+          HTTP_CODE=$$(curl -s -o /tmp/kek_resp.txt -w "%{http_code}" \
+            -X POST "$${CRYPTO_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Tenant-Id: $${TENANT_ID}" \
+            -H "X-Actor: SYSTEM" \
+            -d '{"label":"default","purpose":"FIELD_ENCRYPT","algorithm_id":"AES-256-GCM","auto_rotate_days":90}')
+          if [ "$${HTTP_CODE}" = "201" ]; then
+            echo "=== crypto-fieldencrypt-init: KEK created for $${TENANT_ID} ==="
+          elif [ "$${HTTP_CODE}" = "409" ]; then
+            echo "=== crypto-fieldencrypt-init: KEK already exists for $${TENANT_ID} (idempotent) ==="
+          else
+            echo "=== crypto-fieldencrypt-init: unexpected HTTP $${HTTP_CODE} for $${TENANT_ID} ===" >&2
+            cat /tmp/kek_resp.txt >&2
+            exit 1
+          fi
+        }
+
+        create_kek tnt_01J5DEVXX00000000000000001
+        create_kek tnt_01J5DEVXX00000000000000002
+        echo "=== crypto-fieldencrypt-init: all default KEKs ready ==="
     networks: [foundation]
 
   # ===========================================================================
@@ -951,6 +1145,8 @@ services:
         condition: service_healthy
       audit-init:
         condition: service_completed_successfully
+      crypto-fieldencrypt-init:
+        condition: service_completed_successfully
       migration-runner:
         condition: service_completed_successfully
     environment:
@@ -974,6 +1170,139 @@ services:
       AUDIT_OTEL_ENABLED: "true"
       AUDIT_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
     networks: [foundation]
+
+  # ===========================================================================
+  # search-init — 建 OpenSearch 索引 + alias（一次性 job）
+  # 幂等：PUT returns 400 if index already exists — filtered by || true
+  # ===========================================================================
+  search-init:
+    image: curlimages/curl:8.8.0
+    container_name: foundation-search-init
+    restart: "no"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    volumes:
+      - ./config/opensearch/index-mapping.json:/tmp/index-mapping.json:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        OS_URL=http://opensearch:9200
+        INDEX=foundation-search-v1
+        ALIAS=foundation-search
+
+        echo "=== search-init: creating index $${INDEX} ==="
+        HTTP_CODE=$$(curl -s -o /tmp/os_resp.txt -w "%{http_code}" \
+          -X PUT "$${OS_URL}/$${INDEX}" \
+          -H "Content-Type: application/json" \
+          -d @/tmp/index-mapping.json)
+
+        if [ "$${HTTP_CODE}" = "200" ]; then
+          echo "=== search-init: index $${INDEX} created ==="
+        elif [ "$${HTTP_CODE}" = "400" ]; then
+          echo "=== search-init: index $${INDEX} already exists (idempotent) ==="
+        else
+          echo "=== search-init: unexpected HTTP $${HTTP_CODE} ===" >&2
+          cat /tmp/os_resp.txt >&2
+          exit 1
+        fi
+
+        echo "=== search-init: creating alias $${ALIAS} → $${INDEX} ==="
+        curl -sf -X POST "$${OS_URL}/_aliases" \
+          -H "Content-Type: application/json" \
+          -d "{\"actions\":[{\"add\":{\"index\":\"$${INDEX}\",\"alias\":\"$${ALIAS}\"}}]}" \
+          || true
+
+        echo "=== search-init: done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # foundation-search — 搜索服务   (port 8009)
+  # ===========================================================================
+  search:
+    build:
+      context: ../../packages/search
+      dockerfile: Dockerfile
+    container_name: foundation-search
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      search-init:
+        condition: service_completed_successfully
+    environment:
+      SEARCH_ENV: dev
+      SEARCH_LOG_LEVEL: INFO
+      SEARCH_LOG_FORMAT: console
+      SEARCH_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      SEARCH_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      SEARCH_OPENSEARCH_URL: http://opensearch:9200
+      SEARCH_AUTHZ_URL: http://authz:8002/api/authz/v1
+      SEARCH_OTEL_ENABLED: "true"
+      SEARCH_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_SEARCH:-8009}:8009"
+    networks: [foundation]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8009/api/search/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-llm-gateway — LLM 推理网关   (port 8011)
+  #
+  # 端口/前缀自洽：
+  #   容器内 http_port=8011, api_prefix=/api/llm-gateway/v1 (config.py)
+  #   健康检查：GET /api/llm-gateway/v1/healthz
+  #
+  # P0 注记：agent-platform 侧曾引用 8003+/api/llm/v1，属于 agent-platform 错配，
+  #   留待 M1 后续阶段修 agent-platform 时对齐，本服务侧不变。
+  # ===========================================================================
+  llm-gateway:
+    build:
+      context: ../../packages/llm-gateway
+      dockerfile: Dockerfile
+    container_name: foundation-llm-gateway
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      billing:
+        condition: service_healthy
+      crypto:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      LLM_GATEWAY_ENV: dev
+      LLM_GATEWAY_HTTP_PORT: "8011"
+      LLM_GATEWAY_API_PREFIX: "/api/llm-gateway/v1"
+      LLM_GATEWAY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      LLM_GATEWAY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      LLM_GATEWAY_BILLING_URL: http://billing:8007
+      LLM_GATEWAY_CRYPTO_URL: http://crypto:8004
+      LLM_GATEWAY_AUDIT_URL: http://audit:8013
+      LLM_GATEWAY_OTEL_ENABLED: "true"
+      LLM_GATEWAY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_LLM_GATEWAY:-8011}:8011"
+    networks:
+      foundation:
+        aliases:
+          - llm-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8011/api/llm-gateway/v1/healthz\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   # ===========================================================================
   # Mailhog — 本地 SMTP 测试

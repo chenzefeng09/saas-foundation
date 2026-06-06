@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "tenant_id":      { "type": "keyword" },
+      "resource_type":  { "type": "keyword" },
+      "resource_id":    { "type": "keyword" },
+      "title":          { "type": "text",    "analyzer": "standard" },
+      "content":        { "type": "text",    "analyzer": "standard" },
+      "tags":           { "type": "keyword" },
+      "acl_user_ids":   { "type": "keyword" },
+      "acl_team_ids":   { "type": "keyword" },
+      "owner_id":       { "type": "keyword" },
+      "visibility":     { "type": "keyword" },
+      "sensitivity":    { "type": "keyword" },
+      "indexed_at":     { "type": "date",    "format": "strict_date_time||epoch_millis" }
+    }
+  }
+}

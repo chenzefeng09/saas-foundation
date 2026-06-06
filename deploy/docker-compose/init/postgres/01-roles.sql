@@ -38,16 +38,19 @@ CREATE SCHEMA IF NOT EXISTS billing  AUTHORIZATION app_migrator;
 CREATE SCHEMA IF NOT EXISTS audit    AUTHORIZATION app_migrator;
 CREATE SCHEMA IF NOT EXISTS lifecycle AUTHORIZATION app_migrator;
 
-CREATE SCHEMA IF NOT EXISTS crypto    AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS crypto       AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS feature_flag AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS search       AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS llm_gateway  AUTHORIZATION app_migrator;
 
-GRANT USAGE ON SCHEMA identity, authz, org, billing, audit, lifecycle, crypto
+GRANT USAGE ON SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
     TO app_user, app_admin, app_observability;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user, app_admin;
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
     GRANT SELECT ON TABLES TO app_observability;
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
     GRANT USAGE ON SEQUENCES TO app_user, app_admin;
 
 -- Keycloak 自己的数据库

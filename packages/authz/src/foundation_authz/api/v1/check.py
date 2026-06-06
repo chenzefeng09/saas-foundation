@@ -76,11 +76,24 @@ async def batch_check(
 )
 async def list_accessible_ids(
     body: ListAccessibleIdsRequest = Body(...),
-    ctx: FoundationContext = Depends(current_context),  # noqa: ARG001 — used in M2
-    session: AsyncSession = Depends(db_session),  # noqa: ARG001 — M2 hits DB
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: CheckService = Depends(check_service),
 ) -> ListAccessibleIdsResponse:
-    """SKELETON — M2 implements via resource_type → scope_id index walk.
+    """Return the set of scope IDs the requesting user may access.
 
-    For now returns empty + complete=False so callers fall back to OPA.
+    When the user holds a TENANT- or GLOBAL_SYSTEM-scoped role that grants the
+    requested action, `all_in_tenant=True` is returned (ids=[], complete=True),
+    meaning the caller should apply no ACL filter.
+
+    When the result is truncated to `max`, `complete=False` signals that the
+    caller must fall back to a per-resource permission check.
     """
-    return ListAccessibleIdsResponse(ids=[], complete=False)
+    return await svc.list_accessible_ids(
+        session,
+        tenant_id=ctx.tenant_id,
+        user_id=body.user_id,
+        resource_type=body.resource_type,
+        action=body.action,
+        max=body.max,
+    )

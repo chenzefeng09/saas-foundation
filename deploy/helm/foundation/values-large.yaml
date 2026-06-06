@@ -35,11 +35,29 @@ keycloak:
 clickhouse:
   enabled: false
 opensearch:
+  # large: 关闭 chart 内嵌 OpenSearch, 用客户外部集群
+  # 推荐外部集群规格 (跨 3 AZ):
+  #   3 dedicated master nodes (t3.medium / 2vCPU 8GB)
+  #   6 data nodes (r6g.2xlarge / 8vCPU 64GB, 每 AZ 2 节点)
+  #   2 coordinating-only nodes (负载均衡查询)
+  # 连接配置: 在 global.opensearch 中覆盖
+  #   global.opensearch.host: "os-master.your-domain"
+  #   global.opensearch.port: 9200
+  #   global.opensearch.existingSecret: foundation-opensearch-credentials
+  # TLS + basic auth: 通过 SEARCH_OPENSEARCH_USERNAME/PASSWORD secret 注入 (见 services-renderer)
   enabled: false
 vault:
   enabled: false
 minio:
   enabled: false
+
+# Unleash — large 关闭 subchart；使用外置 Unleash 高可用集群
+# 外置集群建议：3 Unleash 实例 + 外部 Postgres（可复用 global DB）
+# 在生产 values-prod-secrets.yaml 中覆盖：
+#   global.unleash.url: "https://unleash.internal.your-domain"
+#   featureFlagUnleash.existingSecret: foundation-unleash-credentials (由 external-secrets 注入)
+unleash:
+  enabled: false   # large 不内嵌，用外置
 
 _serviceDefaults: &serviceDefaults
   replicaCount: 5
@@ -92,7 +110,7 @@ services:
   audit:           { <<: *serviceDefaults, replicaCount: 10 } # 写入压力
   lifecycle:       { <<: *serviceDefaults }
   notification:    { <<: *serviceDefaults }
-  search:          { <<: *serviceDefaults }
+  search:          { <<: *serviceDefaults, replicaCount: 6 }  # search 读多, 多副本分散 OS 查询
   apiPlatform:     { <<: *serviceDefaults }
   llmGateway:      { <<: *serviceDefaults, replicaCount: 10 } # 长连接 SSE
   featureFlag:     { <<: *serviceDefaults }

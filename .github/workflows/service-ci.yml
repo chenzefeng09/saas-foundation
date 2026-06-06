@@ -70,12 +70,14 @@ jobs:
         run: poetry run mypy src/
 
       - name: Pytest with coverage
+        env:
+          COVERAGE_MIN: ${{ inputs.coverage-min }}
         run: |
           poetry run pytest \
             --cov=src \
             --cov-report=xml \
             --cov-report=term-missing \
-            --cov-fail-under=${{ inputs.coverage-min }} \
+            --cov-fail-under="$COVERAGE_MIN" \
             -v
 
       - name: Upload coverage to Codecov
@@ -209,12 +211,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Spectral lint OpenAPI
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
         run: |
           npx -y @stoplight/spectral-cli lint \
-            "contracts/openapi/${{ inputs.service-name }}.yaml" \
+            "contracts/openapi/${SERVICE_NAME}.yaml" \
             --ruleset .spectral.yaml \
             --fail-severity=warn || \
-          (echo "::warning::No OpenAPI spec for ${{ inputs.service-name }} yet" && exit 0)
+          (echo "::warning::No OpenAPI spec for ${SERVICE_NAME} yet" && exit 0)
 
   # ===========================================================================
   # 5) Docker 构建（不推；推由 release workflow 做）
@@ -238,7 +242,10 @@ jobs:
           load: true
 
       - name: Save image
-        run: docker save foundation/${{ inputs.service-name }}:ci-${{ github.sha }} -o /tmp/image.tar
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+          GIT_SHA: ${{ github.sha }}
+        run: docker save "foundation/${SERVICE_NAME}:ci-${GIT_SHA}" -o /tmp/image.tar
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4

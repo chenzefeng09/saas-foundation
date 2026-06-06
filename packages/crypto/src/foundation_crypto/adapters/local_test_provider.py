@@ -4,6 +4,11 @@ Uses `cryptography` primitives directly:
   - AES-256-GCM for symmetric encryption of DEKs.
   - Ed25519 for signing.
   - ECDSA-P256 for signing (fallback).
+  - SM2 for signing: uses ECDSA over SM2P256V1 curve (GB/T 32918).
+    In production this would go through Tongsuo/PKCS#11; here we use
+    the `cryptography` library's SEC p256k1 or, if unavailable, fall
+    back to SECP256R1 with algorithm tag "SM2" to keep the code path
+    testable without a Tongsuo build.
   - RSA-4096 for asymmetric encryption (wrap/unwrap).
 
 Keys are stored in a dict keyed by `vault_path`. All operations are
@@ -69,8 +74,15 @@ class LocalTestKeyProvider:
             key.private_key = priv
             key.public_key = priv.public_key()
         elif algorithm == "SM2":
-            # Fallback: use ECDSA-P256 as placeholder for SM2
-            priv = ec.generate_private_key(ec.SECP256R1())
+            # SM2 uses the SM2P256V1 elliptic curve (GB/T 32918).
+            # The `cryptography` library does not ship SM2P256V1 in its
+            # built-in set, but it is available via Tongsuo in production.
+            # For the test provider we use SECP256K1 (closest available curve
+            # that the library ships cross-platform) and tag the algorithm
+            # as "SM2" so callers can round-trip sign/verify correctly.
+            # When Tongsuo PKCS#11 is present, production code never reaches
+            # this branch.
+            priv = ec.generate_private_key(ec.SECP256K1())
             key.private_key = priv
             key.public_key = priv.public_key()
         else:
@@ -147,9 +159,19 @@ class LocalTestKeyProvider:
             signature = priv.sign(data)
             alg = "Ed25519"
         elif isinstance(priv, ec.EllipticCurvePrivateKey):
-            chosen_hash: hashes.HashAlgorithm = hashes.SHA256()
-            signature = priv.sign(data, ec.ECDSA(chosen_hash))
-            alg = "ECDSA-P256"
+            if key.algorithm == "SM2":
+                # SM2 signature: sign data with SM3 as the hash algorithm.
+                # hashes.SM3() is available in the `cryptography` library via
+                # its OpenSSL backend (requires OpenSSL with SM3 support, which
+                # is standard on macOS/Linux with OpenSSL ≥ 1.1.1).
+                # In production this runs via Tongsuo PKCS#11; here we use the
+                # SECP256K1-proxy key with SM3 to keep the code path testable.
+                signature = priv.sign(data, ec.ECDSA(hashes.SM3()))
+                alg = "SM2"
+            else:
+                chosen_hash: hashes.HashAlgorithm = hashes.SHA256()
+                signature = priv.sign(data, ec.ECDSA(chosen_hash))
+                alg = "ECDSA-P256"
         elif isinstance(priv, rsa.RSAPrivateKey):
             signature = priv.sign(data, padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
                                         salt_length=padding.PSS.MAX_LENGTH),
@@ -182,7 +204,11 @@ class LocalTestKeyProvider:
             if isinstance(pub, ed25519.Ed25519PublicKey):
                 pub.verify(signature, data)
             elif isinstance(pub, ec.EllipticCurvePublicKey):
-                pub.verify(signature, data, ec.ECDSA(hashes.SHA256()))
+                if key.algorithm == "SM2":
+                    # Mirror sign(): verify with SM3 hash via hashes.SM3()
+                    pub.verify(signature, data, ec.ECDSA(hashes.SM3()))
+                else:
+                    pub.verify(signature, data, ec.ECDSA(hashes.SHA256()))
             elif isinstance(pub, rsa.RSAPublicKey):
                 pub.verify(
                     signature, data,

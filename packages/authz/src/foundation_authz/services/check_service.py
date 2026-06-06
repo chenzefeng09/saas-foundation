@@ -33,7 +33,7 @@ from foundation_authz.domain.models import (
 )
 from foundation_authz.errors import PERMISSION_UNKNOWN, FoundationError
 from foundation_authz.observability import get_logger
-from foundation_authz.schemas.check import CheckResponse
+from foundation_authz.schemas.check import CheckResponse, ListAccessibleIdsResponse
 
 log = get_logger(__name__)
 
@@ -122,6 +122,70 @@ class CheckService:
             decision_path="DEFAULT_DENY",
             deny_reason="no_matching_binding",
             latency_ms=round(latency, 2),
+        )
+
+    # ------------------------------------------------------------------ public (list)
+    async def list_accessible_ids(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        user_id: str,
+        resource_type: str,  # noqa: ARG002 — reserved for future resource-type filtering
+        action: str,
+        max: int,
+    ) -> ListAccessibleIdsResponse:
+        """Return the set of scope_ids the user can perform *action* on.
+
+        Algorithm (pure RBAC, no OPA):
+          1. Load all effective bindings for the user in this tenant.
+          2. For each binding whose permissions include *action* (exact or wildcard):
+             - TENANT / GLOBAL_SYSTEM scope → user has access to ALL resources;
+               return immediately with all_in_tenant=True, ids=[], complete=True.
+             - TEAM / ORG_UNIT / RESOURCE scope → collect scope_id into the result set.
+          3. Truncate to *max* entries; if truncated set complete=False.
+
+        Note: resource_type is accepted for forward-compatibility (future: scope walk
+        by resource type).  The current RBAC model does not index bindings by
+        resource_type, so we return all matching scope_ids regardless of resource_type
+        and let the caller apply additional filtering if needed.
+        """
+        roles = await self._load_effective_roles(
+            session, tenant_id=tenant_id, principal_id=user_id, principal_kind="USER"
+        )
+
+        scope_ids: set[str] = set()
+
+        for r in roles:
+            # Permission check: exact or wildcard
+            if action not in r.permissions and not _wildcard_match(r.permissions, action):
+                continue
+
+            # Wide scopes → tenant-level access, no need to enumerate IDs
+            if r.scope_kind in ("TENANT", "GLOBAL_SYSTEM"):
+                return ListAccessibleIdsResponse(
+                    ids=[],
+                    complete=True,
+                    all_in_tenant=True,
+                )
+
+            # Narrow scopes → collect specific scope_id
+            if r.scope_id is not None:
+                scope_ids.add(r.scope_id)
+
+        # Truncate if we exceed the requested max
+        ids_list = list(scope_ids)
+        if len(ids_list) > max:
+            return ListAccessibleIdsResponse(
+                ids=ids_list[:max],
+                complete=False,
+                all_in_tenant=False,
+            )
+
+        return ListAccessibleIdsResponse(
+            ids=ids_list,
+            complete=True,
+            all_in_tenant=False,
         )
 
     # ------------------------------------------------------------------ helpers

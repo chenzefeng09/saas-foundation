@@ -93,6 +93,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Flag' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+    put:
+      tags: [flags]
+      operationId: setFlag
+      summary: 创建或更新 flag（SDK set_flag）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                rollout_percentage: { type: integer, minimum: 0, maximum: 100, default: 100 }
+                tenant_whitelist:
+                  type: array
+                  items: { type: string }
+                description: { type: string }
+                fail_open: { type: boolean, default: false }
+                owner_team: { type: string }
+                tags: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlagView' }
     patch:
       tags: [flags]
       operationId: updateFlag
@@ -151,28 +178,31 @@ paths:
           application/json:
             schema:
               type: object
-              required: [flag_key]
+              description: |
+                Accepts either {flag} (SDK default) or {flag_key} (legacy spec alias).
+                At least one of flag or flag_key is required.
               properties:
-                flag_key: { type: string }
+                flag:
+                  type: string
+                  description: Flag key (SDK default field name)
+                flag_key:
+                  type: string
+                  description: Flag key (alias for flag — for spec compatibility)
                 context:
                   type: object
                   additionalProperties: true
+                  description: Additional evaluation context (e.g. tier, region)
       responses:
         '200':
           description: ok
           content:
             application/json:
-              schema:
-                type: object
-                required: [enabled]
-                properties:
-                  enabled: { type: boolean }
-                  variant: { type: string, nullable: true }
-                  reason: { type: string }
+              schema: { $ref: '#/components/schemas/EvalResult' }
 
-  /evaluate:batch:
+  /evaluate-batch:
     post:
       tags: [evaluation]
+      summary: 批量评估 flags
       operationId: batchEvaluateFlags
       requestBody:
         required: true
@@ -180,11 +210,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [flag_keys]
+              required: [flags]
               properties:
-                flag_keys:
+                flags:
                   type: array
                   items: { type: string }
+                  description: List of flag keys to evaluate
                 context:
                   type: object
                   additionalProperties: true
@@ -195,11 +226,11 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties:
-                  type: object
-                  properties:
-                    enabled: { type: boolean }
-                    variant: { type: string, nullable: true }
+                properties:
+                  results:
+                    type: object
+                    additionalProperties:
+                      $ref: '#/components/schemas/EvalResult'
 
 # =============================================================================
 components:
@@ -208,6 +239,31 @@ components:
       $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
 
   schemas:
+
+    EvalResult:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+        variant: { type: string, nullable: true }
+        reason: { type: string }
+
+    FlagView:
+      type: object
+      required: [key, enabled]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        enabled: { type: boolean }
+        default_value: { type: boolean }
+        fail_open: { type: boolean }
+        owner_team: { type: string, nullable: true }
+        tags: { type: object, additionalProperties: true, nullable: true }
+        kill_switch_active: { type: boolean, default: false }
+        unleash_synced_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time, nullable: true }
 
     Flag:
       type: object

@@ -42,10 +42,19 @@ metadata:
     app.kubernetes.io/part-of: saas-foundation
     app.kubernetes.io/managed-by: {{ $.Release.Service }}
     foundation.example.com/profile: {{ $.Values.global.profile | default "small" }}
+  annotations:
+    # owner 邮箱（kube-linter required-annotation-email）
+    email: {{ $.Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   {{- if not (and $svc.autoscaling $svc.autoscaling.enabled) }}
   replicas: {{ $svc.replicaCount | default 1 }}
   {{- end }}
+  # 滚动更新策略（kube-linter no-rolling-update-strategy）—— 更新时逐个替换 Pod 不中断服务
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}
@@ -70,7 +79,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: {{ $name }}
-          image: "{{ $.Values.global.imageRegistry }}/{{ $svc.image.repository | default (printf "foundation/%s" $name) }}:{{ $svc.image.tag | default $.Chart.AppVersion }}"
+          image: "{{ $.Values.global.imageRegistry }}/{{ if $svc.image }}{{ $svc.image.repository | default (printf "foundation/%s" $name) }}{{ else }}{{ printf "foundation/%s" $name }}{{ end }}:{{ if $svc.image }}{{ $svc.image.tag | default $.Chart.AppVersion }}{{ else }}{{ $.Chart.AppVersion }}{{ end }}"
           imagePullPolicy: {{ $.Values.global.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -92,6 +101,49 @@ spec:
             - { name: FOUNDATION_REDIS_HOST, value: {{ $.Values.global.redis.host | quote }} }
             - { name: FOUNDATION_KEYCLOAK_URL, value: {{ $.Values.global.keycloak.url | quote }} }
             - { name: FOUNDATION_VAULT_ADDR, value: {{ $.Values.global.vault.addr | quote }} }
+            {{- if eq $name "search" }}
+            # ── search-specific: OpenSearch + Authz ──────────────────────────
+            - name: SEARCH_OPENSEARCH_URL
+              value: {{ printf "http://%s:%v" $.Values.global.opensearch.host $.Values.global.opensearch.port | quote }}
+            - name: SEARCH_AUTHZ_URL
+              value: {{ printf "http://foundation-authz/api/authz/v1" | quote }}
+            {{- if $.Values.global.opensearch.existingSecret }}
+            # 生产 OpenSearch 开启 security 时从 secret 注入凭据
+            - name: SEARCH_OPENSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.opensearch.existingSecret | quote }}
+                  key: username
+                  optional: true
+            - name: SEARCH_OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.opensearch.existingSecret | quote }}
+                  key: password
+                  optional: true
+            {{- end }}
+            {{- end }}
+            {{- if eq $name "feature-flag" }}
+            # ── feature-flag 专属：Unleash 连接（凭据从 Secret 注入，不明文）──
+            - name: FEATURE_FLAG_UNLEASH_ENABLED
+              value: "true"
+            - name: FEATURE_FLAG_UNLEASH_URL
+              value: {{ $.Values.global.unleash.url | quote }}
+            - name: FEATURE_FLAG_UNLEASH_APP_NAME
+              value: "feature-flag-service"
+            # Client token — SDK 轮询 /api/client/features 使用
+            - name: FEATURE_FLAG_UNLEASH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.featureFlagUnleash.existingSecret | default "foundation-unleash-credentials" }}
+                  key: {{ $.Values.featureFlagUnleash.clientTokenSecretKey | default "client-token" }}
+            # Admin token — kill-switch 写回 / 管理操作使用
+            - name: FEATURE_FLAG_UNLEASH_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.featureFlagUnleash.existingSecret | default "foundation-unleash-credentials" }}
+                  key: {{ $.Values.featureFlagUnleash.adminTokenSecretKey | default "admin-token" }}
+            {{- end }}
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 15
@@ -159,8 +211,16 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: foundation-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: saas-foundation
+  annotations:
+    email: {{ $.Values.global.ownerEmail | default "foundation@example.com" | quote }}
 spec:
   minAvailable: {{ $svc.podDisruptionBudget.minAvailable | default 1 }}
+  # 不健康 Pod 驱逐策略（kube-linter pdb-unhealthy-pod-eviction-policy）——
+  # 允许驱逐尚未 Ready 的 Pod，避免滚动/排空时被 PDB 卡死
+  unhealthyPodEvictionPolicy: IfHealthyBudget
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}

@@ -7,3 +7,4 @@ class FoundationError(Exception):
         self.user_message=user_message or error_code.default_user_message; self.extra=extra or {}; super().__init__(f"{error_code.code}: {self.detail}")
 VALIDATION_FAILED:Final=ErrorCode("FOUNDATION.SEARCH.INPUT.VALIDATION_FAILED",422,"Validation failed","Input failed semantic validation.","输入校验未通过。")
 UNEXPECTED:Final=ErrorCode("FOUNDATION.SEARCH.INTERNAL.UNEXPECTED",500,"Unexpected error","An unexpected internal error occurred.","服务异常。")
+SEARCH_BACKEND_UNAVAILABLE:Final=ErrorCode("FOUNDATION.SEARCH.BACKEND.UNAVAILABLE",503,"Search backend unavailable","OpenSearch is not reachable — query aborted (fail-close).","搜索后端不可用，请稍后重试。")

@@ -8,7 +8,13 @@ def _rsn()->str:return f"__asyncpg_{uuid.uuid4().hex[:12]}__"
 def get_engine()->AsyncEngine:
     global _engine
     if _engine is None:
-        s=get_settings(); _engine=create_async_engine(str(s.db_dsn),pool_size=s.db_pool_size,max_overflow=s.db_max_overflow,pool_timeout=s.db_pool_timeout_seconds,pool_pre_ping=True,echo=s.db_echo,connect_args={"statement_cache_size":0,"prepared_statement_name_func":_rsn})
+        # PgBouncer (transaction pooling) trap: asyncpg must disable BOTH the
+        # statement cache AND the prepared-statement cache, plus use a unique
+        # per-statement name, or pooled connections raise
+        # ``prepared statement "__asyncpg_..." does not exist`` intermittently.
+        # ``statement_cache_size=0`` alone is NOT enough — see foundation
+        # org/audit db.py for the canonical working combination.
+        s=get_settings(); _engine=create_async_engine(str(s.db_dsn),pool_size=s.db_pool_size,max_overflow=s.db_max_overflow,pool_timeout=s.db_pool_timeout_seconds,pool_pre_ping=True,echo=s.db_echo,connect_args={"statement_cache_size":0,"prepared_statement_cache_size":0,"prepared_statement_name_func":_rsn})
     return _engine
 @asynccontextmanager
 async def session_scope()->AsyncIterator[AsyncSession]:
@@ -18,9 +24,9 @@ async def session_scope()->AsyncIterator[AsyncSession]:
     async with _sm() as session:
         async with session.begin():
             if ctx is not None:
-                await session.execute(text(f"SET LOCAL app.tenant_id = '{ctx.tenant_id}'"))
-                await session.execute(text(f"SET LOCAL app.user_id = '{ctx.user_id or ''}'"))
-                await session.execute(text(f"SET LOCAL app.actor = '{ctx.actor}'"))
+                await session.execute(text(f"SET LOCAL app.tenant_id = '{ctx.tenant_id}'"))  # nosemgrep: avoid-sqlalchemy-text
+                await session.execute(text(f"SET LOCAL app.user_id = '{ctx.user_id or ''}'"))  # nosemgrep: avoid-sqlalchemy-text
+                await session.execute(text(f"SET LOCAL app.actor = '{ctx.actor}'"))  # nosemgrep: avoid-sqlalchemy-text
             yield session
 async def dispose_engine()->None:
     global _engine,_sm

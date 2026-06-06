@@ -18,6 +18,10 @@ class SearchIndex(Base):
     content_hash: Mapped[str] = mapped_column(String(32), nullable=False)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     acl_user_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    # M2: ACL expansion fields
+    acl_team_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    owner_id: Mapped[str | None] = mapped_column(String(64))
+    visibility: Mapped[str | None] = mapped_column(String(30))  # "PUBLIC_IN_TENANT" | "PRIVATE" | etc.
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
