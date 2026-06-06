@@ -6,4 +6,5 @@ class FoundationError(Exception):
         self.error_code=error_code; self.detail=detail or error_code.default_detail
         self.user_message=user_message or error_code.default_user_message; self.extra=extra or {}; super().__init__(f"{error_code.code}: {self.detail}")
 VALIDATION_FAILED:Final=ErrorCode("FOUNDATION.FEATURE_FLAG.INPUT.VALIDATION_FAILED",422,"Validation failed","Input failed semantic validation.","输入校验未通过。")
+ACCESS_DENIED:Final=ErrorCode("FOUNDATION.FEATURE_FLAG.AUTHZ.ACCESS_DENIED",403,"Access denied","The caller is not allowed to perform this operation.","无权执行该操作。")
 UNEXPECTED:Final=ErrorCode("FOUNDATION.FEATURE_FLAG.INTERNAL.UNEXPECTED",500,"Unexpected error","An unexpected internal error occurred.","服务异常。")

@@ -19,6 +19,89 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _tenant_match() -> str:
+    return "tenant_id = current_setting('app.tenant_id', true)"
+
+
+def _enable_tenant_rls(table: str) -> None:
+    op.execute(f'ALTER TABLE dlp."{table}" ENABLE ROW LEVEL SECURITY')
+    op.execute(f'ALTER TABLE dlp."{table}" FORCE ROW LEVEL SECURITY')
+
+    tenant_match = _tenant_match()
+    for cmd in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        policy_name = f"tenant_{cmd.lower()}"
+        if cmd == "INSERT":
+            clauses = f"WITH CHECK ({tenant_match})"
+        elif cmd == "UPDATE":
+            clauses = f"USING ({tenant_match}) WITH CHECK ({tenant_match})"
+        else:
+            clauses = f"USING ({tenant_match})"
+        op.execute(
+            f'CREATE POLICY {policy_name} ON dlp."{table}" '
+            f"FOR {cmd} TO app_user, app_admin {clauses}"
+        )
+
+    op.execute(
+        f'CREATE POLICY admin_all ON dlp."{table}" '
+        f"FOR ALL TO app_admin "
+        f"USING (current_setting('app.actor', true) = 'ADMIN') "
+        f"WITH CHECK (current_setting('app.actor', true) = 'ADMIN')"
+    )
+
+
+def _enable_rule_rls() -> None:
+    table = "dlp_rule"
+    op.execute(f'ALTER TABLE dlp."{table}" ENABLE ROW LEVEL SECURITY')
+    op.execute(f'ALTER TABLE dlp."{table}" FORCE ROW LEVEL SECURITY')
+
+    tenant_or_global = f"tenant_id IS NULL OR {_tenant_match()}"
+    tenant_match = _tenant_match()
+    op.execute(
+        f'CREATE POLICY tenant_select ON dlp."{table}" '
+        f"FOR SELECT TO app_user, app_admin USING ({tenant_or_global})"
+    )
+    op.execute(
+        f'CREATE POLICY tenant_insert ON dlp."{table}" '
+        f"FOR INSERT TO app_user, app_admin WITH CHECK ({tenant_match})"
+    )
+    op.execute(
+        f'CREATE POLICY tenant_update ON dlp."{table}" '
+        f"FOR UPDATE TO app_user, app_admin "
+        f"USING ({tenant_match}) WITH CHECK ({tenant_match})"
+    )
+    op.execute(
+        f'CREATE POLICY tenant_delete ON dlp."{table}" '
+        f"FOR DELETE TO app_user, app_admin USING ({tenant_match})"
+    )
+    op.execute(
+        f'CREATE POLICY admin_all ON dlp."{table}" '
+        f"FOR ALL TO app_admin "
+        f"USING (current_setting('app.actor', true) = 'ADMIN') "
+        f"WITH CHECK (current_setting('app.actor', true) = 'ADMIN')"
+    )
+
+
+def _enable_outbox_rls() -> None:
+    op.execute("ALTER TABLE dlp.dlp_event_outbox ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE dlp.dlp_event_outbox FORCE ROW LEVEL SECURITY")
+    op.execute(
+        "CREATE POLICY outbox_tenant_insert ON dlp.dlp_event_outbox "
+        "FOR INSERT TO app_user, app_admin "
+        "WITH CHECK (tenant_id IS NULL OR tenant_id = current_setting('app.tenant_id', true))"
+    )
+    op.execute(
+        "CREATE POLICY outbox_tenant_select ON dlp.dlp_event_outbox "
+        "FOR SELECT TO app_user, app_admin "
+        "USING (tenant_id = current_setting('app.tenant_id', true))"
+    )
+    op.execute(
+        "CREATE POLICY outbox_system_all ON dlp.dlp_event_outbox "
+        "FOR ALL TO app_observability, app_admin "
+        "USING (current_setting('app.actor', true) = 'SYSTEM') "
+        "WITH CHECK (current_setting('app.actor', true) = 'SYSTEM')"
+    )
+
+
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS dlp")
 
@@ -95,6 +178,11 @@ def upgrade() -> None:
     op.execute("GRANT USAGE ON SCHEMA dlp TO app_user, app_admin, app_observability")
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA dlp TO app_user, app_admin")
     op.execute("GRANT SELECT ON ALL TABLES IN SCHEMA dlp TO app_observability")
+
+    _enable_tenant_rls("classification")
+    _enable_rule_rls()
+    _enable_tenant_rls("dlp_event")
+    _enable_outbox_rls()
 
 
 def downgrade() -> None:

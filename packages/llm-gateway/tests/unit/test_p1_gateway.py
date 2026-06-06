@@ -25,7 +25,7 @@ import pytest
 
 from foundation_llm_gateway.errors import (
     PROVIDER_NOT_FOUND, PROVIDER_UPSTREAM_ERROR,
-    QUOTA_EXCEEDED, VIRTUAL_KEY_MISMATCH, FoundationError,
+    QUOTA_EXCEEDED, VIRTUAL_KEY_MISMATCH, VIRTUAL_KEY_REQUIRED, FoundationError,
 )
 from foundation_llm_gateway.services.llm_gateway_service import (
     LLMGatewayService, _decrypt_api_key, _encrypt_api_key, _estimate_tokens,
@@ -444,6 +444,82 @@ class TestChatCompletionsNonStreaming:
 
 
 # ---------------------------------------------------------------------------
+# Virtual key required at API boundary
+# ---------------------------------------------------------------------------
+
+class TestVirtualKeyRequiredAtApiBoundary:
+    async def test_chat_completions_rejects_missing_virtual_key_before_provider_lookup(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        from foundation_llm_gateway.api.v1.llm_gateway import (
+            ChatCompletionMessage, ChatCompletionRequest, chat_completions,
+        )
+        from foundation_llm_gateway.domain.base import FoundationContext
+
+        request = MagicMock()
+        request.headers = {}
+        ctx = FoundationContext(
+            tenant_id=tenant_id,
+            user_id="usr_01J5DEVXX00000000000000001",
+            actor="USER",
+            request_id=request_id,
+        )
+        body = ChatCompletionRequest(
+            model="gpt-4o",
+            messages=[ChatCompletionMessage(role="user", content="Hi")],
+        )
+
+        with pytest.raises(FoundationError) as exc_info:
+            await chat_completions(
+                body=body,
+                request=request,
+                ctx=ctx,
+                session=fake_session,
+                svc=svc,
+                request_id=request_id,
+                x_llm_virtual_key=None,
+            )
+
+        assert exc_info.value.error_code == VIRTUAL_KEY_REQUIRED
+        assert fake_session._scalar_queue == []
+        assert fake_session._scalars_queue == []
+
+    async def test_legacy_chat_rejects_missing_virtual_key_before_provider_lookup(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        from foundation_llm_gateway.api.v1.llm_gateway import ChatMessage, ChatRequest, chat
+        from foundation_llm_gateway.domain.base import FoundationContext
+
+        request = MagicMock()
+        request.headers = {}
+        ctx = FoundationContext(
+            tenant_id=tenant_id,
+            user_id="usr_01J5DEVXX00000000000000001",
+            actor="USER",
+            request_id=request_id,
+        )
+        body = ChatRequest(
+            model="gpt-4o",
+            messages=[ChatMessage(role="user", content="Hi")],
+        )
+
+        with pytest.raises(FoundationError) as exc_info:
+            await chat(
+                body=body,
+                request=request,
+                ctx=ctx,
+                session=fake_session,
+                svc=svc,
+                request_id=request_id,
+                x_llm_virtual_key=None,
+            )
+
+        assert exc_info.value.error_code == VIRTUAL_KEY_REQUIRED
+        assert fake_session._scalar_queue == []
+        assert fake_session._scalars_queue == []
+
+
+# ---------------------------------------------------------------------------
 # Quota exceeded → 402
 # ---------------------------------------------------------------------------
 
@@ -721,6 +797,9 @@ class TestErrorCodes:
 
     def test_virtual_key_mismatch_403(self):
         assert VIRTUAL_KEY_MISMATCH.http_status == 403
+
+    def test_virtual_key_required_401(self):
+        assert VIRTUAL_KEY_REQUIRED.http_status == 401
 
     def test_provider_not_found_404(self):
         assert PROVIDER_NOT_FOUND.http_status == 404

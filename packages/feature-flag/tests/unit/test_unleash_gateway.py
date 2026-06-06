@@ -17,6 +17,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from foundation_feature_flag.api.exception_handlers import install_exception_handlers
+from foundation_feature_flag.api.middleware import TenantContextMiddleware
 from foundation_feature_flag.api.v1.evaluate import router as evaluate_router
 from foundation_feature_flag.api.v1.flags import router as flags_router
 from foundation_feature_flag.services.feature_flag_service import FeatureFlagService
@@ -58,11 +60,20 @@ def make_service_with_gateway(gw: UnleashGateway) -> FeatureFlagService:
 def make_test_app(gw: UnleashGateway, svc: FeatureFlagService) -> FastAPI:
     """Create a minimal FastAPI app with the evaluate and flags routers."""
     app = FastAPI()
+    app.add_middleware(TenantContextMiddleware)
+    install_exception_handlers(app)
     app.state.unleash_gateway = gw
     app.state.feature_flag_service = svc
     app.include_router(evaluate_router)
     app.include_router(flags_router)
     return app
+
+
+ADMIN_HEADERS = {
+    "X-Tenant-Id": "tnt_01J0000000000000000000TNT1",
+    "X-Actor": "ADMIN",
+    "X-User-Id": "usr_admin",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +380,7 @@ class TestKillSwitchEndpoint:
         resp = self.client.post(
             "/flags/ai.thinking_ui/kill-switch",
             json={"reason": "P0 incident — immediate kill"},
+            headers=ADMIN_HEADERS,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -380,10 +392,21 @@ class TestKillSwitchEndpoint:
         assert self.gw.is_killed("ai.thinking_ui") is True
         assert self.svc.is_enabled("ai.thinking_ui") is False
 
+    def test_kill_switch_requires_admin_actor(self):
+        resp = self.client.post(
+            "/flags/ai.thinking_ui/kill-switch",
+            json={"reason": "P0 incident — immediate kill"},
+            headers={"X-Tenant-Id": ADMIN_HEADERS["X-Tenant-Id"], "X-Actor": "USER"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FOUNDATION.FEATURE_FLAG.AUTHZ.ACCESS_DENIED"
+        assert self.gw.is_killed("ai.thinking_ui") is False
+
     def test_kill_switch_requires_reason(self):
         resp = self.client.post(
             "/flags/ai.thinking_ui/kill-switch",
             json={},  # missing reason
+            headers=ADMIN_HEADERS,
         )
         assert resp.status_code == 422
 
@@ -391,6 +414,7 @@ class TestKillSwitchEndpoint:
         resp = self.client.post(
             "/flags/billing.saas_mode/kill-switch",
             json={"reason": "bad"},  # < 5 chars
+            headers=ADMIN_HEADERS,
         )
         assert resp.status_code == 422
 
@@ -406,6 +430,7 @@ class TestSetFlagEndpoint:
         resp = self.client.put(
             "/flags/billing.saas_mode",
             json={"enabled": True, "rollout_percentage": 100},
+            headers=ADMIN_HEADERS,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -421,9 +446,19 @@ class TestSetFlagEndpoint:
                 "rollout_percentage": 50,
                 "tenant_whitelist": ["tnt_aaa", "tnt_bbb"],
             },
+            headers=ADMIN_HEADERS,
         )
         assert resp.status_code == 200
         assert resp.json()["enabled"] is True
+
+    def test_set_flag_requires_admin_actor(self):
+        resp = self.client.put(
+            "/flags/some.flag",
+            json={"enabled": True, "rollout_percentage": 100},
+            headers={"X-Tenant-Id": ADMIN_HEADERS["X-Tenant-Id"], "X-Actor": "USER"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FOUNDATION.FEATURE_FLAG.AUTHZ.ACCESS_DENIED"
 
 
 class TestFallbackBehavior:

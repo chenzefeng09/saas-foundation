@@ -71,6 +71,7 @@ PACKAGE_TABLES: dict[str, list[TenantTable]] = {
     ],
     "dlp": [
         TenantTable("dlp", "classification"),
+        TenantTable("dlp", "dlp_rule"),
         TenantTable("dlp", "dlp_event"),
     ],
     "data_protection": [
@@ -86,6 +87,7 @@ PACKAGE_TABLES: dict[str, list[TenantTable]] = {
     ],
     "search": [
         TenantTable("search", "search_index"),
+        TenantTable("search", "search_query_log"),
     ],
     "pam": [
         TenantTable("pam", "pam_elevation_request"),
