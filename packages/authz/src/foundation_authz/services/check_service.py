@@ -30,6 +30,7 @@ from foundation_authz.domain.models import (
     PermissionDefinition,
     Role,
     RoleBinding,
+    RoleInherit,
 )
 from foundation_authz.errors import PERMISSION_UNKNOWN, FoundationError
 from foundation_authz.observability import get_logger
@@ -104,7 +105,11 @@ class CheckService:
                 decision_path="OPA_HIT",
                 matched_role=matched.role_name if matched else None,
                 matched_policy=decision.matched_policy,
-                deny_reason=None if (decision.allow and matched) else (decision.deny_reason or "rbac_or_opa"),
+                deny_reason=(
+                    None
+                    if (decision.allow and matched)
+                    else (decision.deny_reason or "rbac_or_opa")
+                ),
                 latency_ms=round(latency, 2),
             )
 
@@ -131,7 +136,7 @@ class CheckService:
         *,
         tenant_id: str,
         user_id: str,
-        resource_type: str,  # noqa: ARG002 — reserved for future resource-type filtering
+        resource_type: str,
         action: str,
         max: int,
     ) -> ListAccessibleIdsResponse:
@@ -224,8 +229,88 @@ class CheckService:
                     permissions=tuple(r.permissions or ()),
                 )
             )
-        # TODO(M2): walk role_inherit DAG to expand permissions.
-        return out
+        return await self._expand_inherited_permissions(
+            session,
+            tenant_id=tenant_id,
+            roles=out,
+        )
+
+    async def _expand_inherited_permissions(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        roles: list[_EffectiveRole],
+    ) -> list[_EffectiveRole]:
+        if not roles:
+            return roles
+
+        permissions_by_role = {
+            role.role_id: set(role.permissions)
+            for role in roles
+        }
+        pending_by_origin = {
+            role.role_id: {role.role_id}
+            for role in roles
+        }
+        visited_by_origin = {
+            role.role_id: {role.role_id}
+            for role in roles
+        }
+
+        while True:
+            child_role_ids = {
+                child_role_id
+                for pending in pending_by_origin.values()
+                for child_role_id in pending
+            }
+            if not child_role_ids:
+                break
+
+            stmt = (
+                select(RoleInherit.child_role_id, Role)
+                .join(Role, RoleInherit.parent_role_id == Role.id)
+                .where(
+                    RoleInherit.tenant_id == tenant_id,
+                    RoleInherit.child_role_id.in_(child_role_ids),
+                    Role.tenant_id == tenant_id,
+                    Role.deleted_at.is_(None),
+                )
+            )
+            rows = (await session.execute(stmt)).all()
+            if not rows:
+                break
+
+            next_pending: dict[str, set[str]] = {
+                origin_role_id: set()
+                for origin_role_id in pending_by_origin
+            }
+
+            for child_role_id, parent_role in rows:
+                for origin_role_id, pending in pending_by_origin.items():
+                    if child_role_id not in pending:
+                        continue
+                    if parent_role.id in visited_by_origin[origin_role_id]:
+                        continue
+
+                    permissions_by_role[origin_role_id].update(
+                        parent_role.permissions or ()
+                    )
+                    visited_by_origin[origin_role_id].add(parent_role.id)
+                    next_pending[origin_role_id].add(parent_role.id)
+
+            pending_by_origin = next_pending
+
+        return [
+            _EffectiveRole(
+                role_id=role.role_id,
+                role_name=role.role_name,
+                scope_kind=role.scope_kind,
+                scope_id=role.scope_id,
+                permissions=tuple(permissions_by_role[role.role_id]),
+            )
+            for role in roles
+        ]
 
     @staticmethod
     def _rbac_match(

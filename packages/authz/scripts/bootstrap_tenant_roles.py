@@ -7,7 +7,7 @@ existing rows are silently skipped.
 Roles created
 -------------
 super_admin    permissions=["*"]
-tenant_admin   permissions=["session.*","run.*","sandbox.*","skill.*","document.*","mcp_server.*"]
+tenant_admin   permissions=["session.*","run.*","sandbox.*","skill.*","document.*","mcp_server.*","app.*"]
 member         permissions=[<explicit list — see _MEMBER_PERMISSIONS>]
 
 Design notes
@@ -54,6 +54,7 @@ _TENANT_ADMIN_PERMISSIONS = [
     "skill.*",
     "document.*",
     "mcp_server.*",
+    "app.*",
 ]
 
 _MEMBER_PERMISSIONS = [
@@ -72,6 +73,10 @@ _MEMBER_PERMISSIONS = [
     "document.read",
     "document.search",
     "mcp_server.read",
+    "app.read",
+    "app.create",
+    "app.update",
+    "app.run",
 ]
 
 _ROLES = [

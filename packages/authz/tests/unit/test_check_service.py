@@ -27,10 +27,8 @@ from foundation_authz.services.check_service import (
     CheckService,
     _wildcard_match,
 )
-
 from tests._factories import make_binding, make_permission, make_role
 from tests.conftest import FakeAsyncSession
-
 
 pytestmark = pytest.mark.unit
 
@@ -166,6 +164,95 @@ async def test_rbac_hit_resource_scope(
     )
     assert resp.allowed is True
     assert resp.decision_path == "RBAC_HIT"
+
+
+async def test_rbac_hit_inherited_parent_permission(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="billing.invoice.read"))
+
+    child_role = make_role(
+        role_id="rol_01J0000000000000000000CHLD",
+        tenant_id=tenant_id,
+        name="billing_member",
+        permissions=[],
+    )
+    parent_role = make_role(
+        role_id="rol_01J0000000000000000000PRNT",
+        tenant_id=tenant_id,
+        name="billing_reader",
+        permissions=["billing.invoice.read"],
+    )
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=child_role.id,
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, child_role)])
+    fake_session.queue_execute([(child_role.id, parent_role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="billing.invoice.read",
+        resource_type="invoice",
+        resource_id="inv_1",
+        context={},
+    )
+
+    assert resp.allowed is True
+    assert resp.decision_path == "RBAC_HIT"
+    assert resp.matched_role == child_role.name
+    opa_mock.evaluate.assert_not_awaited()
+
+
+async def test_role_inheritance_cycle_is_ignored_after_permissions_expand(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="billing.invoice.read"))
+
+    child_role = make_role(
+        role_id="rol_01J0000000000000000000CHLD",
+        tenant_id=tenant_id,
+        name="billing_member",
+        permissions=[],
+    )
+    parent_role = make_role(
+        role_id="rol_01J0000000000000000000PRNT",
+        tenant_id=tenant_id,
+        name="billing_reader",
+        permissions=["billing.invoice.read"],
+    )
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=child_role.id,
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, child_role)])
+    fake_session.queue_execute([(child_role.id, parent_role)])
+    fake_session.queue_execute([(parent_role.id, child_role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="billing.invoice.read",
+        resource_type="invoice",
+        resource_id=None,
+        context={},
+    )
+
+    assert resp.allowed is True
+    assert fake_session._execute_queue == []
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +586,50 @@ async def test_list_ids_team_scope_returns_scope_id(
         scope_id="team_abc",
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    svc = CheckService(opa=opa_mock)
+    resp = await svc.list_accessible_ids(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        action="document.read",
+        max=100,
+    )
+
+    assert resp.ids == ["team_abc"]
+    assert resp.complete is True
+    assert resp.all_in_tenant is False
+
+
+async def test_list_ids_uses_inherited_parent_permission(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Inherited parent permissions apply at the child role binding scope."""
+    child_role = make_role(
+        role_id="rol_01J0000000000000000000CHLD",
+        tenant_id=tenant_id,
+        name="document_member",
+        permissions=[],
+    )
+    parent_role = make_role(
+        role_id="rol_01J0000000000000000000PRNT",
+        tenant_id=tenant_id,
+        name="document_reader",
+        permissions=["document.read"],
+    )
+    binding = make_binding(
+        tenant_id=tenant_id,
+        principal_id=user_id,
+        role_id=child_role.id,
+        scope_kind="TEAM",
+        scope_id="team_abc",
+    )
+    _stage_effective_roles(fake_session, bindings=[(binding, child_role)])
+    fake_session.queue_execute([(child_role.id, parent_role)])
 
     svc = CheckService(opa=opa_mock)
     resp = await svc.list_accessible_ids(
