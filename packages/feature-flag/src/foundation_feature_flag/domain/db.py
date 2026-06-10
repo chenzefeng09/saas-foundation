@@ -8,7 +8,11 @@ def _rsn()->str:return f"__asyncpg_{uuid.uuid4().hex[:12]}__"
 def get_engine()->AsyncEngine:
     global _engine
     if _engine is None:
-        s=get_settings(); _engine=create_async_engine(str(s.db_dsn),pool_size=s.db_pool_size,max_overflow=s.db_max_overflow,pool_timeout=s.db_pool_timeout_seconds,pool_pre_ping=True,echo=s.db_echo,connect_args={"statement_cache_size":0,"prepared_statement_name_func":_rsn})
+        # PgBouncer (transaction pooling): ``statement_cache_size=0`` alone is NOT enough —
+        # the SQLAlchemy asyncpg dialect keeps its own prepared-statement cache, so
+        # ``prepared_statement_cache_size=0`` must also be set or pooled connections raise
+        # ``prepared statement "__asyncpg_..." does not exist``.
+        s=get_settings(); _engine=create_async_engine(str(s.db_dsn),pool_size=s.db_pool_size,max_overflow=s.db_max_overflow,pool_timeout=s.db_pool_timeout_seconds,pool_pre_ping=True,echo=s.db_echo,connect_args={"statement_cache_size":0,"prepared_statement_cache_size":0,"prepared_statement_name_func":_rsn})
     return _engine
 @asynccontextmanager
 async def session_scope()->AsyncIterator[AsyncSession]:

@@ -114,19 +114,40 @@ def _require_admin() -> None:
 
 @router.get("/flags", response_model=list[FlagView], tags=["flags"])
 async def list_flags(request: Request) -> list[FlagView]:
-    """List all feature flags with their current state."""
+    """List all feature flags with their current state.
+
+    Baseline comes from the in-memory presets (the DB has no seed rows);
+    DB rows override/extend the baseline per key. If the DB read fails,
+    the preset baseline alone is returned.
+    """
     gateway = request.app.state.unleash_gateway
     tenant_id = _tenant_id()
 
-    # Try to read from DB first
+    # Preset baseline (in-memory)
+    svc: FeatureFlagService = request.app.state.feature_flag_service
+    raw = svc.list_flags(tenant_id=tenant_id)
+    merged: dict[str, FlagView] = {
+        item["name"]: FlagView(
+            key=item["name"],
+            name=item["name"],
+            description=item.get("description"),
+            enabled=item["enabled"],
+            default_value=item["enabled"],
+            fail_open=False,
+            kill_switch_active=gateway.is_killed(item["name"]),
+        )
+        for item in raw
+    }
+
+    # Overlay DB rows — a DB row is authoritative for its key
     try:
         async with session_scope() as session:
             stmt = select(Flag).order_by(Flag.key)
             result = await session.execute(stmt)
             db_flags = result.scalars().all()
 
-            return [
-                FlagView(
+            for f in db_flags:
+                merged[f.key] = FlagView(
                     key=f.key,
                     name=f.name,
                     description=f.description,
@@ -140,25 +161,11 @@ async def list_flags(request: Request) -> list[FlagView]:
                     created_at=f.created_at,
                     updated_at=f.updated_at,
                 )
-                for f in db_flags
-            ]
     except Exception as exc:
         log.warning("flags.list.db_failed", error=str(exc))
-        # Fallback to in-memory presets
-        svc: FeatureFlagService = request.app.state.feature_flag_service
-        raw = svc.list_flags(tenant_id=tenant_id)
-        return [
-            FlagView(
-                key=item["name"],
-                name=item["name"],
-                description=item.get("description"),
-                enabled=item["enabled"],
-                default_value=item["enabled"],
-                fail_open=False,
-                kill_switch_active=gateway.is_killed(item["name"]),
-            )
-            for item in raw
-        ]
+        # DB unavailable — fall back to the preset baseline only
+
+    return [merged[key] for key in sorted(merged)]
 
 
 @router.put("/flags/{flag}", response_model=FlagView, tags=["flags"])
@@ -239,16 +246,11 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
                 unleash_synced_at=now,
             )
     except Exception as exc:
-        log.warning("flags.set.db_failed", flag=flag, error=str(exc))
-        # Return synthetic response even if DB fails — Unleash sync already done
-        return FlagView(
-            key=flag,
-            name=flag,
-            enabled=body.enabled,
-            default_value=body.enabled,
-            fail_open=body.fail_open,
-            kill_switch_active=gateway.is_killed(flag),
-        )
+        log.error("flags.set.db_failed", flag=flag, error=str(exc))
+        raise HTTPException(
+            status_code=503,
+            detail=f"flag '{flag}' synced to Unleash but DB persistence failed",
+        ) from exc
 
 
 @router.post("/flags/{flag}/kill-switch", response_model=KillSwitchResponse, tags=["flags"])

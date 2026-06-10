@@ -333,6 +333,7 @@ services:
       AUDIT_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       FEATURE_FLAG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       SEARCH_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      LLM_GATEWAY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -347,10 +348,17 @@ services:
         run_migration() {
           svc="$$1"; pkg_dir="$$2"
           echo "=== Running $${svc} migrations ==="
-          # Copy to /tmp so poetry can write lock updates (source mounts are :ro)
+          # Copy to /tmp so poetry can write lock updates (source mounts are :ro).
+          # Remove any stale copy first: on container *restart* (not recreate)
+          # /tmp/$${svc} already exists, and `cp -r src existing_dir` would nest
+          # the source under /tmp/$${svc}/$${svc}, leaving poetry/alembic to run
+          # against the previous run's stale copy.
+          rm -rf /tmp/$${svc}
           cp -r "$${pkg_dir}" /tmp/$${svc}
           cd /tmp/$${svc}
-          poetry install --only main --quiet
+          # Don't swallow install errors: with `set -e` + --quiet a failed install
+          # exits 1 with no output, leaving logs stuck at "=== Running ... ===".
+          poetry install --only main --quiet || { echo "poetry install failed for $${svc}"; poetry install --only main; exit 1; }
           poetry run alembic upgrade head
           echo "=== $${svc} migrations done ==="
         }
@@ -537,11 +545,14 @@ services:
       LOG_LEVEL: warn
       INIT_ADMIN_API_TOKENS: "*:*.unleash-insecure-admin-api-token"
       INIT_FRONTEND_API_TOKENS: "*:development.unleash-insecure-frontend-api-token"
+      # Client token (SDK /api/client/features). The feature-flag service's Unleash
+      # SDK needs a CLIENT-type token; a frontend token returns 403 on that endpoint.
+      INIT_CLIENT_API_TOKENS: "*:development.unleash-insecure-client-api-token"
     ports:
       - "${PORT_UNLEASH:-4242}:4242"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4242/health | grep -q OK"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4242/health | grep -q GOOD"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -597,8 +608,8 @@ services:
       FEATURE_FLAG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       FEATURE_FLAG_UNLEASH_ENABLED: "true"
       FEATURE_FLAG_UNLEASH_URL: http://unleash:4242
-      # client token（只需 client features 权限）
-      FEATURE_FLAG_UNLEASH_API_TOKEN: ${UNLEASH_CLIENT_TOKEN:-*:development.unleash-insecure-frontend-api-token}
+      # client token（只需 client features 权限；必须是 CLIENT 类型，frontend token 会 403）
+      FEATURE_FLAG_UNLEASH_API_TOKEN: ${UNLEASH_CLIENT_TOKEN:-*:development.unleash-insecure-client-api-token}
       # admin token（flags 管理 / kill-switch 写回）
       FEATURE_FLAG_UNLEASH_ADMIN_TOKEN: ${UNLEASH_ADMIN_TOKEN:-*:*.unleash-insecure-admin-api-token}
       FEATURE_FLAG_UNLEASH_APP_NAME: feature-flag-service

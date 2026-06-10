@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     unleash_api_token: str = "*:*.unleash-insecure-admin-api-token"
     unleash_admin_token: str = "*:*.unleash-insecure-admin-api-token"
     unleash_app_name: str = "feature-flag-service"
+    # Admin API project/environment — v5+ 的创建/启停端点都是 project 维度
+    unleash_project: str = "default"
+    unleash_environment: str = "development"
     unleash_refresh_interval: int = 15          # seconds
     unleash_metrics_interval: int = 60          # seconds
     unleash_fail_open_flags: list[str] = []     # flags that default to True on Unleash error

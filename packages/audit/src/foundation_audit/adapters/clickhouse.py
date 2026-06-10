@@ -395,8 +395,7 @@ async def get_events_for_verification(
         None,
         lambda: client.query(sql, parameters=params),
     )
-    col_names = [d.name for d in result.column_names] if hasattr(result, "column_names") else (cols + extra_cols).replace(" ", "").split(",")
-    # clickhouse-connect returns column_names as list of strings
+    # clickhouse-connect returns column_names as a list of plain strings
     col_names_list = list(result.column_names)
     out: list[dict[str, Any]] = []
     for row in result.result_rows:

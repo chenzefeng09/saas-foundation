@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -44,6 +43,8 @@ def make_gateway(*, unleash_enabled: bool = False) -> UnleashGateway:
     gw._settings.unleash_refresh_interval = 15
     gw._settings.unleash_metrics_interval = 60
     gw._settings.unleash_fail_open_flags = ["ai.thinking_ui"]
+    gw._settings.unleash_project = "default"
+    gw._settings.unleash_environment = "development"
     gw._client = None
     gw._presets = {}
     gw._killed = set()
@@ -426,12 +427,34 @@ class TestSetFlagEndpoint:
         self.app = make_test_app(self.gw, self.svc)
         self.client = TestClient(self.app)
 
+    @staticmethod
+    def _fake_session_scope(store: dict):
+        """PUT now requires a working DB (no synthetic 200) — fake the session."""
+        from contextlib import asynccontextmanager
+
+        class _FakeSession:
+            async def get(self, model, key):
+                return store.get(key)
+
+            def add(self, obj):
+                store[obj.key] = obj
+
+        @asynccontextmanager
+        async def _scope():
+            yield _FakeSession()
+
+        return _scope
+
     def test_set_flag_returns_flag_view(self):
-        resp = self.client.put(
-            "/flags/billing.saas_mode",
-            json={"enabled": True, "rollout_percentage": 100},
-            headers=ADMIN_HEADERS,
-        )
+        with patch(
+            "foundation_feature_flag.api.v1.flags.session_scope",
+            self._fake_session_scope({}),
+        ):
+            resp = self.client.put(
+                "/flags/billing.saas_mode",
+                json={"enabled": True, "rollout_percentage": 100},
+                headers=ADMIN_HEADERS,
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["key"] == "billing.saas_mode"
@@ -439,17 +462,30 @@ class TestSetFlagEndpoint:
 
     def test_set_flag_sdk_contract_fields(self):
         """SDK set_flag sends {enabled, rollout_percentage, tenant_whitelist}."""
-        resp = self.client.put(
-            "/flags/some.flag",
-            json={
-                "enabled": True,
-                "rollout_percentage": 50,
-                "tenant_whitelist": ["tnt_aaa", "tnt_bbb"],
-            },
-            headers=ADMIN_HEADERS,
-        )
+        with patch(
+            "foundation_feature_flag.api.v1.flags.session_scope",
+            self._fake_session_scope({}),
+        ):
+            resp = self.client.put(
+                "/flags/some.flag",
+                json={
+                    "enabled": True,
+                    "rollout_percentage": 50,
+                    "tenant_whitelist": ["tnt_aaa", "tnt_bbb"],
+                },
+                headers=ADMIN_HEADERS,
+            )
         assert resp.status_code == 200
         assert resp.json()["enabled"] is True
+
+    def test_set_flag_db_unavailable_returns_503(self):
+        """Without a DB, PUT must surface 503 instead of a synthetic 200."""
+        resp = self.client.put(
+            "/flags/billing.saas_mode",
+            json={"enabled": True, "rollout_percentage": 100},
+            headers=ADMIN_HEADERS,
+        )
+        assert resp.status_code == 503
 
     def test_set_flag_requires_admin_actor(self):
         resp = self.client.put(
@@ -514,3 +550,142 @@ class TestFallbackBehavior:
         result = gw.evaluate("billing.saas_mode")
         assert result["enabled"] is False
         assert result["reason"] == "fallback_default"
+
+
+# ---------------------------------------------------------------------------
+# Admin REST API path tests (v5+ project-scoped endpoints)
+# ---------------------------------------------------------------------------
+
+
+class _Recorder:
+    """Fake httpx.Client capturing GET/POST calls and returning canned responses.
+
+    ``get_status`` controls what the existence-probe GET returns (404 → create,
+    200 → already exists). All POST/PUT calls are recorded for path assertions.
+    """
+
+    def __init__(self, *, get_status: int = 404):
+        self.get_status = get_status
+        self.calls: list[tuple[str, str]] = []  # (method, url)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def _resp(self, status: int):
+        r = MagicMock()
+        r.status_code = status
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value={})
+        return r
+
+    def get(self, url, headers=None, **kwargs):
+        self.calls.append(("GET", url))
+        return self._resp(self.get_status)
+
+    def post(self, url, headers=None, **kwargs):
+        self.calls.append(("POST", url))
+        return self._resp(200)
+
+    def put(self, url, headers=None, **kwargs):
+        self.calls.append(("PUT", url))
+        return self._resp(200)
+
+    # convenience accessors -------------------------------------------------
+    def posts(self) -> list[str]:
+        return [u for m, u in self.calls if m == "POST"]
+
+    def puts(self) -> list[str]:
+        return [u for m, u in self.calls if m == "PUT"]
+
+
+class TestAdminApiPaths:
+    """admin_upsert_flag must use v5+ project-scoped endpoints, not the removed
+    global /api/admin/features collection / toggle endpoints."""
+
+    def _gateway(self) -> UnleashGateway:
+        gw = make_gateway(unleash_enabled=True)
+        return gw
+
+    def test_create_uses_project_scoped_endpoint(self):
+        gw = self._gateway()
+        rec = _Recorder(get_status=404)  # flag does not exist → create
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            ok = gw.admin_upsert_flag(flag_key="billing.saas_mode", enabled=True)
+        assert ok is True
+        posts = rec.posts()
+        # Creation must hit the project-scoped collection endpoint
+        assert "http://localhost:4242/api/admin/projects/default/features" in posts
+        # The removed global collection endpoint must NOT be called
+        assert "http://localhost:4242/api/admin/features" not in posts
+
+    def test_enable_true_hits_environment_on(self):
+        gw = self._gateway()
+        rec = _Recorder(get_status=404)
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            gw.admin_upsert_flag(flag_key="ai.thinking_ui", enabled=True)
+        on_url = (
+            "http://localhost:4242/api/admin/projects/default/features/"
+            "ai.thinking_ui/environments/development/on"
+        )
+        assert on_url in rec.posts()
+
+    def test_enable_false_hits_environment_off(self):
+        gw = self._gateway()
+        rec = _Recorder(get_status=404)
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            gw.admin_upsert_flag(flag_key="ai.thinking_ui", enabled=False)
+        off_url = (
+            "http://localhost:4242/api/admin/projects/default/features/"
+            "ai.thinking_ui/environments/development/off"
+        )
+        assert off_url in rec.posts()
+        # ...and never the legacy /enable or /disable variants
+        assert not any(u.endswith("/enable") or u.endswith("/disable") for u in rec.posts())
+
+    def test_existing_flag_skips_global_put_and_create(self):
+        gw = self._gateway()
+        rec = _Recorder(get_status=200)  # flag already exists
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            ok = gw.admin_upsert_flag(flag_key="billing.saas_mode", enabled=True)
+        assert ok is True
+        # No PUT to the removed global update endpoint
+        assert rec.puts() == []
+        # No create POST to the project collection (flag exists)
+        assert "http://localhost:4242/api/admin/projects/default/features" not in rec.posts()
+        # Still drives the env on/off state
+        assert any("/environments/development/on" in u for u in rec.posts())
+
+    def test_no_global_admin_features_post_ever(self):
+        """Guard: the removed global collection endpoint is never POSTed to."""
+        gw = self._gateway()
+        for status in (404, 200):
+            rec = _Recorder(get_status=status)
+            with patch(
+                "foundation_feature_flag.services.unleash_gateway.httpx.Client",
+                return_value=rec,
+            ):
+                gw.admin_upsert_flag(flag_key="some.flag", enabled=True)
+            for url in rec.posts():
+                # any admin/features POST must carry a /projects/ segment
+                if "/api/admin/" in url and "/features" in url:
+                    assert "/projects/" in url, f"global endpoint used: {url}"
+
+    def test_kill_switch_disable_maps_to_off(self):
+        """admin_set_kill_switch(killed=True) → enabled=False → /off."""
+        gw = self._gateway()
+        rec = _Recorder(get_status=200)
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            gw.admin_set_kill_switch("export.allow_l4_download", killed=True)
+        assert any(u.endswith("/environments/development/off") for u in rec.posts())
+
+    def test_admin_list_uses_project_scoped_endpoint(self):
+        gw = self._gateway()
+        rec = _Recorder(get_status=200)
+        with patch("foundation_feature_flag.services.unleash_gateway.httpx.Client", return_value=rec):
+            gw.admin_list()
+        gets = [u for m, u in rec.calls if m == "GET"]
+        assert "http://localhost:4242/api/admin/projects/default/features" in gets
+        assert "http://localhost:4242/api/admin/features" not in gets

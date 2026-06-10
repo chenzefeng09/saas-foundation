@@ -12,7 +12,7 @@ Design decisions:
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -240,14 +240,24 @@ class UnleashGateway:
     def _admin_base(self) -> str:
         return self._settings.unleash_url.rstrip("/")
 
+    def _project(self) -> str:
+        return getattr(self._settings, "unleash_project", "default")
+
+    def _environment(self) -> str:
+        return getattr(self._settings, "unleash_environment", "development")
+
     def admin_list(self) -> list[dict[str, Any]]:
-        """List all feature toggles from Unleash Admin API."""
+        """List all feature toggles from Unleash Admin API.
+
+        v5+ removed the global ``/api/admin/features`` collection endpoint; use the
+        project-scoped path which returns the same ``{"features": [...]}`` shape.
+        """
         if not self._settings.unleash_enabled:
             return []
         try:
             with httpx.Client(timeout=10) as client:
                 resp = client.get(
-                    f"{self._admin_base()}/api/admin/features",
+                    f"{self._admin_base()}/api/admin/projects/{self._project()}/features",
                     headers=self._admin_headers(),
                 )
                 resp.raise_for_status()
@@ -268,78 +278,68 @@ class UnleashGateway:
         """Create or update a feature toggle via Unleash Admin API.
 
         Returns True on success.
+
+        Note: ``name`` and ``strategies`` are accepted for backward compatibility
+        but are not applied here — flag creation uses ``flag_key`` as the name, and
+        strategy configuration is owned by the init-flags provisioning script.
+        Only the environment on/off state is driven via ``enabled``.
         """
+        _ = (name, strategies)  # accepted for compat; not applied here
         if not self._settings.unleash_enabled:
             return False
         base = self._admin_base()
         headers = self._admin_headers()
-        # Default strategy if none provided
-        if strategies is None:
-            strategies = [{"name": "default", "constraints": [], "parameters": {}}]
+        project = self._project()
+        env = self._environment()
 
         try:
             with httpx.Client(timeout=10) as client:
-                # Try to get existing toggle
+                # Probe for existing toggle. The single-flag GET is still available
+                # in v5/v6 (the init-flags.sh script relies on it), so we keep it.
                 get_resp = client.get(
                     f"{base}/api/admin/features/{flag_key}", headers=headers
                 )
                 if get_resp.status_code == 404:
-                    # Create new toggle
+                    # Create new toggle (project-scoped). v5+ removed the global
+                    # POST /api/admin/features collection endpoint.
                     payload: dict[str, Any] = {
                         "name": flag_key,
                         "description": description or "",
                         "type": "release",
-                        "enabled": False,  # Create disabled; enable separately
-                        "strategies": strategies,
+                        "impressionData": False,
                     }
                     create_resp = client.post(
-                        f"{base}/api/admin/features",
+                        f"{base}/api/admin/projects/{project}/features",
                         headers=headers,
                         json=payload,
                     )
                     create_resp.raise_for_status()
                     log.info("unleash_gateway.admin_created", flag=flag_key)
                 else:
+                    # Flag already exists. Metadata updates are not on the critical
+                    # path for kill-switch / enable sync, and the global PUT was
+                    # removed in v5+ — so we skip metadata mutation and only drive
+                    # the environment on/off state below.
                     get_resp.raise_for_status()
-                    # Update description/name if changed
-                    existing = get_resp.json()
-                    update_payload: dict[str, Any] = {
-                        "name": flag_key,
-                        "description": description or existing.get("description", ""),
-                        "type": existing.get("type", "release"),
-                        "enabled": existing.get("enabled", False),
-                        "strategies": strategies or existing.get("strategies", []),
-                    }
-                    put_resp = client.put(
-                        f"{base}/api/admin/features/{flag_key}",
-                        headers=headers,
-                        json=update_payload,
-                    )
-                    put_resp.raise_for_status()
-                    log.info("unleash_gateway.admin_updated", flag=flag_key)
+                    log.info("unleash_gateway.admin_exists", flag=flag_key)
 
-                # Set enabled state
+                # Set enabled state via the environment-scoped on/off endpoint.
                 if enabled is not None:
-                    toggle_action = "enable" if enabled else "disable"
-                    # In Unleash v5+ API the endpoint is per-environment
-                    # Try the simpler toggle endpoint first
+                    action = "on" if enabled else "off"
                     toggle_resp = client.post(
-                        f"{base}/api/admin/features/{flag_key}/{toggle_action}",
+                        f"{base}/api/admin/projects/{project}/features/{flag_key}"
+                        f"/environments/{env}/{action}",
                         headers=headers,
+                        content=b"",
                     )
-                    if toggle_resp.status_code not in (200, 204):
-                        # Unleash v5+ uses environment-scoped endpoints
-                        toggle_resp2 = client.post(
-                            f"{base}/api/admin/projects/default/features/{flag_key}/environments/development/{toggle_action}",
-                            headers=headers,
+                    if toggle_resp.status_code not in (200, 201, 204):
+                        log.warning(
+                            "unleash_gateway.toggle_failed",
+                            flag=flag_key,
+                            action=action,
+                            status=toggle_resp.status_code,
                         )
-                        if toggle_resp2.status_code not in (200, 204):
-                            log.warning(
-                                "unleash_gateway.toggle_failed",
-                                flag=flag_key,
-                                action=toggle_action,
-                                status=toggle_resp2.status_code,
-                            )
+                        return False
 
                 return True
         except Exception as exc:
