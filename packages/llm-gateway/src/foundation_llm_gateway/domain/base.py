@@ -9,3 +9,4 @@ class FoundationContext:
 foundation_context: ContextVar[FoundationContext | None] = ContextVar("foundation_context", default=None)
 class Base(DeclarativeBase): pass
 tenant_stub = Table("tenant", Base.metadata, Column("id", String(30), primary_key=True), schema="tenant")
+user_stub = Table("user", Base.metadata, Column("id", String(30), primary_key=True), schema="identity")

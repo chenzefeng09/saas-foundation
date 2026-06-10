@@ -1,7 +1,7 @@
 """LLM Gateway models."""
 from __future__ import annotations
 from datetime import datetime; from typing import Any
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from foundation_llm_gateway.domain.base import Base
@@ -58,3 +58,37 @@ class Outbox(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LLMTenantDefaultModel(Base):
+    __tablename__ = "tenant_default_model"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "purpose", name="uq_tenant_default_purpose"),
+        Index("ttdm_tenant_idx", "tenant_id"),
+        {"schema": "llm_gateway"},
+    )
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False, comment="llm | embedding | rerank | tts | stt")
+    model_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+
+class LLMUserModelPreference(Base):
+    __tablename__ = "user_model_preference"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "purpose", name="uq_user_pref_purpose"),
+        Index("ump_tenant_user_idx", "tenant_id", "user_id"),
+        {"schema": "llm_gateway"},
+    )
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(30), ForeignKey("identity.user.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

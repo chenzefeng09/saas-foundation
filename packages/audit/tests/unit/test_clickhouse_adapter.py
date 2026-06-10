@@ -13,6 +13,7 @@ from foundation_audit.adapters.clickhouse import (
     EVENTS_COLUMNS,
     MERKLE_BATCH_COLUMNS,
     _event_to_row,
+    get_events_for_verification,
 )
 
 
@@ -138,6 +139,80 @@ class TestEventToRow:
         row = _event_to_row(event)
         idx = EVENTS_COLUMNS.index("compliance_modes")
         assert row[idx] == []
+
+
+class TestGetEventsForVerification:
+    """Regression coverage for the column_names handling in verify-integrity.
+
+    clickhouse-connect's QueryResult.column_names is a list of plain *strings*.
+    A previous bug did ``[d.name for d in result.column_names]`` which raised
+    ``'str' object has no attribute 'name'`` and got surfaced to callers as a
+    bogus 503 "ClickHouse unavailable". These tests pin the correct behaviour:
+    rows are zipped against the string column names directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_string_column_names_do_not_raise(self) -> None:
+        """column_names as plain strings must map rows to dicts (no AttributeError)."""
+        col_names = [
+            "event_id", "tenant_id", "service", "occurred_at", "ingested_at",
+            "prev_hash", "curr_hash", "merkle_batch_id", "merkle_leaf_idx",
+            "schema_version", "event_type", "severity", "outcome", "actor_kind",
+            "actor_user_id", "actor_api_key_id", "resource_type", "resource_id",
+            "resource_path", "request_id", "trace_id", "span_id", "session_id",
+            "parent_event_id", "ip", "user_agent", "country", "payload",
+            "service_version",
+        ]
+        row = (
+            "evt_01J00000000000000000000001", "tnt_01J0000000000000000000TNT1",
+            "identity", datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC),
+            "0" * 64, "a" * 64, "mrk_01J0", 0,
+            1, "test.event", "INFO", "SUCCESS", "USER",
+            "usr_1", None, None, None, None, None, None, None, None, None,
+            None, None, None, json.dumps({"k": "v"}), "1.0.0",
+        )
+
+        result = MagicMock()
+        result.column_names = col_names  # list[str], as clickhouse-connect returns
+        result.result_rows = [row]
+
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            out = await get_events_for_verification(
+                tenant_id="tnt_01J0000000000000000000TNT1",
+                limit=10,
+            )
+
+        assert len(out) == 1
+        assert out[0]["event_id"] == "evt_01J00000000000000000000001"
+        assert out[0]["curr_hash"] == "a" * 64
+        assert out[0]["payload"] == json.dumps({"k": "v"})
+
+    @pytest.mark.asyncio
+    async def test_empty_result_returns_empty_list(self) -> None:
+        """No rows → empty list, no error."""
+        result = MagicMock()
+        result.column_names = ["event_id", "tenant_id"]
+        result.result_rows = []
+
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            out = await get_events_for_verification(
+                tenant_id="tnt_01J0000000000000000000TNT1",
+                limit=10,
+            )
+
+        assert out == []
 
 
 class TestMerkleBatchColumns:

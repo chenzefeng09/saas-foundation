@@ -237,7 +237,7 @@
       "emailVerified": true,
       "enabled": true,
       "firstName": "Alice",
-      "lastName": "Admin (Tenant A)",
+      "lastName": "Admin Tenant A",
       "credentials": [
         {
           "type": "password",
@@ -255,6 +255,9 @@
       "attributes": {
         "tenant_id": [
           "tnt_01J5DEVXX00000000000000001"
+        ],
+        "user_id": [
+          "usr_01KT7TZ70AM2RK8P0C0ALICE01"
         ]
       }
     },
@@ -264,7 +267,7 @@
       "emailVerified": true,
       "enabled": true,
       "firstName": "Bob",
-      "lastName": "Member (Tenant A)",
+      "lastName": "Member Tenant A",
       "credentials": [
         {
           "type": "password",
@@ -281,6 +284,9 @@
       "attributes": {
         "tenant_id": [
           "tnt_01J5DEVXX00000000000000001"
+        ],
+        "user_id": [
+          "usr_01KT7TZ70AM2RK8P0C0BOB0001"
         ]
       }
     },
@@ -290,7 +296,7 @@
       "emailVerified": true,
       "enabled": true,
       "firstName": "Carol",
-      "lastName": "Admin (Tenant B)",
+      "lastName": "Admin Tenant B",
       "credentials": [
         {
           "type": "password",
@@ -308,6 +314,9 @@
       "attributes": {
         "tenant_id": [
           "tnt_01J5DEVXX00000000000000002"
+        ],
+        "user_id": [
+          "usr_01KT7TZ70AM2RK8P0C0CAROL01"
         ]
       }
     }

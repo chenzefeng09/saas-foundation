@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Request
@@ -27,8 +27,10 @@ from foundation_llm_gateway.api.dependencies import (
 from foundation_llm_gateway.config import get_settings
 from foundation_llm_gateway.domain.base import FoundationContext
 from foundation_llm_gateway.errors import (
+    PERMISSION_DENIED,
+    PROVIDER_NOT_FOUND,
     PROVIDER_UPSTREAM_ERROR,
-    QUOTA_EXCEEDED, VIRTUAL_KEY_MISMATCH, VIRTUAL_KEY_REQUIRED, FoundationError,
+    QUOTA_EXCEEDED, VALIDATION_FAILED, VIRTUAL_KEY_MISMATCH, VIRTUAL_KEY_REQUIRED, FoundationError,
 )
 from foundation_llm_gateway.observability import get_logger
 from foundation_llm_gateway.services.llm_gateway_service import (
@@ -75,6 +77,8 @@ class RegisterProviderRequest(BaseModel):
     api_key: str          # plaintext — will be encrypted before storage
     provider_type: str
     models: list[str] = []
+    model_type_map: dict[str, list[str]] = Field(default_factory=dict)  # {"llm": ["gpt-4o"], "text_embedding": ["text-embedding-3-small"]}
+    model_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 @router.get("/providers", tags=["llm-gateway"])
@@ -87,10 +91,15 @@ async def list_providers(
     rows = list((await session.scalars(
         select(LLMProvider).where(
             LLMProvider.tenant_id == ctx.tenant_id,
-            LLMProvider.enabled.is_(True),
         )
     )).all())
-    return {"items": [{"id": r.id, "name": r.name, "kind": r.kind, "models": r.models, "enabled": r.enabled} for r in rows]}
+    return {"items": [{
+        "id": r.id, "name": r.name, "kind": r.kind,
+        "base_url": r.base_url,
+        "models": r.models, "default_model": r.default_model,
+        "capabilities": r.capabilities,
+        "enabled": r.enabled, "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]}
 
 
 @router.post("/providers", status_code=201, tags=["llm-gateway"])
@@ -106,6 +115,7 @@ async def register_provider(
         kind = ProviderKind(body.provider_type)
     except ValueError:
         kind = ProviderKind.OPENAI_COMPATIBLE
+    capabilities = {"model_type_map": body.model_type_map, "model_settings": body.model_settings}
     provider = await svc.register_provider(
         session, tenant_id=ctx.tenant_id,
         name=body.name, kind=kind,
@@ -113,12 +123,63 @@ async def register_provider(
         api_key_plaintext=body.api_key,   # encrypted inside register_provider
         models=body.models,
         default_model=body.models[0] if body.models else "",
-        capabilities=None,
+        capabilities=capabilities,
         request_id=request_id,
         crypto_url=settings.crypto_url,
         crypto_timeout=settings.external_timeout_seconds,
     )
     return {"id": provider.id, "name": provider.name, "kind": provider.kind, "models": provider.models}
+
+
+class UpdateProviderRequest(BaseModel):
+    enabled: bool | None = None
+    name: str | None = None
+    models: list[str] | None = None
+    default_model: str | None = None
+    model_type_map: dict[str, list[str]] | None = None
+    model_settings: dict[str, dict[str, Any]] | None = None
+
+
+@router.patch("/providers/{pid}", tags=["llm-gateway"])
+async def update_provider(
+    pid: str,
+    body: UpdateProviderRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+    request_id: str = Depends(current_request_id),
+) -> dict[str, Any]:
+    capabilities = None
+    if body.model_type_map is not None or body.model_settings is not None:
+        capabilities = {}
+        if body.model_type_map is not None:
+            capabilities["model_type_map"] = body.model_type_map
+        if body.model_settings is not None:
+            capabilities["model_settings"] = body.model_settings
+    provider = await svc.update_provider(
+        session, provider_id=pid, tenant_id=ctx.tenant_id,
+        enabled=body.enabled, name=body.name,
+        models=body.models, default_model=body.default_model,
+        capabilities=capabilities,
+        request_id=request_id,
+    )
+    return {"id": provider.id, "name": provider.name, "kind": provider.kind,
+            "models": provider.models, "enabled": provider.enabled}
+
+
+@router.delete("/providers/{pid}", tags=["llm-gateway"])
+async def delete_provider(
+    pid: str,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+    request_id: str = Depends(current_request_id),
+) -> dict[str, Any]:
+    await svc.delete_provider(
+        session, provider_id=pid, tenant_id=ctx.tenant_id,
+        request_id=request_id,
+    )
+    return {"status": "deleted"}
 
 
 # ---------------------------------------------------------------------------
@@ -703,3 +764,169 @@ async def chat(
         audit_url=settings.audit_url, timeout=settings.external_timeout_seconds,
     ))
     return data
+
+
+# ---------------------------------------------------------------------------
+# Default Model — Tenant Defaults & User Preferences
+# ---------------------------------------------------------------------------
+
+Purpose = Literal["llm", "embedding", "rerank", "tts", "stt"]
+
+
+class UpsertTenantDefaultRequest(BaseModel):
+    purpose: Purpose
+    model_id: str
+    provider_id: str
+
+
+class UpsertUserPreferenceRequest(BaseModel):
+    purpose: Purpose
+    model_id: str
+    provider_id: str
+
+
+def _serialize_tenant_default(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "purpose": row.purpose,
+        "model_id": row.model_id,
+        "provider_id": row.provider_id,
+        "created_by": row.created_by,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _serialize_user_preference(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "tenant_id": row.tenant_id,
+        "user_id": row.user_id,
+        "purpose": row.purpose,
+        "model_id": row.model_id,
+        "provider_id": row.provider_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+# --- Tenant Defaults (admin-scoped) ---
+
+
+@router.get("/tenant-defaults", tags=["llm-gateway"])
+async def list_tenant_defaults(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    rows = await svc.list_tenant_defaults(session, tenant_id=ctx.tenant_id)
+    return {"items": [_serialize_tenant_default(r) for r in rows]}
+
+
+@router.put("/tenant-defaults", tags=["llm-gateway"])
+async def upsert_tenant_default(
+    body: UpsertTenantDefaultRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    # Only privileged actors (admin operators or trusted services) may write
+    # tenant-wide defaults. The actor is parsed from the X-Actor header by the
+    # auth middleware; downstream BFF sends `X-Actor: ADMIN` for admin operations.
+    if ctx.actor not in {"ADMIN", "SERVICE"}:
+        raise FoundationError(
+            PERMISSION_DENIED,
+            detail="Writing tenant defaults requires an ADMIN or SERVICE actor.",
+        )
+    row = await svc.upsert_tenant_default(
+        session,
+        tenant_id=ctx.tenant_id,
+        purpose=body.purpose,
+        model_id=body.model_id,
+        provider_id=body.provider_id,
+        created_by=ctx.user_id,
+    )
+    return _serialize_tenant_default(row)
+
+
+@router.get("/tenant-defaults/resolve", tags=["llm-gateway"])
+async def resolve_tenant_default(
+    purpose: Purpose,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    result = await svc.resolve_default(
+        session, tenant_id=ctx.tenant_id, user_id=None, purpose=purpose,
+    )
+    if result is None:
+        raise FoundationError(PROVIDER_NOT_FOUND,
+            detail=f"No default model available for purpose={purpose!r}")
+    return result
+
+
+# --- User Preferences ---
+
+
+@router.get("/user-preferences", tags=["llm-gateway"])
+async def list_user_preferences(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    if not ctx.user_id:
+        raise FoundationError(VALIDATION_FAILED, detail="user_id required for user preferences")
+    rows = await svc.list_user_preferences(session, tenant_id=ctx.tenant_id, user_id=ctx.user_id)
+    return {"items": [_serialize_user_preference(r) for r in rows]}
+
+
+@router.put("/user-preferences", tags=["llm-gateway"])
+async def upsert_user_preference(
+    body: UpsertUserPreferenceRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    if not ctx.user_id:
+        raise FoundationError(VALIDATION_FAILED, detail="user_id required for user preferences")
+    row = await svc.upsert_user_preference(
+        session,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        purpose=body.purpose,
+        model_id=body.model_id,
+        provider_id=body.provider_id,
+    )
+    return _serialize_user_preference(row)
+
+
+@router.delete("/user-preferences/{purpose}", tags=["llm-gateway"])
+async def delete_user_preference(
+    purpose: Purpose,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    if not ctx.user_id:
+        raise FoundationError(VALIDATION_FAILED, detail="user_id required for user preferences")
+    deleted = await svc.delete_user_preference(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id, purpose=purpose,
+    )
+    return {"deleted": deleted}
+
+
+@router.get("/user-preferences/resolve", tags=["llm-gateway"])
+async def resolve_user_preference(
+    purpose: Purpose,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    result = await svc.resolve_default(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id, purpose=purpose,
+    )
+    if result is None:
+        raise FoundationError(PROVIDER_NOT_FOUND,
+            detail=f"No default model available for purpose={purpose!r}")
+    return result

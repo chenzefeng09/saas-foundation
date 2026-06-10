@@ -6,7 +6,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from foundation_search.config import get_settings
@@ -46,6 +46,13 @@ def run_migrations_offline() -> None:
 
 
 def _do_migrations(connection):  # type: ignore[no-untyped-def]
+    # alembic_version lives in the service schema (version_table_schema below),
+    # so the schema must exist before run_migrations on DBs whose init SQL
+    # predates this service.
+    connection.execute(text("CREATE SCHEMA IF NOT EXISTS search"))
+    # Commit now: SQLAlchemy autobegin would otherwise leave an open transaction,
+    # making alembic skip its own commit and the whole upgrade roll back on close.
+    connection.commit()
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
