@@ -23,11 +23,13 @@ from typing import Any
 
 import httpx
 import ulid
-from sqlalchemy import select
+from sqlalchemy import func as sa_func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_llm_gateway.domain.models import (
     LLMProvider, LLMTenantKey, LLMUsageRecord, Outbox,
+    LLMTenantDefaultModel, LLMUserModelPreference,
 )
 from foundation_llm_gateway.observability import get_logger
 
@@ -230,6 +232,13 @@ class ProviderKind(str, Enum):
     OLLAMA = "ollama"
     BEDROCK = "bedrock"
     AZURE = "azure"
+    ZHIPU = "zhipu"
+    DEEPSEEK = "deepseek"
+    MOONSHOT = "moonshot"
+    MINIMAX = "minimax"
+    ALIYUN = "aliyun"
+    BAIDU = "baidu"
+    TENCENT = "tencent"
 
 
 REQUIRED_CAPABILITIES = {
@@ -286,6 +295,57 @@ class LLMGatewayService:
                    {"provider": name, "models": models}, request_id)
         await session.flush()
         return provider
+
+    async def update_provider(
+        self, session: AsyncSession, *, provider_id: str, tenant_id: str,
+        enabled: bool | None = None, name: str | None = None,
+        models: list[str] | None = None, default_model: str | None = None,
+        capabilities: dict[str, Any] | None = None,
+        request_id: str,
+    ) -> LLMProvider:
+        """Update mutable fields of an existing provider."""
+        provider = await session.scalar(
+            select(LLMProvider).where(
+                LLMProvider.id == provider_id,
+                LLMProvider.tenant_id == tenant_id,
+            ).limit(1)
+        )
+        if provider is None:
+            from foundation_llm_gateway.errors import PROVIDER_NOT_FOUND, FoundationError
+            raise FoundationError(PROVIDER_NOT_FOUND, detail=f"Provider {provider_id!r} not found")
+        if enabled is not None:
+            provider.enabled = enabled
+        if name is not None:
+            provider.name = name
+        if models is not None:
+            provider.models = models
+        if default_model is not None:
+            provider.default_model = default_model
+        if capabilities is not None:
+            provider.capabilities = capabilities
+        self._emit(session, tenant_id, "foundation.llm_gateway.provider.updated",
+                   {"provider": provider.name, "provider_id": provider_id}, request_id)
+        await session.flush()
+        return provider
+
+    async def delete_provider(
+        self, session: AsyncSession, *, provider_id: str, tenant_id: str,
+        request_id: str,
+    ) -> None:
+        """Hard-delete a provider."""
+        provider = await session.scalar(
+            select(LLMProvider).where(
+                LLMProvider.id == provider_id,
+                LLMProvider.tenant_id == tenant_id,
+            ).limit(1)
+        )
+        if provider is None:
+            from foundation_llm_gateway.errors import PROVIDER_NOT_FOUND, FoundationError
+            raise FoundationError(PROVIDER_NOT_FOUND, detail=f"Provider {provider_id!r} not found")
+        self._emit(session, tenant_id, "foundation.llm_gateway.provider.deleted",
+                   {"provider": provider.name, "provider_id": provider_id}, request_id)
+        await session.delete(provider)
+        await session.flush()
 
     # ------------------------------------------------------------------ Virtual Key → Provider
 
@@ -378,6 +438,7 @@ class LLMGatewayService:
                     # Pick the first real model id for subsequent chat calls
                     if model_list:
                         model_id = model_list[0].get("id", model_id)
+                        results["model_list"] = [m.get("id") for m in model_list if m.get("id")]
 
                     # --- context_window probe ---
                     # Many OpenAI-compatible providers embed context_length or
@@ -535,6 +596,249 @@ class LLMGatewayService:
             "total_tokens": sum(int(r.tokens or 0) for r in rows),
             "total_cost_usd": sum(float(r.cost or 0) for r in rows),
         }
+
+    # -------------------------------------------------------- Default Model Resolution
+
+    async def resolve_default(
+        self, session: AsyncSession, *,
+        tenant_id: str, user_id: str | None, purpose: str,
+    ) -> dict | None:
+        """Resolve effective default model for a given purpose.
+
+        Fallback chain:
+        1. user_model_preference (if user_id provided)
+        2. tenant_default_model
+        3. system fallback (first enabled provider's first model for the purpose)
+
+        Returns: {"model_id": str, "provider_id": str, "source": "user"|"tenant"|"system"} or None
+        """
+        # --- 1. User preference ---
+        if user_id:
+            user_pref = await session.scalar(
+                select(LLMUserModelPreference).where(
+                    LLMUserModelPreference.tenant_id == tenant_id,
+                    LLMUserModelPreference.user_id == user_id,
+                    LLMUserModelPreference.purpose == purpose,
+                ).limit(1)
+            )
+            if user_pref:
+                if await self._validate_provider_model(session, tenant_id, user_pref.provider_id, user_pref.model_id):
+                    return {"model_id": user_pref.model_id, "provider_id": user_pref.provider_id, "source": "user"}
+                log.info("resolve_default.user_pref_stale",
+                         tenant_id=tenant_id, user_id=user_id, purpose=purpose,
+                         note="provider/model no longer valid; falling through")
+
+        # --- 2. Tenant default ---
+        tenant_default = await session.scalar(
+            select(LLMTenantDefaultModel).where(
+                LLMTenantDefaultModel.tenant_id == tenant_id,
+                LLMTenantDefaultModel.purpose == purpose,
+            ).limit(1)
+        )
+        if tenant_default:
+            if await self._validate_provider_model(session, tenant_id, tenant_default.provider_id, tenant_default.model_id):
+                return {"model_id": tenant_default.model_id, "provider_id": tenant_default.provider_id, "source": "tenant"}
+            log.info("resolve_default.tenant_default_stale",
+                     tenant_id=tenant_id, purpose=purpose,
+                     note="provider/model no longer valid; falling through to system")
+
+        # --- 3. System fallback: first enabled provider that has a model for this purpose ---
+        providers = list((await session.scalars(
+            select(LLMProvider).where(
+                LLMProvider.tenant_id == tenant_id,
+                LLMProvider.enabled.is_(True),
+            ).order_by(LLMProvider.created_at)
+        )).all())
+
+        for provider in providers:
+            model_type_map = (provider.capabilities or {}).get("model_type_map", {})
+            candidate_models = model_type_map.get(purpose) or []
+            # Also try "text_<purpose>" key for backward compat (e.g. "text_embedding")
+            if not candidate_models:
+                candidate_models = model_type_map.get(f"text_{purpose}") or []
+            # Filter to models actually in the provider's models list
+            provider_models = provider.models or []
+            valid = [m for m in candidate_models if m in provider_models]
+            if valid:
+                return {"model_id": valid[0], "provider_id": provider.id, "source": "system"}
+            # For purpose "llm" we never fall back to an arbitrary provider model
+            # (it could be an embedding/rerank/etc model). Only pick from the
+            # provider's declared "llm" model list; if it has none, skip this provider.
+            if purpose == "llm":
+                llm_models = model_type_map.get("llm") or []
+                llm_valid = [m for m in llm_models if not provider_models or m in provider_models]
+                if llm_valid:
+                    return {"model_id": llm_valid[0], "provider_id": provider.id, "source": "system"}
+
+        return None
+
+    @staticmethod
+    def _provider_known_models(provider: LLMProvider) -> set[str]:
+        """Collect every model_id a provider declares.
+
+        Union of the top-level ``models`` list and every per-type list inside
+        ``capabilities.model_type_map`` (e.g. {"llm": [...], "text_embedding": [...]}).
+        """
+        known: set[str] = set(provider.models or [])
+        model_type_map = (provider.capabilities or {}).get("model_type_map", {}) or {}
+        for models in model_type_map.values():
+            if isinstance(models, list):
+                known.update(models)
+        return known
+
+    async def _validate_provider_model(
+        self, session: AsyncSession, tenant_id: str, provider_id: str, model_id: str,
+    ) -> bool:
+        """Return True if provider is enabled and model_id is one of its declared models.
+
+        A model is valid only if it appears in the provider's known model set
+        (top-level ``models`` ∪ ``capabilities.model_type_map`` lists). If the
+        provider declares no models at all, no model_id is valid.
+        """
+        provider = await session.scalar(
+            select(LLMProvider).where(
+                LLMProvider.id == provider_id,
+                LLMProvider.tenant_id == tenant_id,
+            ).limit(1)
+        )
+        if provider is None or not provider.enabled:
+            return False
+        return model_id in self._provider_known_models(provider)
+
+    async def _validate_write_target(
+        self, session: AsyncSession, *,
+        tenant_id: str, provider_id: str, model_id: str,
+    ) -> None:
+        """Validate a default/preference write target.
+
+        The provider must belong to this tenant, be enabled, and the model_id
+        must be one of the provider's declared models. Raises VALIDATION_FAILED
+        otherwise (API layer maps this to 422).
+        """
+        from foundation_llm_gateway.errors import VALIDATION_FAILED, FoundationError
+        if not await self._validate_provider_model(session, tenant_id, provider_id, model_id):
+            raise FoundationError(
+                VALIDATION_FAILED,
+                detail=(
+                    f"provider_id={provider_id!r} / model_id={model_id!r} is not a "
+                    "valid enabled provider+model for this tenant."
+                ),
+            )
+
+    async def upsert_tenant_default(
+        self, session: AsyncSession, *,
+        tenant_id: str, purpose: str, model_id: str,
+        provider_id: str, created_by: str | None = None,
+    ) -> LLMTenantDefaultModel:
+        """Upsert one tenant default (concurrency-safe via ON CONFLICT)."""
+        await self._validate_write_target(
+            session, tenant_id=tenant_id, provider_id=provider_id, model_id=model_id,
+        )
+        set_on_update: dict[str, Any] = {
+            "model_id": model_id,
+            "provider_id": provider_id,
+            "updated_at": sa_func.now(),
+        }
+        if created_by is not None:
+            set_on_update["created_by"] = created_by
+        stmt = (
+            pg_insert(LLMTenantDefaultModel)
+            .values(
+                id=f"ttdm_{ulid.new()!s}",
+                tenant_id=tenant_id,
+                purpose=purpose,
+                model_id=model_id,
+                provider_id=provider_id,
+                created_by=created_by,
+            )
+            .on_conflict_do_update(
+                constraint="uq_tenant_default_purpose",
+                set_=set_on_update,
+            )
+            .returning(LLMTenantDefaultModel)
+        )
+        row = (
+            await session.scalars(stmt, execution_options={"populate_existing": True})
+        ).one()
+        await session.flush()
+        return row
+
+    async def list_tenant_defaults(
+        self, session: AsyncSession, *, tenant_id: str,
+    ) -> list[LLMTenantDefaultModel]:
+        """List all tenant defaults."""
+        rows = list((await session.scalars(
+            select(LLMTenantDefaultModel).where(
+                LLMTenantDefaultModel.tenant_id == tenant_id,
+            ).order_by(LLMTenantDefaultModel.purpose)
+        )).all())
+        return rows
+
+    async def upsert_user_preference(
+        self, session: AsyncSession, *,
+        tenant_id: str, user_id: str, purpose: str,
+        model_id: str, provider_id: str,
+    ) -> LLMUserModelPreference:
+        """Upsert one user preference (concurrency-safe via ON CONFLICT)."""
+        await self._validate_write_target(
+            session, tenant_id=tenant_id, provider_id=provider_id, model_id=model_id,
+        )
+        stmt = (
+            pg_insert(LLMUserModelPreference)
+            .values(
+                id=f"ump_{ulid.new()!s}",
+                tenant_id=tenant_id,
+                user_id=user_id,
+                purpose=purpose,
+                model_id=model_id,
+                provider_id=provider_id,
+            )
+            .on_conflict_do_update(
+                constraint="uq_user_pref_purpose",
+                set_={
+                    "model_id": model_id,
+                    "provider_id": provider_id,
+                    "updated_at": sa_func.now(),
+                },
+            )
+            .returning(LLMUserModelPreference)
+        )
+        row = (
+            await session.scalars(stmt, execution_options={"populate_existing": True})
+        ).one()
+        await session.flush()
+        return row
+
+    async def list_user_preferences(
+        self, session: AsyncSession, *,
+        tenant_id: str, user_id: str,
+    ) -> list[LLMUserModelPreference]:
+        """List all preferences for a user."""
+        rows = list((await session.scalars(
+            select(LLMUserModelPreference).where(
+                LLMUserModelPreference.tenant_id == tenant_id,
+                LLMUserModelPreference.user_id == user_id,
+            ).order_by(LLMUserModelPreference.purpose)
+        )).all())
+        return rows
+
+    async def delete_user_preference(
+        self, session: AsyncSession, *,
+        tenant_id: str, user_id: str, purpose: str,
+    ) -> bool:
+        """Delete a user preference, returning True if deleted."""
+        existing = await session.scalar(
+            select(LLMUserModelPreference).where(
+                LLMUserModelPreference.tenant_id == tenant_id,
+                LLMUserModelPreference.user_id == user_id,
+                LLMUserModelPreference.purpose == purpose,
+            ).limit(1)
+        )
+        if existing is None:
+            return False
+        await session.delete(existing)
+        await session.flush()
+        return True
 
     def _emit(self, session, tenant_id, event_type, payload, request_id):
         session.add(Outbox(tenant_id=tenant_id, event_type=event_type,

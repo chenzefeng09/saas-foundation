@@ -1269,6 +1269,9 @@ services:
       context: ../../packages/llm-gateway
       dockerfile: Dockerfile
     container_name: foundation-llm-gateway
+    volumes:
+      - ../../packages/llm-gateway/src/foundation_llm_gateway:/app/src/foundation_llm_gateway:ro
+
     restart: unless-stopped
     depends_on:
       postgres:
