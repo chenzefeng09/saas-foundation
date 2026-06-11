@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from pydantic.types import StringConstraints
 
 # Loose email pattern that allows special-use TLDs like .local (used in dev)
@@ -37,24 +37,46 @@ class EmailPasswordCredential(BaseModel):
         return v.lower()
 
 
-class OidcCredential(BaseModel):
+class SsoTokenCredential(BaseModel):
+    """Exchange an already-obtained SSO/OIDC access token for a foundation session.
+
+    The caller (BFF) completes the broker / OIDC code exchange out-of-band and
+    presents the resulting ``access_token`` plus the foundation ``provider_id``
+    that issued it.  Identity verifies the token, resolves the target tenant via
+    routing rules, and JIT-provisions the user.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    method: Literal["OIDC"]
-    provider: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+    method: Literal["SSO_TOKEN"]
+    access_token: str | None = None
+    provider_id: str | None = None
+    device_id: str | None = None
+
+
+class SsoCodeCredential(BaseModel):
+    """Redeem an OIDC authorization ``code`` for a foundation session.
+
+    Server-side leg of the browser SSO login flow: after Keycloak redirects the
+    browser back with ``?code=…&state=…``, the BFF posts the ``code`` plus the
+    original ``redirect_uri`` and the foundation ``provider_id`` here.  Identity
+    exchanges the code at the realm token endpoint (authorization_code grant),
+    then verifies the resulting access token, resolves the tenant via routing
+    rules, and JIT-provisions the user — the same path as ``SSO_TOKEN``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["SSO_CODE"]
     code: str
     redirect_uri: str
+    provider_id: str
+    device_id: str | None = None
 
 
-class SamlCredential(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    method: Literal["SAML"]
-    provider: str
-    saml_response: str
-
-
-CreateSessionRequest = EmailPasswordCredential | OidcCredential | SamlCredential
+CreateSessionRequest = (
+    EmailPasswordCredential | SsoTokenCredential | SsoCodeCredential
+)
 
 
 class SessionRead(BaseModel):

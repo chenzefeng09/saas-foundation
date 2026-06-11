@@ -103,8 +103,13 @@ def upgrade() -> None:
             parent_path  LTREE;
             parent_depth SMALLINT;
         BEGIN
+            -- ltree labels only allow [A-Za-z0-9_]; org-unit `code` may contain
+            -- hyphens (see OU_CODE_PATTERN), and sqlalchemy_utils.Ltree rejects
+            -- '-' on read-back. Sanitize '-' -> '_' for the path label. The
+            -- human-readable value lives in the `code` column; `path` is just
+            -- an internal hierarchy index.
             IF NEW.parent_id IS NULL THEN
-                NEW.path  := text2ltree(NEW.tenant_id || '.' || NEW.code);
+                NEW.path  := text2ltree(replace(NEW.tenant_id, '-', '_') || '.' || replace(NEW.code, '-', '_'));
                 NEW.depth := 0;
             ELSE
                 SELECT path, depth INTO parent_path, parent_depth
@@ -112,7 +117,7 @@ def upgrade() -> None:
                 IF parent_path IS NULL THEN
                     RAISE EXCEPTION 'Parent % not found', NEW.parent_id;
                 END IF;
-                NEW.path  := parent_path || text2ltree(NEW.code);
+                NEW.path  := parent_path || text2ltree(replace(NEW.code, '-', '_'));
                 NEW.depth := parent_depth + 1;
             END IF;
             RETURN NEW;

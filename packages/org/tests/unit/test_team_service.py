@@ -12,6 +12,7 @@ from foundation_org.errors import (
     ORG_UNIT_ARCHIVED,
     ORG_UNIT_NOT_FOUND,
     TEAM_CODE_CONFLICT,
+    TEAM_NOT_EMPTY,
     TEAM_NOT_FOUND,
     FoundationError,
 )
@@ -282,4 +283,5 @@ class TestDelete:
                 fake_session, tenant_id=tenant_id, request_id=request_id,
                 actor_id=actor_id, team_id=team.id,
             )
-        assert exc.value.error_code is TEAM_CODE_CONFLICT
+        assert exc.value.error_code is TEAM_NOT_EMPTY
+        assert exc.value.extra["reason"] == "has_members"

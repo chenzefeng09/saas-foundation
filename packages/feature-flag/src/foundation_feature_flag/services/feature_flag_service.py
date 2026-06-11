@@ -119,18 +119,18 @@ class FeatureFlagService:
 
     def load_presets(self) -> None:
         """Load standard foundation feature flags with structured metadata."""
-        presets: list[tuple[str, bool, str, bool]] = [
-            # (key, default_value, description, fail_open)
-            ("billing.saas_mode", False, "Enable Stripe-based SaaS billing", False),
-            ("auth.social_login.google", False, "Enable Google social login", False),
-            ("auth.social_login.github", False, "Enable GitHub social login", False),
-            ("auth.social_login.wechat", False, "Enable WeChat social login", False),
-            ("compliance.gmtls_enabled", False, "Enable 国密 TLS (GMTLS)", False),
-            ("compliance.sm_algorithms", False, "Enable SM2/SM3/SM4 algorithms", False),
-            ("export.allow_l4_download", False, "Allow L4 classified data download", False),
-            ("ai.thinking_ui", True, "Show AI thinking/reasoning UI", True),
+        presets: list[tuple[str, bool, str, bool, bool]] = [
+            # (key, default_value, description, fail_open, user_overridable)
+            ("billing.saas_mode", False, "Enable Stripe-based SaaS billing", False, False),
+            ("auth.social_login.google", False, "Enable Google social login", False, False),
+            ("auth.social_login.github", False, "Enable GitHub social login", False, False),
+            ("auth.social_login.wechat", False, "Enable WeChat social login", False, False),
+            ("compliance.gmtls_enabled", False, "Enable 国密 TLS (GMTLS)", False, False),
+            ("compliance.sm_algorithms", False, "Enable SM2/SM3/SM4 algorithms", False, False),
+            ("export.allow_l4_download", False, "Allow L4 classified data download", False, False),
+            ("ai.thinking_ui", True, "Show AI thinking/reasoning UI", True, True),
         ]
-        for key, default, desc, fail_open in presets:
+        for key, default, desc, fail_open, user_overridable in presets:
             # Register in gateway for fallback defaults
             self._gateway.register_preset(
                 FlagPreset(
@@ -139,6 +139,7 @@ class FeatureFlagService:
                     description=desc,
                     default_value=default,
                     fail_open=fail_open,
+                    user_overridable=user_overridable,
                 )
             )
             # Keep in local dict so list_flags / existing tests work

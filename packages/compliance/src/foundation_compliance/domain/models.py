@@ -9,7 +9,7 @@ from foundation_compliance.domain.base import Base
 class ROPARecord(Base):
     __tablename__ = "ropa_record"
     __table_args__ = (Index("ropa_tenant_idx", "tenant_id"), {"schema": "compliance"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # ULID-prefixed (5-char prefix + 26 = 31)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     service: Mapped[str] = mapped_column(String(50), nullable=False)
     data_category: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -25,7 +25,7 @@ class ROPARecord(Base):
 class DPIA(Base):
     __tablename__ = "dpia"
     __table_args__ = ({"schema": "compliance"},)
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # ULID-prefixed (5-char prefix + 26 = 31)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     project_name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -42,7 +42,7 @@ class DPIA(Base):
 class DSARRequest(Base):
     __tablename__ = "dsar_request"
     __table_args__ = (Index("dsar_tenant_user_idx", "tenant_id", "user_id"), {"schema": "compliance"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # ULID-prefixed (5-char prefix + 26 = 31)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[str] = mapped_column(String(30), nullable=False)
     request_type: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -56,7 +56,7 @@ class DSARRequest(Base):
 class ComplianceReport(Base):
     __tablename__ = "compliance_report"
     __table_args__ = ({"schema": "compliance"},)
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # ULID-prefixed (5-char prefix + 26 = 31)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     report_type: Mapped[str] = mapped_column(String(50), nullable=False)
     compliance_modes: Mapped[list[str] | None] = mapped_column(ARRAY(String))

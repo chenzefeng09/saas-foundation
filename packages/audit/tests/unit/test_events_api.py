@@ -270,6 +270,168 @@ class TestQueryEventsCrossTenant:
 
 
 # ---------------------------------------------------------------------------
+# Tests for exportEvents — CSV/JSON + CROSS-TENANT check
+# ---------------------------------------------------------------------------
+
+def _make_export_row(event_id: str, tenant_id: str, **overrides: Any) -> dict[str, Any]:
+    row = {
+        "event_id": event_id,
+        "occurred_at": datetime(2026, 1, 1, 12, 0, tzinfo=None),
+        "ingested_at": datetime(2026, 1, 1, 12, 1, tzinfo=None),
+        "tenant_id": tenant_id,
+        "service": "identity",
+        "event_type": "user.login",
+        "severity": "INFO",
+        "outcome": "SUCCESS",
+        "actor_kind": "USER",
+        "actor_user_id": "usr_01J0",
+        "resource_type": "user",
+        "resource_id": "usr_01J0",
+        "request_id": "req_01J0",
+        "session_id": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class TestExportEventsCrossTenant:
+    def test_rejects_wrong_tenant_id(self) -> None:
+        from foundation_audit.api.v1.events import export_events
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context(tenant_id="tnt_01J0000000000000000000TNT1")
+        q = AuditQuery(tenant_id="tnt_EVIL00000000000000000000001")
+
+        async def _run() -> None:
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc_info:
+                await export_events(query=q, fmt="csv", ctx=ctx)
+            assert exc_info.value.status_code == 403
+
+        asyncio.run(_run())
+
+
+class TestExportEventsCsv:
+    def test_csv_export_headers_and_body(self) -> None:
+        from foundation_audit.api.v1.events import export_events, EXPORT_COLUMNS
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context()
+        q = AuditQuery(tenant_id=ctx.tenant_id)
+        rows = [_make_export_row(f"evt_01J000000000000000000000{i:02d}", ctx.tenant_id) for i in range(3)]
+
+        async def _run() -> None:
+            with patch("foundation_audit.api.v1.events.ch.query_events", new_callable=AsyncMock, return_value=rows):
+                resp = await export_events(query=q, fmt="csv", ctx=ctx)
+            assert resp.status_code == 200
+            assert resp.media_type == "text/csv"
+            cd = resp.headers["content-disposition"]
+            assert cd == f'attachment; filename="audit-export-{ctx.tenant_id}.csv"'
+            # All bytes are ASCII (no latin-1 crash risk).
+            body = resp.body.decode("utf-8")
+            body.encode("latin-1")  # would raise if non-latin-1
+            lines = body.strip().splitlines()
+            assert lines[0] == ",".join(EXPORT_COLUMNS)
+            assert len(lines) == 1 + 3  # header + 3 rows
+            assert "evt_01J00000000000000000000000" in body
+
+        asyncio.run(_run())
+
+    def test_csv_export_empty(self) -> None:
+        from foundation_audit.api.v1.events import export_events, EXPORT_COLUMNS
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context()
+        q = AuditQuery(tenant_id=ctx.tenant_id)
+
+        async def _run() -> None:
+            with patch("foundation_audit.api.v1.events.ch.query_events", new_callable=AsyncMock, return_value=[]):
+                resp = await export_events(query=q, fmt="csv", ctx=ctx)
+            assert resp.status_code == 200
+            lines = resp.body.decode("utf-8").strip().splitlines()
+            assert lines == [",".join(EXPORT_COLUMNS)]  # header only
+
+        asyncio.run(_run())
+
+
+class TestExportEventsJson:
+    def test_json_export(self) -> None:
+        from foundation_audit.api.v1.events import export_events
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context()
+        q = AuditQuery(tenant_id=ctx.tenant_id)
+        rows = [_make_export_row("evt_01J00000000000000000000001", ctx.tenant_id)]
+
+        async def _run() -> None:
+            with patch("foundation_audit.api.v1.events.ch.query_events", new_callable=AsyncMock, return_value=rows):
+                resp = await export_events(query=q, fmt="json", ctx=ctx)
+            assert resp.status_code == 200
+            assert resp.media_type == "application/json"
+            assert resp.headers["content-disposition"] == f'attachment; filename="audit-export-{ctx.tenant_id}.json"'
+            data = json.loads(resp.body)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["event_id"] == "evt_01J00000000000000000000001"
+            assert data[0]["service"] == "identity"
+            # datetimes serialized to ISO strings
+            assert data[0]["occurred_at"] == "2026-01-01T12:00:00"
+
+        asyncio.run(_run())
+
+
+class TestExportEventsPagination:
+    def test_cursor_loop_aggregates_pages(self) -> None:
+        """When a full page is returned, the loop fetches again using the cursor."""
+        from foundation_audit.api.v1.events import export_events, EXPORT_PAGE_SIZE
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context()
+        q = AuditQuery(tenant_id=ctx.tenant_id)
+
+        # First call returns a full page (EXPORT_PAGE_SIZE rows) → loop continues;
+        # second call returns a short page → loop stops.
+        page1 = [_make_export_row(f"evt_{i:026d}", ctx.tenant_id) for i in range(EXPORT_PAGE_SIZE)]
+        page2 = [_make_export_row("evt_FINAL00000000000000000001", ctx.tenant_id)]
+        mock = AsyncMock(side_effect=[page1, page2])
+
+        async def _run() -> None:
+            with patch("foundation_audit.api.v1.events.ch.query_events", mock):
+                resp = await export_events(query=q, fmt="csv", ctx=ctx)
+            # header + page1 + page2 rows
+            lines = resp.body.decode("utf-8").strip().splitlines()
+            assert len(lines) == 1 + EXPORT_PAGE_SIZE + 1
+            # Second call used the cursor = last event_id of page1
+            assert mock.call_count == 2
+            second_kwargs = mock.call_args_list[1].kwargs
+            assert second_kwargs["cursor"] == page1[-1]["event_id"]
+
+        asyncio.run(_run())
+
+    def test_ch_503_on_exception(self) -> None:
+        from foundation_audit.api.v1.events import export_events
+        from foundation_audit.schemas.event import AuditQuery
+        import asyncio
+
+        ctx = _make_context()
+        q = AuditQuery(tenant_id=ctx.tenant_id)
+
+        async def _run() -> None:
+            from fastapi import HTTPException
+            with patch("foundation_audit.api.v1.events.ch.query_events", side_effect=Exception("CH down")):
+                with pytest.raises(HTTPException) as exc_info:
+                    await export_events(query=q, fmt="csv", ctx=ctx)
+            assert exc_info.value.status_code == 503
+
+        asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Tests for worm helper
 # ---------------------------------------------------------------------------
 

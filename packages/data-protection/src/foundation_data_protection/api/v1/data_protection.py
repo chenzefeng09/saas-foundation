@@ -102,6 +102,95 @@ async def get_destruction_status(
     return {"id": req.id, "status": req.status, "resource_ids": req.resource_ids}
 
 
+@router.post("/destruction/{request_id}/approve", tags=["data-protection"])
+async def approve_destruction(
+    request_id: str,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: DataProtectionService = Depends(data_protection_service),
+) -> dict[str, Any]:
+    """Four-eyes approval of a pending destruction request.
+
+    The approver (from the tenant context) must differ from the requester.
+    """
+    req = await svc.approve_destruction(
+        session, tenant_id=ctx.tenant_id,
+        request_id=request_id,
+        approved_by=ctx.user_id or "",
+    )
+    return {
+        "id": req.id,
+        "status": req.status,
+        "approved_by": req.approved_by,
+        "approved_at": req.approved_at.isoformat() if req.approved_at else None,
+    }
+
+
+# ---------- Consent ----------
+
+class RecordConsentRequest(BaseModel):
+    user_id: str
+    consent_type: str
+    purpose: str
+    granted: bool
+    ip_address: str | None = None
+
+
+@router.post("/consent", status_code=201, tags=["data-protection"])
+async def record_consent(
+    body: RecordConsentRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: DataProtectionService = Depends(data_protection_service),
+    request_id: str = Depends(current_request_id),
+) -> dict[str, Any]:
+    record = await svc.record_consent(
+        session, tenant_id=ctx.tenant_id,
+        user_id=body.user_id,
+        consent_type=body.consent_type,
+        purpose=body.purpose,
+        granted=body.granted,
+        ip_address=body.ip_address,
+        request_id=request_id,
+    )
+    return {
+        "id": record.id,
+        "user_id": record.user_id,
+        "consent_type": record.consent_type,
+        "granted": record.granted,
+        "recorded_at": record.recorded_at.isoformat() if record.recorded_at else None,
+    }
+
+
+@router.get("/consent", tags=["data-protection"])
+async def list_consent(
+    user_id: str | None = None,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+) -> dict[str, Any]:
+    """List consent records for the current tenant, optionally filtered by user."""
+    from sqlalchemy import select
+    from foundation_data_protection.domain.models import ConsentRecord
+    stmt = select(ConsentRecord).where(ConsentRecord.tenant_id == ctx.tenant_id)
+    if user_id:
+        stmt = stmt.where(ConsentRecord.user_id == user_id)
+    stmt = stmt.order_by(ConsentRecord.recorded_at.desc())
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "consent_type": r.consent_type,
+                "purpose": r.purpose,
+                "granted": r.granted,
+                "recorded_at": r.recorded_at.isoformat() if r.recorded_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 # ---------- Cross-Border ----------
 
 class CrossBorderCheckRequest(BaseModel):

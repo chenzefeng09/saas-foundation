@@ -115,6 +115,43 @@ paths:
               schema: { $ref: '#/components/schemas/Subscription' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
+  /subscriptions/change-plan:
+    post:
+      tags: [subscriptions]
+      summary: 变更当前租户活跃订阅的套餐（租户来自 X-Tenant-Id 上下文）
+      operationId: changeCurrentPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [new_plan_id]
+              properties:
+                new_plan_id: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /subscriptions/cancel:
+    post:
+      tags: [subscriptions]
+      summary: 取消当前租户的活跃订阅（status → CANCELED，租户来自上下文）
+      operationId: cancelCurrentSubscription
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Subscription' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
   /subscriptions/{sub_id}:
     parameters:
       - name: sub_id

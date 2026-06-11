@@ -100,6 +100,19 @@ ACCOUNT_FROZEN: Final = _ec(
     "Account is frozen by administrator.",
     "账号已被管理员冻结。",
 )
+LOGIN_DENIED_RISK: Final = _ec(
+    "AUTH", "LOGIN_DENIED_RISK", 401,
+    "Login denied — anomalous activity",
+    "Login refused due to a high anomalous-activity score; please verify your identity through another channel.",
+    "检测到异常登录行为，已拒绝本次登录，请通过其他途径验证身份。",
+)
+REFRESH_TOKEN_REUSED: Final = _ec(
+    "AUTH", "REFRESH_TOKEN_REUSED", 401,
+    "Refresh token reuse detected",
+    "A rotated refresh token was presented again — all sessions for this user "
+    "have been revoked as a precaution.",
+    "检测到登录凭证异常复用，出于安全考虑已注销全部会话，请重新登录。",
+)
 
 # --- POLICY (403) ---
 PERMISSION_DENIED: Final = _ec(
@@ -139,6 +152,12 @@ PASSWORD_REUSED: Final = _ec(
     "Password reused",
     "Password has been used recently; please choose a different one.",
     "新密码与最近使用过的密码相同，请重新选择。",
+)
+PASSWORD_BREACHED: Final = _ec(
+    "INPUT", "PASSWORD_BREACHED", 422,
+    "Password found in breach corpus",
+    "This password appears in known data-breach corpora; please choose a different one.",
+    "该密码已在公开泄漏库中出现，请更换一个未泄漏的密码。",
 )
 
 # --- RESOURCE (404 / 409) ---
@@ -195,6 +214,13 @@ KEYCLOAK_ERROR: Final = _ec(
     "Keycloak error",
     "Identity provider returned an unexpected error.",
     "身份服务返回异常。",
+)
+REDIS_UNAVAILABLE: Final = _ec(
+    "DEPENDENCY", "REDIS_UNAVAILABLE", 503,
+    "Cache unavailable",
+    "Session cache is currently unreachable; the operation was refused to "
+    "preserve security guarantees.",
+    "会话缓存暂时不可用，请稍后重试。",
 )
 
 # --- SERVICE-ACCOUNT TOKEN (400 / 403) ---

@@ -107,6 +107,12 @@ TEAM_CODE_CONFLICT: Final = _ec(
     "A team with this code already exists in this org-unit.",
     "同部门下已存在相同团队编码。",
 )
+ORG_UNIT_NAME_DUPLICATE: Final = _ec(
+    "RESOURCE", "ORG_UNIT_NAME_DUPLICATE", 409,
+    "Org-unit name duplicate",
+    "An org-unit with this name already exists under the same parent.",
+    "同级部门下已存在相同名称。",
+)
 
 
 # --- STATE (409 / 422) ---
@@ -115,6 +121,12 @@ ORG_UNIT_NOT_EMPTY: Final = _ec(
     "Org unit is not empty",
     "Cannot archive or delete an org-unit that still has descendants, teams, or members.",
     "该部门下仍有子部门 / 团队 / 成员，无法归档或删除。",
+)
+TEAM_NOT_EMPTY: Final = _ec(
+    "STATE", "TEAM_NOT_EMPTY", 409,
+    "Team is not empty",
+    "Cannot delete a team that still has active members.",
+    "团队仍有活跃成员，请先移除成员后再删除。",
 )
 ORG_UNIT_ARCHIVED: Final = _ec(
     "STATE", "ORG_UNIT_ARCHIVED", 409,

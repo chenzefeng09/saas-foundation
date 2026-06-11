@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
 from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
-from foundation_identity.api.dependencies import audit, db_session, keycloak
+from foundation_identity.api.dependencies import audit, db_session, keycloak, redis_cache
 from foundation_identity.api.v1.sessions import _oidc_adapter
 from foundation_identity.main import create_app
 
@@ -83,17 +83,36 @@ class _ScalarResult:
         return self._rows
 
 
+class _ExecuteResult:
+    """Stand-in for SQLAlchemy Result with a settable scalar_one_or_none."""
+
+    def __init__(self, scalar: Any = None, rows: list[Any] | None = None) -> None:
+        self._scalar = scalar
+        self._rows = rows or []
+
+    def scalar_one_or_none(self) -> Any:
+        return self._scalar
+
+    def scalars(self) -> _ScalarResult:
+        return _ScalarResult(self._rows)
+
+
 class FakeAsyncSession:
     """Small SQLAlchemy AsyncSession stand-in for API tests that do not need DB."""
 
-    def __init__(self) -> None:
+    def __init__(self, execute_result: _ExecuteResult | None = None) -> None:
         self.added: list[Any] = []
+        # Default: scalar_one_or_none() → None (e.g. user has MFA disabled).
+        self._execute_result = execute_result or _ExecuteResult()
 
     async def scalar(self, *_args: Any, **_kwargs: Any) -> Any:
         return None
 
     async def scalars(self, *_args: Any, **_kwargs: Any) -> _ScalarResult:
         return _ScalarResult()
+
+    async def execute(self, *_args: Any, **_kwargs: Any) -> _ExecuteResult:
+        return self._execute_result
 
     async def get(self, *_args: Any, **_kwargs: Any) -> Any:
         return None
@@ -109,6 +128,40 @@ class FakeAsyncSession:
             if hasattr(obj, "updated_at") and getattr(obj, "updated_at") is None:
                 setattr(obj, "updated_at", now)
         return None
+
+
+class FakeRedisCache:
+    """In-memory RedisCacheAdapter stand-in with real round-trip semantics.
+
+    TTLs are accepted but ignored — tests assert on presence/absence and
+    set-if-absent dedup, not on wall-clock expiry.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> None:
+        self._store[key] = value
+
+    async def get(self, key: str) -> str | None:
+        return self._store.get(key)
+
+    async def delete(self, key: str) -> None:
+        self._store.pop(key, None)
+
+    async def exists(self, key: str) -> bool:
+        return key in self._store
+
+    async def set_if_absent(self, key: str, value: str, ttl_seconds: int) -> bool:
+        if key in self._store:
+            return False
+        self._store[key] = value
+        return True
+
+
+@pytest.fixture
+def mock_redis() -> FakeRedisCache:
+    return FakeRedisCache()
 
 
 @pytest.fixture
@@ -129,7 +182,12 @@ def mock_oidc() -> AsyncMock:
 
 
 @pytest.fixture
-def app(mock_keycloak: AsyncMock, mock_audit: AsyncMock, mock_oidc: AsyncMock) -> FastAPI:
+def app(
+    mock_keycloak: AsyncMock,
+    mock_audit: AsyncMock,
+    mock_oidc: AsyncMock,
+    mock_redis: FakeRedisCache,
+) -> FastAPI:
     application = create_app()
 
     async def _db_override() -> AsyncIterator[FakeAsyncSession]:
@@ -139,6 +197,7 @@ def app(mock_keycloak: AsyncMock, mock_audit: AsyncMock, mock_oidc: AsyncMock) -
     application.dependency_overrides[audit] = lambda: mock_audit
     application.dependency_overrides[db_session] = _db_override
     application.dependency_overrides[_oidc_adapter] = lambda: mock_oidc
+    application.dependency_overrides[redis_cache] = lambda: mock_redis
     return application
 
 

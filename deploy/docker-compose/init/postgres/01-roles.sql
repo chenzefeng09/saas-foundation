@@ -43,14 +43,23 @@ CREATE SCHEMA IF NOT EXISTS feature_flag AUTHORIZATION app_migrator;
 CREATE SCHEMA IF NOT EXISTS search       AUTHORIZATION app_migrator;
 CREATE SCHEMA IF NOT EXISTS llm_gateway  AUTHORIZATION app_migrator;
 
-GRANT USAGE ON SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
+CREATE SCHEMA IF NOT EXISTS notification AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS api_platform AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS pam          AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS dlp          AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS compliance   AUTHORIZATION app_migrator;
+
+CREATE SCHEMA IF NOT EXISTS security_ops     AUTHORIZATION app_migrator;
+CREATE SCHEMA IF NOT EXISTS data_protection  AUTHORIZATION app_migrator;
+
+GRANT USAGE ON SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway, notification, api_platform, pam, dlp, compliance, security_ops, data_protection
     TO app_user, app_admin, app_observability;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway, notification, api_platform, pam, dlp, compliance, security_ops, data_protection
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user, app_admin;
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway, notification, api_platform, pam, dlp, compliance, security_ops, data_protection
     GRANT SELECT ON TABLES TO app_observability;
-ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA identity, authz, org, billing, audit, lifecycle, crypto, feature_flag, search, llm_gateway, notification, api_platform, pam, dlp, compliance, security_ops, data_protection
     GRANT USAGE ON SEQUENCES TO app_user, app_admin;
 
 -- Keycloak 自己的数据库

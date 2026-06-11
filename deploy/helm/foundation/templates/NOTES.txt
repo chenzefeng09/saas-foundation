@@ -49,3 +49,47 @@
 {{- if not .Values.global.ingress.tls }}
    - Ingress TLS 未启用；生产强烈建议开
 {{- end }}
+{{- if not .Values.global.ingress.externalAuthz.enabled }}
+   - 网关层 ext_authz 未启用；生产建议开（详见下方 P3-E 章节）
+{{- end }}
+
+────────────────────────────────────────────────────────────────────────────────
+ P3-E ext_authz 接入指南
+────────────────────────────────────────────────────────────────────────────────
+启用：
+  1) values.yaml 设置 global.ingress.externalAuthz.enabled=true 后 helm upgrade。
+  2) 等 identity service Ready（kubectl rollout status）。
+  3) 任何请求带 Bearer token 命中 ingress 都会先经过
+       GET /api/identity/v1/internal/authz
+     identity 验签后回填 X-Foundation-{User,Tenant,Actor}-Id 头给上游。
+  4) excludePaths（登录 / 健康探针 / authz 端点本身）跳过 ext_authz，避免死锁。
+
+可观测性：
+  - identity 的 access log 会显示 /internal/authz 的请求；非 200 表示网关
+    拒绝了一次。
+  - 上游 service 的 middleware 仍然单独验签——ext_authz 是纵深防御，不是替代。
+
+回退：
+  - 把 enabled 切回 false 并 helm upgrade；annotation 自动移除，恢复直接路由。
+
+────────────────────────────────────────────────────────────────────────────────
+ P3-F mTLS 接入指南（当前 values 仅占位）
+────────────────────────────────────────────────────────────────────────────────
+仓库里的 mtls.enabled 字段不会自动改写 service 的 Pod spec——完整的 mTLS
+接入需要以下步骤，按顺序操作：
+
+  1) 集群装 cert-manager（或对接外部 PKI），并创建一个 Issuer，名字与
+     global.mtls.issuer 一致（默认 foundation-ca）。
+
+  2) 对每个 service 创建 Certificate 资源（cert-manager 自动签发并落 Secret）：
+       kubectl apply -f deploy/helm/foundation/templates/mtls-certs.yaml.tmpl
+     （模板待补；当前仓库没有自动生成。）
+
+  3) 在每个 service 的 Deployment 里挂载证书 Secret 到 /etc/tls，并把
+     httpx / aiohttp client 改成带 client cert（参考 identity 的
+     keycloak_oidc adapter 的 httpx 用法）。
+
+  4) 在每个 service 的 Service 上加 annotation 启用 mTLS 终止——若用
+     service mesh（Istio / Linkerd）则由 mesh 自动处理。
+
+完整接入约 15–20 工时；本次交付仅做配置占位，等部署环境就绪后再启用。

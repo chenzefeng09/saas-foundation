@@ -26,7 +26,7 @@ from foundation_feature_flag.domain.models import Flag, KillSwitchLog
 from foundation_feature_flag.errors import ACCESS_DENIED, FoundationError
 from foundation_feature_flag.observability import get_logger
 from foundation_feature_flag.services.feature_flag_service import FeatureFlagService
-from foundation_feature_flag.services.unleash_gateway import UnleashGateway
+from foundation_feature_flag.services.unleash_gateway import FlagPreset, UnleashGateway
 from sqlalchemy import select
 
 log = get_logger(__name__)
@@ -46,6 +46,7 @@ class FlagView(BaseModel):
     enabled: bool
     default_value: bool
     fail_open: bool
+    user_overridable: bool = False
     owner_team: str | None = None
     tags: dict[str, Any] | None = None
     kill_switch_active: bool = False
@@ -62,6 +63,7 @@ class SetFlagRequest(BaseModel):
     tenant_whitelist: list[str] = []
     description: str | None = None
     fail_open: bool = False
+    user_overridable: bool = False
     owner_team: str | None = None
     tags: dict[str, Any] | None = None
 
@@ -134,6 +136,7 @@ async def list_flags(request: Request) -> list[FlagView]:
             enabled=item["enabled"],
             default_value=item["enabled"],
             fail_open=False,
+            user_overridable=gateway._presets.get(item["name"], FlagPreset(key="", name="")).user_overridable,
             kill_switch_active=gateway.is_killed(item["name"]),
         )
         for item in raw
@@ -154,6 +157,7 @@ async def list_flags(request: Request) -> list[FlagView]:
                     enabled=f.enabled,
                     default_value=f.default_value,
                     fail_open=f.fail_open,
+                    user_overridable=f.user_overridable,
                     owner_team=f.owner_team,
                     tags=f.tags,
                     kill_switch_active=gateway.is_killed(f.key),
@@ -217,6 +221,7 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
                     enabled=body.enabled,
                     default_value=body.enabled,
                     fail_open=body.fail_open,
+                    user_overridable=body.user_overridable,
                     owner_team=body.owner_team,
                     tags=body.tags,
                     unleash_synced_at=now,
@@ -225,6 +230,7 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
             else:
                 existing.enabled = body.enabled
                 existing.fail_open = body.fail_open
+                existing.user_overridable = body.user_overridable
                 if body.description is not None:
                     existing.description = body.description
                 if body.owner_team is not None:
@@ -240,6 +246,7 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
                 enabled=body.enabled,
                 default_value=existing.default_value,
                 fail_open=existing.fail_open,
+                user_overridable=existing.user_overridable,
                 owner_team=existing.owner_team,
                 tags=existing.tags,
                 kill_switch_active=gateway.is_killed(flag),

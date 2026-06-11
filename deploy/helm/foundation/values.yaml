@@ -37,9 +37,43 @@ global:
     tls: false
     annotations: {}
 
-  # mTLS（生产强烈建议开）
+    # ── ext_authz：网关层身份校验（P3-E）─────────────────────────────────────
+    # 启用后，NGINX 每个入站请求先打到 identity 的 /internal/authz 端点，
+    # 由 identity 验签 bearer token 并返回 X-Foundation-{User,Tenant,Actor}-Id
+    # 头，再代理到上游。**纵深防御**层：上游 service 仍做自己的鉴权，但匿名
+    # 流量被网关层拦截，并保证下游收到的身份头由 identity 验签注入（不可伪造）。
+    #
+    # 启用前置：
+    #   * identity service 已运行（identity 的 /internal/authz 本身不能再走
+    #     ext_authz，否则死锁；通过 excludePaths 排除）。
+    #   * 网关层 nginx-ingress 版本 ≥ 0.40（支持 auth-* annotation）。
+    externalAuthz:
+      enabled: false
+      # 默认在 ingress.yaml 模板内渲染：foundation-identity.<release-namespace>.svc...
+      # 留空使用默认；显式覆盖时必须是完整 cluster-internal URL。
+      url: ""
+      responseHeaders: "X-Foundation-User-Id,X-Foundation-Tenant-Id,X-Foundation-Actor"
+      excludePaths:
+        - /api/identity/v1/internal/authz
+        - /api/identity/v1/sessions
+        - /api/identity/v1/sso/login-options
+        - /api/identity/v1/healthz
+
+  # mTLS（生产强烈建议开）— P3-F 占位
+  # 真正生效需要：
+  #   * cluster 装好 cert-manager（或外部 PKI），能签发 service-to-service 证书；
+  #   * 各 service 的 Pod spec 挂载证书（本仓库模板暂未实现自动挂载，需手动覆盖）；
+  #   * httpx / aiohttp client 用 ssl context 携带 client cert。
+  # 目前 enabled=true 只影响下面 ca/issuer 字段被使用——不会修改实际 Pod 模板，
+  # 完整接入路线见 deploy/helm/foundation/templates/NOTES.txt 的 mTLS 章节。
   mtls:
     enabled: false
+    # cert-manager Issuer 名（同 namespace）。
+    issuer: foundation-ca
+    # CA bundle ConfigMap 名（含 ca.crt），下游服务挂载用以验证对端。
+    caBundleConfigMap: foundation-ca-bundle
+    # 服务证书 Secret 命名前缀（实际：<prefix>-<service>，如 foundation-mtls-identity）。
+    certSecretPrefix: foundation-mtls
 
   # 合规模式（影响默认密码策略、保留期、加密算法等）
   complianceModes:

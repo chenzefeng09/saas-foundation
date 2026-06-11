@@ -43,6 +43,12 @@ class OrgUnit(Base):
         Index("ou_tenant_id_idx", "tenant_id"),
         Index("ou_parent_idx", "tenant_id", "parent_id"),
         Index(
+            "uq_org_unit_parent_name",
+            "tenant_id", "parent_id", "name",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index(
             "ou_manager_idx",
             "manager_user_id",
             postgresql_where="manager_user_id IS NOT NULL",

@@ -185,13 +185,29 @@
       "enabled": true,
       "publicClient": false,
       "secret": "dev-identity-service-secret-change-me",
-      "standardFlowEnabled": false,
+      "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
       "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+      ],
       "attributes": {
-        "use.refresh.tokens": "false"
-      }
+        "use.refresh.tokens": "false",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "tenant_id",
+        "basic-claims"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
     },
     {
       "clientId": "foundation-api",
@@ -203,8 +219,36 @@
       "protocol": "openid-connect"
     }
   ],
+  "identityProviders": [
+    {
+      "alias": "platform-corp-idp-01KTTS1J",
+      "providerId": "oidc",
+      "enabled": true,
+      "updateProfileFirstLoginMode": "on",
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "authenticateByDefault": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "foundation-broker",
+        "clientSecret": "corp-broker-secret-dev",
+        "issuer": "http://127.0.0.1:8080/realms/corp-idp",
+        "authorizationUrl": "http://127.0.0.1:8080/realms/corp-idp/protocol/openid-connect/auth",
+        "tokenUrl": "http://127.0.0.1:8080/realms/corp-idp/protocol/openid-connect/token",
+        "userInfoUrl": "http://127.0.0.1:8080/realms/corp-idp/protocol/openid-connect/userinfo",
+        "jwksUrl": "http://127.0.0.1:8080/realms/corp-idp/protocol/openid-connect/certs",
+        "useJwksUrl": "true",
+        "validateSignature": "true",
+        "defaultScope": "openid email profile",
+        "syncMode": "IMPORT"
+      }
+    }
+  ],
   "users": [
     {
+      "id": "9c5b9300-73b6-49b2-911e-ece4675e9c29",
       "username": "admin@foundation.local",
       "email": "admin@foundation.local",
       "emailVerified": true,
@@ -232,6 +276,7 @@
       }
     },
     {
+      "id": "f354d276-886d-4d3b-828f-003ff1112919",
       "username": "alice@tenant-a.local",
       "email": "alice@tenant-a.local",
       "emailVerified": true,
@@ -262,6 +307,7 @@
       }
     },
     {
+      "id": "fa1ec69a-8e64-472b-aafd-aea23118d62e",
       "username": "bob@tenant-a.local",
       "email": "bob@tenant-a.local",
       "emailVerified": true,
@@ -291,6 +337,7 @@
       }
     },
     {
+      "id": "3b873c91-eb45-4d6b-b63c-8b1a81f5b3ab",
       "username": "carol@tenant-b.local",
       "email": "carol@tenant-b.local",
       "emailVerified": true,
@@ -388,6 +435,27 @@
             "access.token.claim": "true",
             "claim.name": "realm_access.roles",
             "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "name": "basic-claims",
+      "description": "Ensure sub claim is present in access tokens (KC 25 lean tokens)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
           }
         }
       ]

@@ -17,10 +17,12 @@ sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
 asyncpg = "^0.30.0"
 alembic = "^1.14.0"
 greenlet = "^3.1.0"
+httpx = { extras = ["http2"], version = "^0.27.0" }
 opentelemetry-api = "^1.28.0"
 opentelemetry-sdk = "^1.28.0"
 opentelemetry-instrumentation-fastapi = "^0.49b0"
 opentelemetry-instrumentation-sqlalchemy = "^0.49b0"
+opentelemetry-instrumentation-httpx = "^0.49b0"
 opentelemetry-exporter-otlp = "^1.28.0"
 structlog = "^24.4.0"
 ulid-py = "^1.1.0"

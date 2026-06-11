@@ -38,8 +38,24 @@ USER_ID_PATTERN = re.compile(r"^usr_[0-9A-Z]{26}$")
 # caller presents the X-Internal-Admin-Token shared secret.
 ACTOR_VALUES = frozenset({"USER", "SERVICE", "SYSTEM", "MIGRATOR"})
 
-# Paths that DO NOT require tenant context (must match settings.api_prefix-relative routes)
-PUBLIC_PATHS = frozenset({"/healthz", "/readyz", "/metrics", "/docs", "/openapi.json", "/redoc"})
+# Paths that DO NOT require tenant context (matched via ``path.endswith(p)``).
+# The browser SSO login endpoints are unauthenticated by design:
+#   * ``/sso/login-options``            — list enabled platform IdPs
+#   * ``.../authorize-url``             — build the Keycloak authorize URL
+# (authorize-url lives under ``/sso/providers/{id}/authorize-url``; the dynamic
+# provider_id segment means we match on the trailing ``/authorize-url`` suffix.)
+PUBLIC_PATHS = frozenset(
+    {
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/sso/login-options",
+        "/authorize-url",
+    }
+)
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

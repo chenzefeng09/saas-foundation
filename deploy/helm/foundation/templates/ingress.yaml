@@ -16,6 +16,25 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    {{- /* P3-E: ext_authz — every request first hits identity's /internal/authz.
+           Disabled by default so existing deployments keep working; flip the
+           values.yaml toggle to enable defence-in-depth at the gateway. */ -}}
+    {{- if .Values.global.ingress.externalAuthz.enabled }}
+    {{- $authzUrl := .Values.global.ingress.externalAuthz.url }}
+    {{- if not $authzUrl }}
+      {{- $authzUrl = printf "http://foundation-identity.%s.svc.cluster.local/api/identity/v1/internal/authz" .Release.Namespace }}
+    {{- end }}
+    nginx.ingress.kubernetes.io/auth-url: {{ $authzUrl | quote }}
+    nginx.ingress.kubernetes.io/auth-method: "GET"
+    nginx.ingress.kubernetes.io/auth-response-headers: {{ .Values.global.ingress.externalAuthz.responseHeaders | quote }}
+    nginx.ingress.kubernetes.io/auth-snippet: |
+      # Skip ext_authz for paths that must remain anonymous (login, login-options,
+      # health probes) and — critically — for the authz endpoint itself so we
+      # don't deadlock identity calling itself recursively.
+      {{- range .Values.global.ingress.externalAuthz.excludePaths }}
+      if ($request_uri ~* "^{{ . }}") { return 200; }
+      {{- end }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.global.ingress.className }}
   {{- if .Values.global.ingress.tls }}

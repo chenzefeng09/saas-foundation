@@ -16,16 +16,20 @@ from typing import Any
 import ulid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy_utils import Ltree  # type: ignore[import-untyped]
 
 from foundation_org.adapters.audit_publisher import AuditPublisher
 from foundation_org.config import get_settings
 from foundation_org.domain.models import OrgUnit, OrgUnitHistory, Team, UserMembership
+from sqlalchemy.exc import IntegrityError
+
 from foundation_org.errors import (
     ORG_UNIT_ARCHIVED,
     ORG_UNIT_CODE_CONFLICT,
     ORG_UNIT_CYCLE,
     ORG_UNIT_DEPTH_EXCEEDED,
     ORG_UNIT_IMMUTABLE_CODE,
+    ORG_UNIT_NAME_DUPLICATE,
     ORG_UNIT_NOT_EMPTY,
     ORG_UNIT_NOT_FOUND,
     FoundationError,
@@ -98,7 +102,7 @@ class OrgUnitService:
         request_id: str,
         actor_id: str,
         parent_id: str | None,
-        code: str,
+        code: str | None,
         name: str,
         name_en: str | None,
         description: str | None,
@@ -107,6 +111,9 @@ class OrgUnitService:
         sort_order: int,
         metadata: dict[str, Any],
     ) -> OrgUnit:
+        if code is None:
+            code = f"ou_{ulid.new()!s}".lower()[:32]
+
         # Validate parent (if any) and depth budget.
         parent_depth = -1
         if parent_id is not None:
@@ -144,8 +151,9 @@ class OrgUnitService:
         # path + depth are filled by the BEFORE INSERT trigger; we set
         # placeholders that satisfy NOT NULL pre-trigger (Postgres allows
         # writing arbitrary values; trigger overwrites).
+        ou_id = _new_ou_id()
         ou = OrgUnit(
-            id=_new_ou_id(),
+            id=ou_id,
             tenant_id=tenant_id,
             parent_id=parent_id,
             code=code,
@@ -154,7 +162,11 @@ class OrgUnitService:
             description=description,
             manager_user_id=manager_user_id,
             kind=kind,
-            path=code,  # placeholder; trigger rewrites
+            # LtreeType.bind_processor calls `value.path`, so this must be an
+            # Ltree (not a raw str). The BEFORE INSERT trigger overwrites it;
+            # we use the id (valid ltree label: [A-Za-z0-9_]) as placeholder
+            # because `code` may contain hyphens which are invalid ltree labels.
+            path=Ltree(ou_id),  # placeholder; trigger rewrites
             depth=parent_depth + 1,  # placeholder
             sort_order=sort_order,
             metadata_json=metadata,
@@ -162,7 +174,16 @@ class OrgUnitService:
             updated_by=actor_id,
         )
         session.add(ou)
-        await session.flush()
+        try:
+            await session.flush()
+            # path + depth are computed by the BEFORE INSERT trigger; reload them so
+            # the response reflects the real ltree path instead of the placeholder.
+            await session.refresh(ou, attribute_names=["path", "depth", "updated_at"])
+        except IntegrityError as exc:
+            await session.rollback()
+            if "uq_org_unit_parent_name" in str(exc):
+                raise FoundationError(ORG_UNIT_NAME_DUPLICATE, extra={"name": name}) from exc
+            raise
 
         await self._audit.publish(
             session,
@@ -223,7 +244,16 @@ class OrgUnitService:
             return ou
 
         ou.updated_by = actor_id
-        await session.flush()
+        try:
+            await session.flush()
+            await session.refresh(ou, attribute_names=["updated_at"])
+        except IntegrityError as exc:
+            await session.rollback()
+            if "uq_org_unit_parent_name" in str(exc):
+                raise FoundationError(
+                    ORG_UNIT_NAME_DUPLICATE, extra={"name": patch.get("name", "")}
+                ) from exc
+            raise
         await self._audit.publish(
             session,
             event_type="foundation.org.org_unit.updated",
@@ -324,7 +354,7 @@ class OrgUnitService:
         # path + depth + descendant paths are recalculated by the AFTER UPDATE
         # trigger; refresh the local row so the post-condition reflects new state.
         await session.flush()
-        await session.refresh(ou, attribute_names=["path", "depth"])
+        await session.refresh(ou, attribute_names=["path", "depth", "updated_at"])
 
         await self._audit.publish(
             session,
@@ -404,6 +434,7 @@ class OrgUnitService:
             )
         )
         await session.flush()
+        await session.refresh(ou, attribute_names=["updated_at"])
         await self._audit.publish(
             session,
             event_type="foundation.org.org_unit.archived",

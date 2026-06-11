@@ -21,6 +21,7 @@ from foundation_org.errors import (
     ORG_UNIT_ARCHIVED,
     ORG_UNIT_NOT_FOUND,
     TEAM_CODE_CONFLICT,
+    TEAM_NOT_EMPTY,
     TEAM_NOT_FOUND,
     FoundationError,
 )
@@ -213,7 +214,7 @@ class TeamService:
         )
         if active is not None:
             raise FoundationError(
-                TEAM_CODE_CONFLICT,
+                TEAM_NOT_EMPTY,
                 detail="Team has active members; remove them first.",
                 extra={"team_id": team_id, "reason": "has_members"},
             )
