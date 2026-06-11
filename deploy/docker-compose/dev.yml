@@ -334,6 +334,14 @@ services:
       FEATURE_FLAG_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       SEARCH_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       LLM_GATEWAY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      NOTIFICATION_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      API_PLATFORM_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      PAM_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      DLP_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      COMPLIANCE_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      SECURITY_OPS_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      LIFECYCLE_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      DATA_PROTECTION_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -371,6 +379,14 @@ services:
         run_migration feature-flag /mnt/feature-flag
         run_migration search       /mnt/search
         run_migration llm-gateway  /mnt/llm-gateway
+        run_migration notification  /mnt/notification
+        run_migration api-platform  /mnt/api-platform
+        run_migration pam           /mnt/pam
+        run_migration dlp           /mnt/dlp
+        run_migration compliance    /mnt/compliance
+        run_migration security-ops    /mnt/security-ops
+        run_migration lifecycle       /mnt/lifecycle
+        run_migration data-protection /mnt/data-protection
         echo "=== All migrations complete ==="
     networks: [foundation]
     volumes:
@@ -383,6 +399,14 @@ services:
       - ../../packages/feature-flag:/mnt/feature-flag:ro
       - ../../packages/search:/mnt/search:ro
       - ../../packages/llm-gateway:/mnt/llm-gateway:ro
+      - ../../packages/notification:/mnt/notification:ro
+      - ../../packages/api-platform:/mnt/api-platform:ro
+      - ../../packages/pam:/mnt/pam:ro
+      - ../../packages/dlp:/mnt/dlp:ro
+      - ../../packages/compliance:/mnt/compliance:ro
+      - ../../packages/security-ops:/mnt/security-ops:ro
+      - ../../packages/lifecycle:/mnt/lifecycle:ro
+      - ../../packages/data-protection:/mnt/data-protection:ro
 
   # ===========================================================================
   # foundation-identity — 身份服务   (port 8001)
@@ -413,6 +437,9 @@ services:
       IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
       # Tokens issued via the internal Docker hostname carry iss=keycloak:8080
       IDENTITY_JWT_ISSUER: http://keycloak:8080/realms/foundation
+      # Browser-facing Keycloak base for the SSO authorize-url (end user's browser
+      # cannot resolve the in-cluster `keycloak` hostname; it must hit the host port).
+      IDENTITY_KEYCLOAK_PUBLIC_BASE_URL: http://127.0.0.1:8080
       IDENTITY_VAULT_URL: http://vault:8200
       IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
       IDENTITY_OTEL_ENABLED: "true"
@@ -1016,6 +1043,18 @@ services:
         )
         ON CONFLICT (id) DO NOTHING;
 
+        -- 1b) BUSINESS 订阅计划（让前端「变更套餐」有第二个可选项）
+        INSERT INTO billing.subscription_plan (id, name, tier, quotas, price_monthly_usd, active)
+        VALUES (
+          'pln_01DEVBIZ0000000000000001',
+          'Business Plan',
+          'BUSINESS',
+          '{"user_seats":200,"storage_gb":500,"agent_sessions":5000,"llm_tokens":50000000,"api_calls":500000,"sessions":2000,"skills":1000}'::jsonb,
+          299.0,
+          true
+        )
+        ON CONFLICT (id) DO NOTHING;
+
         -- 2) Dev Tenant A: PRO 订阅
         INSERT INTO billing.tenant_subscription (id, tenant_id, plan_id, mode, status, current_period_start, current_period_end)
         VALUES (
@@ -1260,7 +1299,8 @@ services:
       - "${PORT_SEARCH:-8009}:8009"
     networks: [foundation]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8009/api/search/v1/healthz\").read()' || exit 1"]
+      # distroless runtime has no /bin/sh — use exec form, not CMD-SHELL.
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8009/api/search/v1/healthz').read()"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -1317,6 +1357,696 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+
+  # ===========================================================================
+  # foundation-notification — 通知服务   (容器 8008, host 18008)
+  # ===========================================================================
+  notification:
+    build:
+      context: ../../packages/notification
+      dockerfile: Dockerfile
+    container_name: foundation-notification
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      notification-init:
+        condition: service_completed_successfully
+    environment:
+      NOTIFICATION_ENV: dev
+      NOTIFICATION_LOG_LEVEL: INFO
+      NOTIFICATION_LOG_FORMAT: console
+      NOTIFICATION_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      NOTIFICATION_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      NOTIFICATION_OTEL_ENABLED: "true"
+      NOTIFICATION_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_NOTIFICATION:-18008}:8008"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/api/notification/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-api-platform — API 平台服务   (容器 8010, host 18010)
+  # 无种子：UI 可自助创建 API key / webhook。
+  # ===========================================================================
+  api-platform:
+    build:
+      context: ../../packages/api-platform
+      dockerfile: Dockerfile
+    container_name: foundation-api-platform
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      API_PLATFORM_ENV: dev
+      API_PLATFORM_LOG_LEVEL: INFO
+      API_PLATFORM_LOG_FORMAT: console
+      API_PLATFORM_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      API_PLATFORM_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      API_PLATFORM_OTEL_ENABLED: "true"
+      API_PLATFORM_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_API_PLATFORM:-18010}:8010"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/api-platform/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-pam — 特权访问管理服务   (容器 8015, host 18015)
+  # ===========================================================================
+  pam:
+    build:
+      context: ../../packages/pam
+      dockerfile: Dockerfile
+    container_name: foundation-pam
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      pam-init:
+        condition: service_completed_successfully
+    environment:
+      PAM_ENV: dev
+      PAM_LOG_LEVEL: INFO
+      PAM_LOG_FORMAT: console
+      PAM_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      PAM_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      PAM_OTEL_ENABLED: "true"
+      PAM_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_PAM:-18015}:8015"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8015/api/pam/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-dlp — 数据防泄露服务   (容器 8007, host 18007)
+  # 注：dlp config 默认 http_port=8007；Dockerfile EXPOSE/CMD 已对齐 8007。
+  # ===========================================================================
+  dlp:
+    build:
+      context: ../../packages/dlp
+      dockerfile: Dockerfile
+    container_name: foundation-dlp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      dlp-init:
+        condition: service_completed_successfully
+    environment:
+      DLP_ENV: dev
+      DLP_LOG_LEVEL: INFO
+      DLP_LOG_FORMAT: console
+      DLP_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      DLP_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      DLP_OTEL_ENABLED: "true"
+      DLP_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_DLP:-18007}:8007"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8007/api/dlp/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-compliance — 合规服务   (容器 8014, host 18014)
+  # ===========================================================================
+  compliance:
+    build:
+      context: ../../packages/compliance
+      dockerfile: Dockerfile
+    container_name: foundation-compliance
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      compliance-init:
+        condition: service_completed_successfully
+    environment:
+      COMPLIANCE_ENV: dev
+      COMPLIANCE_LOG_LEVEL: INFO
+      COMPLIANCE_LOG_FORMAT: console
+      COMPLIANCE_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      COMPLIANCE_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      COMPLIANCE_OTEL_ENABLED: "true"
+      COMPLIANCE_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_COMPLIANCE:-18014}:8014"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8014/api/compliance/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # notification-init — 为 dev 租户 A 塞 2 条通知模板（一次性 job）
+  # 用 postgres 超管连接绕过 RLS；ON CONFLICT DO NOTHING 幂等。
+  # ===========================================================================
+  notification-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-notification-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== notification-init: seeding 2 templates for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        INSERT INTO notification.notification_template
+          (id, tenant_id, event_type, locale, subject_template, body_template, enabled)
+        VALUES
+          ('ntp_01DEVTNA0000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'user.invited', 'zh-CN',
+           '您被邀请加入 {{tenant_name}}',
+           '您好 {{display_name}}，{{inviter}} 邀请您加入 {{tenant_name}}，请点击链接接受邀请。',
+           true),
+          ('ntp_01DEVTNA0000000000000002',
+           'tnt_01J5DEVXX00000000000000001',
+           'pam.elevation.requested', 'zh-CN',
+           '特权提升申请待审批',
+           '用户 {{user_id}} 申请特权提升，原因：{{reason}}，有效时长 {{duration}} 分钟，请尽快审批。',
+           true)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== notification-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # pam-init — 为 dev 租户 A 塞 1 PENDING + 1 历史 elevation + 1 活跃 session
+  # 用 postgres 超管连接绕过 RLS；ON CONFLICT DO NOTHING 幂等。
+  # ===========================================================================
+  pam-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-pam-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== pam-init: seeding elevations + active session for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) PENDING elevation request
+        INSERT INTO pam.pam_elevation_request
+          (id, tenant_id, user_id, reason, target_permissions, duration_minutes,
+           ticket_reference, status, expires_at)
+        VALUES
+          ('pmr_01DEVTNA0PENDING00000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'usr_01J5DEVUSRALICE00000000000',
+           '需要临时访问生产数据库排查工单 INC-1042',
+           ARRAY['billing:read','billing:write'],
+           60, 'INC-1042', 'PENDING',
+           now() + interval '60 minutes')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 1b) 第二条 PENDING elevation request（管理后台「待审批」演示用，新 id）
+        INSERT INTO pam.pam_elevation_request
+          (id, tenant_id, user_id, reason, target_permissions, duration_minutes,
+           ticket_reference, status, expires_at)
+        VALUES
+          ('pmr_01DEVTNA0PENDING00000002',
+           'tnt_01J5DEVXX00000000000000001',
+           'usr_01J5DEVUSR0BOB000000000000',
+           '需要临时升权处理客户紧急工单 INC-2087',
+           ARRAY['session:read','session:write'],
+           90, 'INC-2087', 'PENDING',
+           now() + interval '7 days')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) 历史（已 APPROVED）elevation request
+        INSERT INTO pam.pam_elevation_request
+          (id, tenant_id, user_id, reason, target_permissions, duration_minutes,
+           ticket_reference, status, requested_at, expires_at, approved_by, approved_at, approval_reason)
+        VALUES
+          ('pmr_01DEVTNA0APPROVED0000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'usr_01J5DEVUSR0BOB000000000000',
+           '季度合规审计需要只读访问审计日志',
+           ARRAY['audit:read'],
+           120, 'AUDIT-Q2', 'APPROVED',
+           now() - interval '2 hours',
+           now() + interval '7 days',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           now() - interval '110 minutes',
+           '审计窗口期，批准')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 3) 活跃 session（关联上面那条 APPROVED 申请）
+        -- expires_at 必须落在未来，否则 get_active_sessions 的 expires_at>now() 过滤会把它筛掉。
+        INSERT INTO pam.pam_session
+          (id, tenant_id, elevation_request_id, user_id, approved_by, permissions,
+           started_at, expires_at, is_active)
+        VALUES
+          ('pms_01DEVTNA0ACTIVE00000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'pmr_01DEVTNA0APPROVED0000001',
+           'usr_01J5DEVUSR0BOB000000000000',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           ARRAY['audit:read'],
+           now() - interval '110 minutes',
+           now() + interval '7 days',
+           true)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== pam-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # compliance-init — 为 dev 租户 A 塞 1 ROPA + 1 report（一次性 job）
+  # 用 postgres 超管连接绕过 RLS；ON CONFLICT DO NOTHING 幂等。
+  # ===========================================================================
+  compliance-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-compliance-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== compliance-init: seeding 1 ropa + 1 report for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) ROPA 记录
+        INSERT INTO compliance.ropa_record
+          (id, tenant_id, service, data_category, purpose, legal_basis,
+           data_subjects, recipients, retention_days, cross_border, destination_countries)
+        VALUES
+          ('rpa_01DEVTNA0000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'identity', '账户身份信息',
+           '用户身份认证与账户管理', '合同履行',
+           ARRAY['注册用户'],
+           ARRAY['内部运营团队'],
+           365, false, NULL)
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) 合规报告
+        INSERT INTO compliance.compliance_report
+          (id, tenant_id, report_type, compliance_modes, content, generated_by)
+        VALUES
+          ('crp_01DEVTNA0000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'PIPL_ANNUAL',
+           ARRAY['pipl'],
+           '{"summary":"2025 年度个人信息保护合规自评","findings":3,"resolved":3,"score":92}'::jsonb,
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR')
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== compliance-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # dlp-init — 为 dev 租户 A 塞 1 条 classification 标签记录（一次性 job）
+  # 用 postgres 超管连接绕过 RLS；ON CONFLICT DO NOTHING 幂等。
+  # ===========================================================================
+  dlp-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-dlp-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== dlp-init: seeding 1 classification for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        INSERT INTO dlp.classification
+          (id, tenant_id, resource_type, resource_id, sensitivity, tags, reason,
+           auto_upgraded, tagged_by, downgradable)
+        VALUES
+          ('cls_01DEVTNA0000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'file', 'file_01DEVTNADEMO0000000001',
+           'L4',
+           ARRAY['PII','contract'],
+           '包含客户身份证号与合同条款，列为高敏感',
+           false,
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           false)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== dlp-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # foundation-security-ops — 安全运营服务   (容器 8019, host 18019)
+  # 平台级服务：require_tenant_context=False，多数表无 tenant_id。
+  # ===========================================================================
+  security-ops:
+    build:
+      context: ../../packages/security-ops
+      dockerfile: Dockerfile
+    container_name: foundation-security-ops
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      security-ops-init:
+        condition: service_completed_successfully
+    environment:
+      SECURITY_OPS_ENV: dev
+      SECURITY_OPS_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      SECURITY_OPS_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      SECURITY_OPS_OTEL_ENABLED: "true"
+      SECURITY_OPS_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_SECURITY_OPS:-18019}:8019"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8019/api/security-ops/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-lifecycle — 生命周期/留存服务   (容器 8006, host 18006)
+  # 租户级；crypto_url 指向 crypto 服务做密钥销毁。
+  # ===========================================================================
+  lifecycle:
+    build:
+      context: ../../packages/lifecycle
+      dockerfile: Dockerfile
+    container_name: foundation-lifecycle
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      lifecycle-init:
+        condition: service_completed_successfully
+    environment:
+      LIFECYCLE_ENV: dev
+      LIFECYCLE_LOG_LEVEL: INFO
+      LIFECYCLE_LOG_FORMAT: console
+      LIFECYCLE_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      LIFECYCLE_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      LIFECYCLE_CRYPTO_URL: http://crypto:8004/api/crypto/v1
+      LIFECYCLE_OTEL_ENABLED: "true"
+      LIFECYCLE_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_LIFECYCLE:-18006}:8006"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8006/api/lifecycle/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # foundation-data-protection — 数据保护服务   (容器 8016, host 18016)
+  # ===========================================================================
+  data-protection:
+    build:
+      context: ../../packages/data-protection
+      dockerfile: Dockerfile
+    container_name: foundation-data-protection
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+      data-protection-init:
+        condition: service_completed_successfully
+    environment:
+      DATA_PROTECTION_ENV: dev
+      DATA_PROTECTION_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      DATA_PROTECTION_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      DATA_PROTECTION_OTEL_ENABLED: "true"
+      DATA_PROTECTION_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PORT_DATA_PROTECTION:-18016}:8016"
+    networks: [foundation]
+    healthcheck:
+      # distroless:nonroot 已无 /bin/sh，CMD-SHELL 会失败 → 用 exec 形式直接调 venv python
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8016/api/data-protection/v1/healthz').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # security-ops-init — 平台级安全运营种子（一次性 job）
+  # 多数表无 tenant_id（平台级）；postgres 超管绕 RLS；ON CONFLICT DO NOTHING 幂等。
+  # 含：2 vulnerability(1 OPEN 未逾期 / 1 OPEN 已逾期)、1 incident、1 scan_run、1 sbom_watch
+  # ===========================================================================
+  security-ops-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-security-ops-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== security-ops-init: seeding platform security data ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) scan_run（最近一次 SCA 扫描，PASSED）
+        INSERT INTO security_ops.scan_run
+          (id, type, tool, target, commit_sha, pipeline_id, started_at, finished_at, status, findings_count)
+        VALUES
+          ('scn_01DEVSECOPS00000000000001',
+           'SCA', 'grype', 'ghcr.io/foundation/api:latest',
+           'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2', 'pipe-2087',
+           now() - interval '3 hours', now() - interval '2 hours 50 minutes',
+           'PASSED',
+           '{"critical":0,"high":1,"medium":4,"low":11}'::jsonb)
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2a) vulnerability：HIGH，OPEN，未逾期（due_at 在未来）
+        INSERT INTO security_ops.vulnerability
+          (id, source, source_ref, cve_id, title, severity, cvss_score,
+           package_affected, status, found_at, due_at, assignee)
+        VALUES
+          ('vul_01DEVSECOPS0OPEN00000001',
+           'SCA', 'grype/GHSA-xxxx', 'CVE-2025-1111',
+           'requests SSRF via redirect handling', 'HIGH', 7.5,
+           'requests@2.31.0', 'OPEN',
+           now() - interval '2 days', now() + interval '12 days',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2b) vulnerability：CRITICAL，OPEN，已逾期（due_at 在过去）
+        INSERT INTO security_ops.vulnerability
+          (id, source, source_ref, cve_id, title, severity, cvss_score,
+           package_affected, status, found_at, due_at, assignee)
+        VALUES
+          ('vul_01DEVSECOPS0OVERDUE0001',
+           'CVE_MONITOR', 'nvd/CVE-2025-2222', 'CVE-2025-2222',
+           'OpenSSL heap overflow in X.509 parsing', 'CRITICAL', 9.8,
+           'openssl@3.0.11', 'OPEN',
+           now() - interval '40 days', now() - interval '10 days',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 3) incident（调查中的高危事件）
+        INSERT INTO security_ops.incident
+          (id, severity, category, title, detected_at, reported_by, ic, status)
+        VALUES
+          ('inc_01DEVSECOPS00000000000001',
+           'HIGH', 'DDOS', 'API 网关遭遇间歇性流量洪峰',
+           now() - interval '6 hours', 'usr_01J5DEVUSRALICE00000000000',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR', 'INVESTIGATING')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 4) sbom_watch（注册监控一个镜像）
+        INSERT INTO security_ops.sbom_watch
+          (id, image_ref, registered_at, last_scanned_at, notify, new_cves_count)
+        VALUES
+          ('sbw_01DEVSECOPS00000000000001',
+           'ghcr.io/foundation/api:latest',
+           now() - interval '7 days', now() - interval '2 hours',
+           ARRAY['secops@foundation.local'], 1)
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== security-ops-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # lifecycle-init — 租户 A 生命周期种子（一次性 job）
+  # 需先建 1 个 resource_type（recycle_bin 有 FK→resource_type）；
+  # 再建 1 条回收站记录(soft-deleted)、1 条 legal_hold；postgres 超管绕 RLS。
+  # ===========================================================================
+  lifecycle-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-lifecycle-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== lifecycle-init: seeding recycle bin + legal hold for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 0) resource_type（recycle_bin / override 的 FK 目标）
+        INSERT INTO lifecycle.resource_type
+          (id, service, kind, display_name, description,
+           retention_days_default, retention_anchor, recycle_bin_days,
+           destruction_method, requires_destruction_certificate, is_system)
+        VALUES
+          ('rt_document00000000000000001',
+           'storage', 'document', '用户文档',
+           '用户上传的文档对象，删除后进回收站 30 天',
+           365, 'created_at', 30, 'truncate', false, true)
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 1) recycle_bin（soft-deleted：restored_at / hard_deleted_at 均为空，expires_at 在未来）
+        INSERT INTO lifecycle.recycle_bin
+          (id, tenant_id, resource_type_id, resource_id, resource_name,
+           deleted_by, deleted_at, expires_at, original_location)
+        VALUES
+          ('rb_01DEVTNA000000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'rt_document00000000000000001',
+           'file_01DEVTNADEMODELETED0001', '2024-Q4-财报草稿.docx',
+           'usr_01J5DEVUSRALICE00000000000',
+           now() - interval '3 days', now() + interval '27 days',
+           '{"bucket":"foundation-storage","key":"tnt_a/2024-q4-draft.docx"}')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) legal_hold（未释放：released_at 为空）
+        INSERT INTO lifecycle.legal_hold
+          (id, tenant_id, resource_type_id, resource_id, reason,
+           placed_by, placed_at, case_reference)
+        VALUES
+          ('lh_01DEVTNA000000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'rt_document00000000000000001',
+           'file_01DEVTNADEMOHELD00000001',
+           '涉及劳动仲裁案，相关文档暂缓任何删除',
+           'usr_01KT7TZ70AM2RK8P0C01KMBPRR',
+           now() - interval '5 days', 'CASE-2025-LAB-0042')
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== lifecycle-init: all done ==="
+    networks: [foundation]
+
+  # ===========================================================================
+  # data-protection-init — 租户 A 数据保护种子（一次性 job）
+  # 1 条 destruction_request(PENDING_APPROVAL 待四眼审批)、1 条 cross_border_transfer。
+  # postgres 超管绕 RLS；ON CONFLICT DO NOTHING 幂等。
+  # ===========================================================================
+  data-protection-init:
+    image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
+    container_name: foundation-data-protection-init
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migration-runner:
+        condition: service_completed_successfully
+    environment:
+      PGPASSWORD: ${POSTGRES_SUPER_PASSWORD:-postgres_super_change_me}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== data-protection-init: seeding destruction request + cross-border for dev tenant A ==="
+        psql -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) destruction_request（PENDING_APPROVAL，待四眼审批）
+        INSERT INTO data_protection.data_destruction_request
+          (id, tenant_id, resource_type, resource_ids, destruction_method,
+           reason, requested_by, witness_user_id, status)
+        VALUES
+          ('ddr_01DEVTNA00000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'user_data',
+           '["usr_01J5DEVUSRCAROL00000000000"]'::jsonb,
+           'crypto_shred',
+           '用户行使被遗忘权，申请销毁其全部个人数据',
+           'usr_01J5DEVUSRALICE00000000000',
+           NULL, 'PENDING_APPROVAL')
+        ON CONFLICT (id) DO NOTHING;
+
+        -- 2) cross_border_transfer（REVIEW：缺标准合同）
+        INSERT INTO data_protection.cross_border_transfer
+          (id, tenant_id, data_country, destination_country, data_type,
+           data_size_bytes, has_standard_contract, has_safety_assessment,
+           decision, risks)
+        VALUES
+          ('xfr_01DEVTNA00000000000000001',
+           'tnt_01J5DEVXX00000000000000001',
+           'CN', 'SG', 'customer_email,phone',
+           1048576, false, false,
+           'BLOCKED',
+           ARRAY['missing_standard_contract','missing_safety_assessment','sensitive_data:phone','sensitive_data:email'])
+        ON CONFLICT (id) DO NOTHING;
+        SQL
+        echo "=== data-protection-init: all done ==="
+    networks: [foundation]
 
   # ===========================================================================
   # Mailhog — 本地 SMTP 测试

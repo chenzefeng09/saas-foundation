@@ -17,13 +17,18 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from foundation_identity.adapters.hibp_gateway import HibpGateway
 from foundation_identity.config import get_settings
 from foundation_identity.domain.models import PasswordPolicy
 from foundation_identity.errors import (
+    PASSWORD_BREACHED,
     PASSWORD_TOO_WEAK,
     POLICY_NOT_ALLOWED_TO_RELAX,
     FoundationError,
 )
+from foundation_identity.observability import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +62,7 @@ STRICT_FLOOR = PolicyFloor(
 
 
 class PasswordPolicyService:
-    """Pure-Python — no I/O outside the AsyncSession argument."""
+    """Strength + breach checks.  HIBP I/O goes through ``hibp``."""
 
     # ------------------------------------------------------------------ check
     @staticmethod
@@ -97,6 +102,32 @@ class PasswordPolicyService:
         if checks["require_symbol"] and not any(c in string.punctuation for c in password):
             raise FoundationError(
                 PASSWORD_TOO_WEAK, detail="Password must contain a special symbol."
+            )
+
+    # ------------------------------------------------------------------ breach check
+    async def check_breach_if_enabled(
+        self, password: str, policy: PasswordPolicy | PolicyFloor
+    ) -> None:
+        """If the tenant policy enables HIBP, reject breached passwords.
+
+        ``PolicyFloor`` instances have no breach toggle and skip the check.
+        Fail-open: when HIBP itself is unreachable we log and *do not* block
+        the password change — a strict deny here would lock users out during
+        third-party outages.
+        """
+        if isinstance(policy, PolicyFloor):
+            return
+        if not getattr(policy, "breach_check_enabled", False):
+            return
+        try:
+            count = await self._hibp.breach_count(password)
+        except FoundationError as exc:
+            log.warning("password_policy.hibp_failed_open", error=str(exc))
+            return
+        if count > 0:
+            raise FoundationError(
+                PASSWORD_BREACHED,
+                detail=f"Password appears in breach corpus {count} times",
             )
 
     # ------------------------------------------------------------------ baseline
@@ -206,6 +237,6 @@ class PasswordPolicyService:
                     detail=f"{flag} cannot be relaxed below compliance baseline",
                 )
 
-    # Service settings reference (kept for symmetry with rest of layer)
-    def __init__(self) -> None:
+    def __init__(self, hibp: HibpGateway | None = None) -> None:
         _ = get_settings()  # touch to validate env at construction time
+        self._hibp = hibp or HibpGateway()

@@ -69,6 +69,82 @@ class TestSubscriptions:
                 mode="private", request_id=request_id,
             )
 
+    async def test_change_plan_success(self, svc, fake_session, tenant_id, request_id):
+        sub = TenantSubscription(
+            id="sub_1", tenant_id=tenant_id, plan_id="pln_old",
+            mode="private", status="ACTIVE",
+            current_period_start=None, current_period_end=None,
+        )
+        new_plan = SubscriptionPlan(
+            id="pln_new", name="New", tier="pro",
+            quotas={"user_seats": 50}, price_monthly_usd=99.0, active=True,
+        )
+        fake_session.queue_scalar(sub)   # active subscription lookup
+        fake_session.put(new_plan)       # target plan accessible via get()
+
+        result = await svc.change_plan(
+            fake_session, tenant_id=tenant_id,
+            new_plan_id="pln_new", request_id=request_id,
+        )
+        assert result.plan_id == "pln_new"
+        assert result.status == "ACTIVE"
+        # Plan-changed outbox event emitted
+        from foundation_billing.domain.models import Outbox
+        assert any(
+            isinstance(o, Outbox) and o.event_type == "foundation.billing.subscription.plan_changed"
+            for o in fake_session.added
+        )
+
+    async def test_change_plan_target_plan_not_found(self, svc, fake_session, tenant_id, request_id):
+        sub = TenantSubscription(
+            id="sub_1", tenant_id=tenant_id, plan_id="pln_old",
+            mode="private", status="ACTIVE",
+            current_period_start=None, current_period_end=None,
+        )
+        fake_session.queue_scalar(sub)   # active subscription found
+        # target plan NOT put → get() returns None
+
+        with pytest.raises(ValueError, match="Plan pln_missing not found"):
+            await svc.change_plan(
+                fake_session, tenant_id=tenant_id,
+                new_plan_id="pln_missing", request_id=request_id,
+            )
+
+    async def test_change_plan_no_active_subscription(self, svc, fake_session, tenant_id, request_id):
+        fake_session.queue_scalar(None)  # no active subscription
+
+        with pytest.raises(ValueError, match="No active subscription"):
+            await svc.change_plan(
+                fake_session, tenant_id=tenant_id,
+                new_plan_id="pln_new", request_id=request_id,
+            )
+
+    async def test_cancel_subscription_success(self, svc, fake_session, tenant_id, request_id):
+        sub = TenantSubscription(
+            id="sub_1", tenant_id=tenant_id, plan_id="pln_old",
+            mode="private", status="ACTIVE",
+            current_period_start=None, current_period_end=None,
+        )
+        fake_session.queue_scalar(sub)   # active subscription
+
+        result = await svc.cancel_subscription(
+            fake_session, tenant_id=tenant_id, request_id=request_id,
+        )
+        assert result.status == "CANCELED"
+        from foundation_billing.domain.models import Outbox
+        assert any(
+            isinstance(o, Outbox) and o.event_type == "foundation.billing.subscription.canceled"
+            for o in fake_session.added
+        )
+
+    async def test_cancel_subscription_no_active(self, svc, fake_session, tenant_id, request_id):
+        fake_session.queue_scalar(None)  # no active subscription
+
+        with pytest.raises(ValueError, match="No active subscription"):
+            await svc.cancel_subscription(
+                fake_session, tenant_id=tenant_id, request_id=request_id,
+            )
+
 
 class TestQuota:
     @pytest.fixture

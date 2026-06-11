@@ -1,8 +1,8 @@
 """Billing API endpoints — plans, subscriptions, quota, invoices."""
 from __future__ import annotations
 from typing import Any
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from foundation_billing.api.dependencies import (
     billing_service, current_context, current_request_id, db_session,
@@ -69,6 +69,45 @@ async def subscribe(
         plan_id=body.plan_id, mode=body.mode,
         request_id=request_id,
     )
+    return {"id": sub.id, "tenant_id": sub.tenant_id, "plan_id": sub.plan_id, "mode": sub.mode, "status": sub.status}
+
+
+class ChangePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_plan_id: str
+
+
+@router.post("/subscriptions/change-plan", tags=["billing"])
+async def change_plan(
+    body: ChangePlanRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: BillingService = Depends(billing_service),
+    request_id: str = Depends(current_request_id),
+) -> dict[str, Any]:
+    try:
+        sub = await svc.change_plan(
+            session, tenant_id=ctx.tenant_id,
+            new_plan_id=body.new_plan_id, request_id=request_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"id": sub.id, "tenant_id": sub.tenant_id, "plan_id": sub.plan_id, "mode": sub.mode, "status": sub.status}
+
+
+@router.post("/subscriptions/cancel", tags=["billing"])
+async def cancel_subscription(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: BillingService = Depends(billing_service),
+    request_id: str = Depends(current_request_id),
+) -> dict[str, Any]:
+    try:
+        sub = await svc.cancel_subscription(
+            session, tenant_id=ctx.tenant_id, request_id=request_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"id": sub.id, "tenant_id": sub.tenant_id, "plan_id": sub.plan_id, "mode": sub.mode, "status": sub.status}
 
 

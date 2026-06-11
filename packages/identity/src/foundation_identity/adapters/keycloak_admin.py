@@ -204,6 +204,27 @@ class KeycloakAdminAdapter:
             expected=(204,),
         )
 
+    # ------------------------------------------------------------------ credentials
+    async def list_credentials(self, kc_user_id: str) -> list[dict[str, Any]]:
+        """List a user's Keycloak credentials (password / OTP / WebAuthn / …).
+
+        Returns the realm credentials endpoint payload — each item carries
+        ``id``, ``type`` (``password``/``otp``/``webauthn``/``webauthn-passwordless``),
+        ``userLabel``, ``createdDate`` etc.  Used for WebAuthn key listing UI.
+        """
+        resp = await self._request(
+            "GET", f"/users/{kc_user_id}/credentials", expected=(200,)
+        )
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def delete_credential(self, kc_user_id: str, credential_id: str) -> None:
+        """Remove a single Keycloak credential by id (one WebAuthn key, etc.)."""
+        await self._request(
+            "DELETE",
+            f"/users/{kc_user_id}/credentials/{credential_id}",
+            expected=(204,),
+        )
+
     # ------------------------------------------------------------------ idp
     async def upsert_identity_provider(self, alias: str, config: dict[str, Any]) -> None:
         """Create or update an Identity Provider (SSO)."""

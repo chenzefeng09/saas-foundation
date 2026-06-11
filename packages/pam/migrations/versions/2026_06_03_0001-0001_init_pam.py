@@ -88,7 +88,7 @@ def upgrade() -> None:
 
     op.create_table(
         "pam_session",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),  # "pams_" + 26-char ULID = 31 chars
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("elevation_request_id", sa.String(30), nullable=False),
         sa.Column("user_id", sa.String(30), nullable=False),

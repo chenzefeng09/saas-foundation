@@ -72,6 +72,58 @@ class BillingService:
         await session.flush()
         return sub
 
+    async def _get_active_subscription(
+        self, session: AsyncSession, *, tenant_id: str,
+    ) -> TenantSubscription | None:
+        return await session.scalar(
+            select(TenantSubscription).where(
+                TenantSubscription.tenant_id == tenant_id,
+                TenantSubscription.status == "ACTIVE",
+            ).limit(1)
+        )
+
+    async def change_plan(
+        self, session: AsyncSession, *, tenant_id: str,
+        new_plan_id: str, request_id: str,
+    ) -> TenantSubscription:
+        """Switch the tenant's active subscription to a different plan.
+
+        Raises ``ValueError`` if there is no active subscription or the target
+        plan does not exist (mirrors ``subscribe_tenant``'s error style).
+        """
+        sub = await self._get_active_subscription(session, tenant_id=tenant_id)
+        if sub is None:
+            raise ValueError(f"No active subscription for tenant {tenant_id}")
+
+        plan = await session.get(SubscriptionPlan, new_plan_id)
+        if plan is None:
+            raise ValueError(f"Plan {new_plan_id} not found")
+
+        old_plan_id = sub.plan_id
+        sub.plan_id = new_plan_id
+        self._emit(session, tenant_id, "foundation.billing.subscription.plan_changed",
+                   {"subscription_id": sub.id, "old_plan_id": old_plan_id, "new_plan_id": new_plan_id},
+                   request_id)
+        await session.flush()
+        return sub
+
+    async def cancel_subscription(
+        self, session: AsyncSession, *, tenant_id: str, request_id: str,
+    ) -> TenantSubscription:
+        """Cancel the tenant's active subscription (status → CANCELED).
+
+        Raises ``ValueError`` if there is no active subscription.
+        """
+        sub = await self._get_active_subscription(session, tenant_id=tenant_id)
+        if sub is None:
+            raise ValueError(f"No active subscription for tenant {tenant_id}")
+
+        sub.status = "CANCELED"
+        self._emit(session, tenant_id, "foundation.billing.subscription.canceled",
+                   {"subscription_id": sub.id, "plan_id": sub.plan_id}, request_id)
+        await session.flush()
+        return sub
+
     # ------------------------------------------------------------------ Quota
 
     async def check_quota(
@@ -187,5 +239,6 @@ class BillingService:
         return invoice
 
     def _emit(self, session, tenant_id, event_type, payload, request_id):
+        aggregate_id = payload.get("invoice_id") or payload.get("subscription_id") or ""
         session.add(Outbox(tenant_id=tenant_id, event_type=event_type,
-            aggregate_id=payload.get("invoice_id", ""), payload=payload, request_id=request_id))
+            aggregate_id=aggregate_id, payload=payload, request_id=request_id))

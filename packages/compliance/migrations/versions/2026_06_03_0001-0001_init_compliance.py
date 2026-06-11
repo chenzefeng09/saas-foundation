@@ -69,7 +69,7 @@ def upgrade() -> None:
 
     op.create_table(
         "ropa_record",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),  # "ropa_" + 26-char ULID = 31 chars
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("service", sa.String(50), nullable=False),
         sa.Column("data_category", sa.String(100), nullable=False),
@@ -87,7 +87,7 @@ def upgrade() -> None:
 
     op.create_table(
         "dpia",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),  # "dpia_" + 26-char ULID = 31 chars
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("project_name", sa.String(200), nullable=False),
         sa.Column("description", sa.Text(), nullable=False),
@@ -105,7 +105,7 @@ def upgrade() -> None:
 
     op.create_table(
         "dsar_request",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),  # "dsar_" + 26-char ULID = 31 chars
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("user_id", sa.String(30), nullable=False),
         sa.Column("request_type", sa.String(30), nullable=False),
@@ -121,7 +121,7 @@ def upgrade() -> None:
 
     op.create_table(
         "compliance_report",
-        sa.Column("id", sa.String(30), primary_key=True),
+        sa.Column("id", sa.String(40), primary_key=True),  # ULID-prefixed id, widened for headroom
         sa.Column("tenant_id", sa.String(30), sa.ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False),
         sa.Column("report_type", sa.String(50), nullable=False),
         sa.Column("compliance_modes", postgresql.ARRAY(sa.String())),

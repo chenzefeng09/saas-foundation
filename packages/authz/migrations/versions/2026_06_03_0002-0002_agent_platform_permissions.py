@@ -198,6 +198,13 @@ _PERMISSIONS = [
         "action": "search",
         "description": "Semantic search over ingested document chunks.",
     },
+    {
+        "id": "document.delete",
+        "service": "document",
+        "resource_type": "document",
+        "action": "delete",
+        "description": "Delete a knowledge-base document and its chunks.",
+    },
     # ── mcp_server ─────────────────────────────────────────────────────────
     {
         "id": "mcp_server.read",

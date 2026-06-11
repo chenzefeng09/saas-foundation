@@ -14,6 +14,9 @@ from foundation_identity.schemas.mfa import (
     MfaEnrollResponse,
     MfaMethodRead,
     MfaVerifyRequest,
+    SmsEnrollRequest,
+    WebAuthnCredentialRead,
+    WebAuthnRegisterRequest,
 )
 from foundation_identity.services.mfa_service import MfaService
 
@@ -146,3 +149,107 @@ async def verify_mfa_challenge(
     """Verify a MFA challenge code."""
     await svc.verify_challenge(challenge_id=body.challenge_id, code=body.code)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── WebAuthn (delegated to Keycloak) ───────────────────────────────────────── #
+
+
+@router.get(
+    "/webauthn/credentials",
+    response_model=list[WebAuthnCredentialRead],
+    operation_id="listWebAuthnCredentials",
+    summary="List the user's WebAuthn keys registered at Keycloak",
+)
+async def list_webauthn_credentials(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: MfaService = Depends(mfa_service),
+) -> list[WebAuthnCredentialRead]:
+    if ctx.user_id is None:
+        from foundation_identity.errors import PERMISSION_DENIED, FoundationError
+        raise FoundationError(PERMISSION_DENIED, detail="user_id required")
+    items = await svc.list_webauthn_credentials(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
+    return [WebAuthnCredentialRead(**i) for i in items]
+
+
+@router.post(
+    "/webauthn/register",
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="triggerWebAuthnRegister",
+    response_class=Response,
+    summary="Email a Keycloak required-action link to enrol a WebAuthn key",
+)
+async def trigger_webauthn_register(
+    body: WebAuthnRegisterRequest = Body(default=WebAuthnRegisterRequest()),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: MfaService = Depends(mfa_service),
+) -> Response:
+    if ctx.user_id is None:
+        from foundation_identity.errors import PERMISSION_DENIED, FoundationError
+        raise FoundationError(PERMISSION_DENIED, detail="user_id required")
+    await svc.trigger_webauthn_register(
+        session,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        request_id=ctx.request_id,
+        passwordless=body.passwordless,
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.delete(
+    "/webauthn/credentials/{credential_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="deleteWebAuthnCredential",
+    response_class=Response,
+    summary="Remove one WebAuthn key (revoke an authenticator)",
+)
+async def delete_webauthn_credential(
+    credential_id: str = Path(...),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: MfaService = Depends(mfa_service),
+) -> Response:
+    if ctx.user_id is None:
+        from foundation_identity.errors import PERMISSION_DENIED, FoundationError
+        raise FoundationError(PERMISSION_DENIED, detail="user_id required")
+    await svc.delete_webauthn_credential(
+        session,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        request_id=ctx.request_id,
+        credential_id=credential_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── SMS OTP ─────────────────────────────────────────────────────────────── #
+
+
+@router.post(
+    "/sms/enroll",
+    response_model=MfaMethodRead,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="enrollSmsMfa",
+    summary="Register a phone number for SMS-OTP delivery",
+)
+async def enroll_sms_mfa(
+    body: SmsEnrollRequest = Body(...),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: MfaService = Depends(mfa_service),
+) -> MfaMethodRead:
+    if ctx.user_id is None:
+        from foundation_identity.errors import PERMISSION_DENIED, FoundationError
+        raise FoundationError(PERMISSION_DENIED, detail="user_id required")
+    return await svc.enroll_sms(
+        session,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        request_id=ctx.request_id,
+        phone=body.phone,
+        label=body.label,
+    )

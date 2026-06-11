@@ -101,6 +101,7 @@ class AuditQuery(BaseModel):
     tenant_id: str
     service: str | None = None
     event_type: str | None = None
+    event_types: list[str] | None = None
     severity: Severity | None = None
     outcome: Outcome | None = None
     actor_user_id: str | None = None

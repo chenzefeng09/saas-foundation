@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,6 +139,7 @@ async def query_events(
             tenant_id=ctx.tenant_id,
             service=query.service,
             event_type=query.event_type,
+            event_types=query.event_types,
             severity=query.severity,
             outcome=query.outcome,
             actor_user_id=query.actor_user_id,
@@ -157,6 +161,122 @@ async def query_events(
         items=items,
         next_cursor=next_cursor,
         total_estimate=None,  # CH count(*) is expensive; skip for now
+    )
+
+
+# ---------------------------------------------------------------------------
+# Export (synchronous)
+# ---------------------------------------------------------------------------
+
+# Columns emitted in CSV / per-row JSON exports, in order.
+EXPORT_COLUMNS: list[str] = [
+    "event_id",
+    "occurred_at",
+    "ingested_at",
+    "tenant_id",
+    "service",
+    "event_type",
+    "severity",
+    "outcome",
+    "actor_kind",
+    "actor_user_id",
+    "resource_type",
+    "resource_id",
+    "request_id",
+    "session_id",
+]
+
+EXPORT_MAX_ROWS = 10000
+EXPORT_PAGE_SIZE = 1000
+
+
+def _export_value(row: dict[str, Any], col: str) -> str:
+    """Stringify a ClickHouse row value for export (datetimes → ISO, None → '')."""
+    val = row.get(col)
+    if val is None:
+        return ""
+    if isinstance(val, datetime):
+        return val.isoformat()
+    return str(val)
+
+
+@router.post("/events:export", operation_id="exportEvents")
+async def export_events(
+    query: AuditQuery,
+    fmt: Literal["csv", "json"] = Query("csv", alias="format"),
+    ctx: FoundationContext = Depends(current_context),
+) -> Response:
+    """Synchronously export audit events as CSV or JSON.
+
+    Reuses the same filters as ``/events:query`` (the ``cursor`` field in the
+    body is ignored — pagination is driven internally). tenant_id is ALWAYS
+    enforced from the authenticated context; a mismatched body tenant_id is
+    rejected with 403. Total export is capped at ``EXPORT_MAX_ROWS`` rows.
+    """
+    # Security: enforce tenant from context, not just from body
+    if query.tenant_id != ctx.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="query.tenant_id must match authenticated tenant context",
+        )
+
+    # Cursor-loop fetch up to EXPORT_MAX_ROWS rows.
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
+    try:
+        while len(rows) < EXPORT_MAX_ROWS:
+            page_limit = min(EXPORT_PAGE_SIZE, EXPORT_MAX_ROWS - len(rows))
+            page = await ch.query_events(
+                tenant_id=ctx.tenant_id,
+                service=query.service,
+                event_type=query.event_type,
+                event_types=query.event_types,
+                severity=query.severity,
+                outcome=query.outcome,
+                actor_user_id=query.actor_user_id,
+                resource_type=query.resource_type,
+                resource_id=query.resource_id,
+                session_id=query.session_id,
+                request_id=query.request_id,
+                occurred_from=query.occurred_from,
+                occurred_to=query.occurred_to,
+                cursor=cursor,
+                limit=page_limit,
+            )
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < page_limit:
+                break
+            cursor = page[-1]["event_id"]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"ClickHouse unavailable: {exc}") from exc
+
+    # Pure-ASCII filename to avoid latin-1 Content-Disposition crashes.
+    safe_tenant = "".join(
+        c if c.isascii() and (c.isalnum() or c in "-_") else "_" for c in ctx.tenant_id
+    )
+    filename = f"audit-export-{safe_tenant}.{fmt}"
+    disposition = f'attachment; filename="{filename}"'
+
+    if fmt == "json":
+        items = [{col: _export_value(r, col) for col in EXPORT_COLUMNS} for r in rows]
+        return Response(
+            content=json.dumps(items, ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": disposition},
+        )
+
+    # CSV
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(EXPORT_COLUMNS)
+    for r in rows:
+        writer.writerow([_export_value(r, col) for col in EXPORT_COLUMNS])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": disposition},
     )
 
 

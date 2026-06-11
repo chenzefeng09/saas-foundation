@@ -38,6 +38,7 @@ class FlagPreset:
     description: str = ""
     default_value: bool = False
     fail_open: bool = False
+    user_overridable: bool = False
 
 
 # ---------------------------------------------------------------------------

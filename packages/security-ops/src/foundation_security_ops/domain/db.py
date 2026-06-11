@@ -37,6 +37,7 @@ def get_engine() -> AsyncEngine:
             echo=s.db_echo,
             connect_args={
                 "statement_cache_size": 0,
+                "prepared_statement_cache_size": 0,
                 "prepared_statement_name_func": _rsn,
             },
         )

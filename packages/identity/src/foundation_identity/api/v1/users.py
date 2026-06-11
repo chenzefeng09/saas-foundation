@@ -9,7 +9,12 @@ from fastapi import APIRouter, Body, Depends, Path, Query, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from foundation_identity.api.dependencies import current_context, db_session, user_service
+from foundation_identity.api.dependencies import (
+    current_context,
+    db_session,
+    mfa_service,
+    user_service,
+)
 from foundation_identity.domain.base import FoundationContext
 from foundation_identity.schemas.common import CursorPage
 from foundation_identity.schemas.user import (
@@ -18,6 +23,7 @@ from foundation_identity.schemas.user import (
     UpdateUserRequest,
     UserRead,
 )
+from foundation_identity.services.mfa_service import MfaService
 from foundation_identity.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -165,15 +171,56 @@ async def force_password_reset(
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: UserService = Depends(user_service),
+    mfa: MfaService = Depends(mfa_service),
 ) -> Response:
     if ctx.user_id is None:
         from foundation_identity.errors import PERMISSION_DENIED, FoundationError
         raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+    # Step-up MFA gate: triggering a password reset is privileged; if the actor
+    # has MFA enabled, they must have an active MFA-satisfied session.
+    await mfa.require_recent_mfa(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
     await svc.force_password_reset(
         session,
         tenant_id=ctx.tenant_id,
         request_id=ctx.request_id,
         actor_id=ctx.user_id,
         user_id=user_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{user_id}/mfa:reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="adminResetUserMfa",
+    response_class=Response,
+    summary="Admin: wipe all MFA for a user (recovery / device loss)",
+)
+async def admin_reset_user_mfa(
+    user_id: str = Path(pattern=r"^usr_[0-9A-Z]{26}$"),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    mfa: MfaService = Depends(mfa_service),
+) -> Response:
+    """Privileged: clear all MFA factors so the user can re-enrol on next login.
+
+    The actor must themselves have a recent MFA-satisfied session (step-up).
+    The target user's TOTP / SMS / recovery codes / Keycloak OTP + WebAuthn
+    credentials are all wiped; ``mfa_enabled`` is reset to False.
+    """
+    if ctx.user_id is None:
+        from foundation_identity.errors import PERMISSION_DENIED, FoundationError
+        raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+    await mfa.require_recent_mfa(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
+    await mfa.admin_reset_user_mfa(
+        session,
+        tenant_id=ctx.tenant_id,
+        actor_id=ctx.user_id,
+        user_id=user_id,
+        request_id=ctx.request_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from foundation_org.schemas.common import (
     OU_CODE_PATTERN,
@@ -36,12 +36,18 @@ class OrgUnitRead(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("path", mode="before")
+    @classmethod
+    def _coerce_ltree_path(cls, v: Any) -> str:
+        # `path` is a sqlalchemy_utils Ltree on the ORM model; coerce to str.
+        return str(v)
+
 
 class CreateOrgUnitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     parent_id: str | None = Field(default=None, pattern=OU_ID_PATTERN)
-    code: str = Field(pattern=OU_CODE_PATTERN)
+    code: str | None = Field(default=None, pattern=OU_CODE_PATTERN)
     name: str = Field(min_length=1, max_length=200)
     name_en: str | None = Field(default=None, max_length=200)
     description: str | None = None

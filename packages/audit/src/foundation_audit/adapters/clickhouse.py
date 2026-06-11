@@ -274,6 +274,7 @@ async def query_events(
     tenant_id: str,
     service: str | None = None,
     event_type: str | None = None,
+    event_types: list[str] | None = None,
     severity: str | None = None,
     outcome: str | None = None,
     actor_user_id: str | None = None,
@@ -302,6 +303,9 @@ async def query_events(
     if event_type:
         conditions.append("event_type = {event_type:String}")
         params["event_type"] = event_type
+    if event_types:
+        conditions.append("event_type IN {event_types:Array(String)}")
+        params["event_types"] = event_types
     if severity:
         conditions.append("severity = {severity:String}")
         params["severity"] = severity

@@ -96,10 +96,54 @@ paths:
     delete:
       tags: [sessions]
       summary: 登出当前会话
+      description: |
+        终止当前会话：撤销 Keycloak 侧 SSO 会话、将该 refresh token 的 jti 加入黑名单、
+        标记 DB 会话行 revoked。各步骤均为 best-effort，最终态为「会话已注销」，恒返回 204。
       operationId: revokeCurrentSession
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+                  description: 当前会话的 refresh token；用于撤销 KC 会话并拉黑其 jti。
       responses:
         '204': { description: 已登出 }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+
+  /sessions/current/refresh:
+    post:
+      tags: [sessions]
+      summary: 轮换 refresh token，换取新会话
+      description: |
+        单次性轮换：在兑换前先把所呈 refresh token 标记为「已用」（reuse 黑名单）。
+        若该 token 已被标记，则判定为已轮换 token 的重放——视为安全事件，撤销该用户
+        **全部**会话并以 `REFRESH_TOKEN_REUSED` 拒绝。
+
+        Fail-secure：缓存不可达时拉黑写入失败（`REDIS_UNAVAILABLE`），拒绝刷新而非放行
+        可能被重放的 token。
+      operationId: refreshSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: 轮换成功，返回新会话（含新 access/refresh token）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
 
   /sessions/{session_id}:
     parameters:

@@ -44,7 +44,7 @@ class KeycloakOIDCAdapter:
         settings = get_settings()
         self._base = str(settings.keycloak_base_url).rstrip("/")
         self._realm = settings.keycloak_realm
-        self._client_id = "foundation-identity-service"
+        self._client_id = settings.oidc_client_id
         # Reuse the existing keycloak_admin client secret if you later move
         # it into settings.  For M2 we read directly from settings to avoid
         # adding yet another env var.
@@ -64,6 +64,12 @@ class KeycloakOIDCAdapter:
 
     def _jwks_url(self) -> str:
         return f"{self._base}/realms/{self._realm}/protocol/openid-connect/certs"
+
+    def _logout_url(self) -> str:
+        return f"{self._base}/realms/{self._realm}/protocol/openid-connect/logout"
+
+    def _revoke_url(self) -> str:
+        return f"{self._base}/realms/{self._realm}/protocol/openid-connect/revoke"
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -99,6 +105,62 @@ class KeycloakOIDCAdapter:
                 "client_id": self._client_id,
                 "client_secret": self._client_secret,
                 "scope": "openid",
+            }
+        )
+
+    async def refresh_token_grant(self, *, refresh_token: str) -> dict[str, Any]:
+        """Exchange a refresh token for a fresh access/refresh token bundle.
+
+        Drives refresh-token *rotation*: Keycloak (with rotation enabled on the
+        realm/client) returns a brand-new ``refresh_token`` alongside the new
+        ``access_token`` and invalidates the one presented here.  The caller is
+        responsible for blacklisting the old token's ``jti`` so a replayed
+        rotation is detected.
+
+        Never log ``refresh_token`` or the resulting tokens.
+
+        Raises:
+            FoundationError(INVALID_CREDENTIALS): KC returned invalid_grant
+                (the refresh token is expired, already rotated, or revoked).
+            FoundationError(KEYCLOAK_UNAVAILABLE): network failure.
+            FoundationError(KEYCLOAK_ERROR): unexpected 5xx / shape mismatch.
+        """
+        return await self._token_request(
+            {
+                "grant_type": "refresh_token",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "refresh_token": refresh_token,
+            }
+        )
+
+    async def authorization_code_grant(
+        self, *, code: str, redirect_uri: str
+    ) -> dict[str, Any]:
+        """Exchange an OIDC authorization ``code`` for a token bundle.
+
+        Completes the browser SSO login flow: after Keycloak redirects the
+        browser back with ``?code=…``, the BFF posts the code here and we
+        redeem it at the realm token endpoint (``grant_type=authorization_code``).
+
+        The ``redirect_uri`` MUST be byte-identical to the one used when the
+        authorize URL was built — Keycloak validates it.
+
+        Never log ``code`` or the resulting tokens.
+
+        Raises:
+            FoundationError(INVALID_CREDENTIALS): KC returned invalid_grant
+                (expired / already-redeemed / mismatched code).
+            FoundationError(KEYCLOAK_UNAVAILABLE): network failure.
+            FoundationError(KEYCLOAK_ERROR): unexpected 5xx / shape mismatch.
+        """
+        return await self._token_request(
+            {
+                "grant_type": "authorization_code",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
             }
         )
 
@@ -150,6 +212,94 @@ class KeycloakOIDCAdapter:
         raise FoundationError(
             KEYCLOAK_ERROR,
             detail=f"Token endpoint {resp.status_code}",
+        )
+
+    # --------------------------------------------------- logout / revoke
+    async def logout_session(self, *, refresh_token: str) -> None:
+        """Terminate the Keycloak SSO session behind ``refresh_token``.
+
+        Calls the realm back-channel logout endpoint (Keycloak 18+ accepts a
+        ``refresh_token`` form param and ends the associated user session).
+        This is the server-side half of single-logout: after this, the refresh
+        token can no longer be rotated at Keycloak.
+
+        *Best-effort*: logging out an already-expired/already-logged-out token
+        is a no-op success, not an error — Keycloak returns 204 (or 400
+        ``invalid_grant`` for a stale token), both of which we treat as "session
+        is gone", which is the desired end state.  Only network failures and
+        unexpected 5xx surface as errors so the caller can decide whether to
+        still mark the local session revoked.
+
+        Raises:
+            FoundationError(KEYCLOAK_UNAVAILABLE): network failure.
+            FoundationError(KEYCLOAK_ERROR): unexpected 5xx.
+        """
+        await self._post_terminate(
+            self._logout_url(),
+            {
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "refresh_token": refresh_token,
+            },
+            op="logout",
+        )
+
+    async def revoke_token(
+        self, *, token: str, token_type_hint: str = "refresh_token"  # noqa: S107 — RFC 7009 param name, not a secret
+    ) -> None:
+        """Revoke a single token at the realm revocation endpoint (RFC 7009).
+
+        Used to invalidate an access or refresh token immediately rather than
+        waiting for expiry.  Pass ``token_type_hint="access_token"`` when
+        revoking an access token.
+
+        *Best-effort*, same contract as :meth:`logout_session`: revoking an
+        already-invalid token returns 200 per RFC 7009 §2.2, so only transport
+        failures and 5xx are raised.
+
+        Raises:
+            FoundationError(KEYCLOAK_UNAVAILABLE): network failure.
+            FoundationError(KEYCLOAK_ERROR): unexpected 5xx.
+        """
+        await self._post_terminate(
+            self._revoke_url(),
+            {
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "token": token,
+                "token_type_hint": token_type_hint,
+            },
+            op="revoke",
+        )
+
+    async def _post_terminate(
+        self, url: str, data: dict[str, str], *, op: str
+    ) -> None:
+        """Shared POST for logout/revoke — tolerant of already-invalid tokens.
+
+        2xx and 400 are both "the token/session is gone" (success); 5xx and
+        transport errors raise so the caller can react.
+        """
+        client = self._new_client()
+        try:
+            try:
+                resp = await client.post(url, data=data)
+            except httpx.HTTPError as exc:
+                raise FoundationError(KEYCLOAK_UNAVAILABLE, detail=str(exc)) from exc
+        finally:
+            await client.aclose()
+
+        # 2xx → terminated; 400 → token already stale/invalid → same end state.
+        if resp.status_code < 400 or resp.status_code == 400:
+            return
+        log.warning(
+            f"keycloak.{op}.unexpected_status",
+            status=resp.status_code,
+            body=resp.text[:500],
+        )
+        raise FoundationError(
+            KEYCLOAK_ERROR,
+            detail=f"{op} endpoint {resp.status_code}",
         )
 
     # --------------------------------------------------------- JWKS
@@ -212,21 +362,35 @@ class KeycloakOIDCAdapter:
             raise FoundationError(TOKEN_INVALID, detail=f"kid {kid} not in JWKS")
 
         settings = get_settings()
+        # Keycloak derives the token issuer from the request host, so the same
+        # realm is a *different* issuer depending on whether it was reached via
+        # the in-cluster URL (keycloak:8080, password/service grants) or the
+        # browser-facing URL (127.0.0.1:8080, authorization-code flows).  Both
+        # are this deployment's realm — accept either.
+        allowed_issuers = {str(settings.jwt_issuer).rstrip("/")}
+        public_base = getattr(settings, "keycloak_public_base_url", None)
+        if public_base:
+            allowed_issuers.add(
+                f"{str(public_base).rstrip('/')}/realms/{settings.keycloak_realm}"
+            )
         try:
             claims = jwt.decode(
                 token,
                 keys[0],
                 algorithms=[unverified_header.get("alg", "RS256")],
-                issuer=str(settings.jwt_issuer).rstrip("/"),
                 options={
                     # We don't enforce audience here; see docstring.
                     "verify_aud": False,
+                    # Issuer is checked manually below against the allowed set.
+                    "verify_iss": False,
                 },
             )
         except ExpiredSignatureError as exc:
             raise FoundationError(TOKEN_EXPIRED, detail=str(exc)) from exc
         except JWTError as exc:
             raise FoundationError(TOKEN_INVALID, detail=str(exc)) from exc
+        if claims.get("iss", "").rstrip("/") not in allowed_issuers:
+            raise FoundationError(TOKEN_INVALID, detail="Invalid issuer")
         return claims  # type: ignore[no-any-return]
 
 

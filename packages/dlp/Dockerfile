@@ -8,10 +8,14 @@ COPY src ./src
 RUN poetry install --only main || true
 FROM gcr.io/distroless/python3-debian12:nonroot
 WORKDIR /app
+# distroless:nonroot now ships Python 3.11 at /usr/bin; the venv built in the
+# 3.12 builder symlinks python -> /usr/local/bin/python3.12, so bring that
+# interpreter over to keep the venv's interpreter resolvable.
+COPY --from=builder /usr/local /usr/local
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH="/app/src" PYTHONUNBUFFERED=1
 USER nonroot
-EXPOSE 8013
+EXPOSE 8007
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "uvicorn"]
-CMD ["foundation_dlp.main:app", "--host", "0.0.0.0", "--port", "8013", "--no-access-log"]
+CMD ["foundation_dlp.main:app", "--host", "0.0.0.0", "--port", "8007", "--no-access-log"]

@@ -1,0 +1,61 @@
+{
+  "realm": "corp-idp",
+  "displayName": "Corp IdP (Dev Upstream)",
+  "displayNameHtml": "<b>Corp IdP</b>",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "defaultRole": {
+    "name": "default-roles-corp-idp",
+    "description": "${role_default-roles}"
+  },
+  "clients": [
+    {
+      "clientId": "foundation-broker",
+      "name": "Foundation Broker (OIDC client for foundation realm IdP)",
+      "description": "foundation realm 通过此 confidential client 作为 OIDC broker 接入 corp-idp",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "corp-broker-secret-dev",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://127.0.0.1:8080/realms/foundation/broker/*",
+        "http://localhost:8080/realms/foundation/broker/*"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "bob.corp",
+      "email": "bob.corp@tenant-b.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Bob",
+      "lastName": "Corp",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Corp-Bob-Dev-Pwd-15chars!",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

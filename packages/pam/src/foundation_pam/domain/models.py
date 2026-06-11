@@ -26,7 +26,7 @@ class PAMElevationRequest(Base):
 class PAMSession(Base):
     __tablename__ = "pam_session"
     __table_args__ = (Index("pam_sess_active_idx", "tenant_id", "is_active"), {"schema": "pam"})
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # "pams_" + 26-char ULID = 31 chars
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     elevation_request_id: Mapped[str] = mapped_column(String(30), nullable=False)
     user_id: Mapped[str] = mapped_column(String(30), nullable=False)

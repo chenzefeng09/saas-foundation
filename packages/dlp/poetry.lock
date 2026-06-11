@@ -1549,6 +1549,33 @@ url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 reference = "tuna"
 
 [[package]]
+name = "opentelemetry-instrumentation-httpx"
+version = "0.49b2"
+description = "OpenTelemetry HTTPX Instrumentation"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "opentelemetry_instrumentation_httpx-0.49b2-py3-none-any.whl", hash = "sha256:08111e6c8d11495dee7ef2243bc2e9acc09c16be8c6f4dd32f939f2b08f30af5"},
+    {file = "opentelemetry_instrumentation_httpx-0.49b2.tar.gz", hash = "sha256:4330f56b0ad382843a1e8fe6179d20c2d2be3ee78e60b9f01ee892b1600de44f"},
+]
+
+[package.dependencies]
+opentelemetry-api = ">=1.12,<2.0"
+opentelemetry-instrumentation = "0.49b2"
+opentelemetry-semantic-conventions = "0.49b2"
+opentelemetry-util-http = "0.49b2"
+wrapt = ">=1.0.0,<2.0.0"
+
+[package.extras]
+instruments = ["httpx (>=0.18.0)"]
+
+[package.source]
+type = "legacy"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+reference = "tuna"
+
+[[package]]
 name = "opentelemetry-proto"
 version = "1.28.2"
 description = "OpenTelemetry Python Proto"
@@ -2841,4 +2868,4 @@ reference = "tuna"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "99b30830ec2e5a6c7e9e0fd52a88f564e42606f8f05b38ef5c82842c1560be5f"
+content-hash = "e0c094224a8354eeca3c55eb25f22127fde7b7f3e7fd9ee3954b9dfa2a4162de"

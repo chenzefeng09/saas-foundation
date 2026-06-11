@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # which Docker Desktop's `-p 8080:8080` does NOT bind to (IPv4 only),
     # producing an empty 502 from the Docker network proxy.
     keycloak_base_url: AnyHttpUrl = Field(default=AnyHttpUrl("http://127.0.0.1:8080"))
+    # Browser-facing Keycloak base URL.  Inside Docker the in-cluster hostname is
+    # ``http://keycloak:8080`` (used by service-to-service /token + JWKS calls),
+    # but a user's browser must hit a host-reachable address (``http://127.0.0.1:8080``).
+    # The /sso/.../authorize-url endpoint builds a URL the *browser* follows, so it
+    # uses this value.  Falls back to ``keycloak_base_url`` when unset.
+    keycloak_public_base_url: str | None = None
     keycloak_realm: str = "foundation"
     keycloak_admin_realm: str = "master"
     keycloak_admin_client_id: str = "admin-cli"
@@ -85,6 +91,9 @@ class Settings(BaseSettings):
     # OIDC client used by identity-service to call Keycloak's /token endpoint
     # on behalf of end users (password grant) and itself (client_credentials).
     # MUST exist in the realm with directAccessGrantsEnabled + serviceAccountsEnabled.
+    # This same client is used by the browser SSO code flow (authorize-url +
+    # authorization_code grant), so it MUST also have a valid redirect URI configured.
+    oidc_client_id: str = "foundation-identity-service"
     foundation_identity_client_secret: SecretStr = SecretStr(
         "dev-identity-service-secret-change-me",
     )
@@ -121,9 +130,32 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     password_min_length_floor: int = 8
     password_max_failed_attempts_floor: int = 5
+    # How long an account stays locked after exceeding the failed-attempt floor.
+    password_lockout_minutes_floor: int = 30
     session_idle_timeout_floor_seconds: int = 30 * 60  # 30 min
     session_absolute_timeout_floor_seconds: int = 8 * 60 * 60  # 8h
     session_max_concurrent_floor: int = 2
+
+    # Refresh-token rotation / reuse detection.
+    #   * rotation_enabled: Keycloak realm/client must ALSO have rotation on;
+    #     this gates the foundation-side blacklist write + reuse check.
+    #   * reuse_detection_enabled: when a rotated (already-used) refresh token is
+    #     presented again, revoke ALL of the user's sessions as a breach signal.
+    #   * refresh_token_lifespan_seconds: TTL for the reuse-blacklist Redis key
+    #     (a used jti only needs to be remembered until it would have expired).
+    refresh_token_rotation_enabled: bool = True
+    refresh_reuse_detection_enabled: bool = True
+    refresh_token_lifespan_seconds: int = 8 * 60 * 60  # 8h, matches absolute floor
+
+    # Symmetric key (urlsafe-base64, 32 bytes) used to encrypt TOTP secrets at
+    # rest via Fernet, so identity.mfa_method.secret_ref never holds plaintext.
+    # Dev default is fixed; production MUST override with a generated key
+    # (`Fernet.generate_key()`).  Rotating this invalidates existing TOTP secrets.
+    mfa_secret_encryption_key: SecretStr = SecretStr(
+        "ZGV2LW1mYS10b3RwLWtleS1jaGFuZ2UtbWUtMzJieXQ="
+    )
+    # Number of one-time recovery codes generated when a user first enrols MFA.
+    mfa_recovery_code_count: int = 8
 
     # -------------------------------------------------------------------------
     # Downstream service URLs (used by provisioning service)

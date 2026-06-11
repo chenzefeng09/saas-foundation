@@ -81,4 +81,8 @@ async def list_templates(
             NotificationTemplate.enabled.is_(True),
         )
     )).all())
-    return {"items": [{"id": r.id, "event_type": r.event_type, "channel": r.channel} for r in rows]}
+    return {"items": [
+        {"id": r.id, "event_type": r.event_type, "locale": r.locale,
+         "subject_template": r.subject_template, "enabled": r.enabled}
+        for r in rows
+    ]}
