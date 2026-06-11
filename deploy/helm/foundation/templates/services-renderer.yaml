@@ -144,6 +144,36 @@ spec:
                   name: {{ $.Values.featureFlagUnleash.existingSecret | default "foundation-unleash-credentials" }}
                   key: {{ $.Values.featureFlagUnleash.adminTokenSecretKey | default "admin-token" }}
             {{- end }}
+            {{- if or (eq $name "audit") (eq $name "security-ops") }}
+            # ── storage-v1 §4: 多 bucket S3 配置 ─────────────────────────────
+            # audit 直接经 packages/storage.StorageClient 写 audit bucket；
+            # security-ops 本期不写 S3，但 _validate_s3_key_format 需要
+            # bucket_to_purpose_map() 拿到 bucket 名识别合法前缀。
+            - name: STORAGE_ENDPOINT
+              value: {{ $.Values.global.storage.endpoint | quote }}
+            - name: STORAGE_REGION
+              value: {{ $.Values.global.storage.region | quote }}
+            - name: STORAGE_BUCKET_AUDIT
+              value: {{ $.Values.global.storage.buckets.audit | quote }}
+            - name: STORAGE_BUCKET_WORKSPACE
+              value: {{ $.Values.global.storage.buckets.workspace | quote }}
+            - name: STORAGE_BUCKET_KB_RAW
+              value: {{ $.Values.global.storage.buckets.kbRaw | quote }}
+            - name: STORAGE_BUCKET_KB_DERIVED
+              value: {{ $.Values.global.storage.buckets.kbDerived | quote }}
+            - name: STORAGE_PRESIGNED_URL_TTL_SECONDS
+              value: {{ $.Values.global.storage.presignedUrlTtlSeconds | quote }}
+            - name: STORAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.storage.existingSecret | quote }}
+                  key: access-key
+            - name: STORAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.storage.existingSecret | quote }}
+                  key: secret-key
+            {{- end }}
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 15
