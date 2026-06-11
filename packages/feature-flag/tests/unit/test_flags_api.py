@@ -97,6 +97,7 @@ def make_db_flag(key: str, *, enabled: bool, description: str | None = None) -> 
         enabled=enabled,
         default_value=enabled,
         fail_open=False,
+        user_overridable=False,
     )
 
 
