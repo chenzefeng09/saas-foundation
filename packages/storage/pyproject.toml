@@ -57,7 +57,7 @@ disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["ulid.*","boto3.*","botocore.*"]
+module = ["ulid.*","boto3.*","botocore.*","sqlalchemy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

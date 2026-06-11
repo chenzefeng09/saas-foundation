@@ -278,12 +278,30 @@ class StorageClient:
             )
 
     async def delete_object(self, key: ObjectKey) -> None:
-        """Delete an object.  Raises ``ObjectLockedError`` if WORM-protected."""
+        """Delete an object.  Raises ``ObjectLockedError`` if WORM-protected.
+
+        On success, the quota is decremented by the object's size (fetched via
+        ``head_object`` *before* deletion to avoid racing with another writer).
+        Failures from head/delete leave the quota untouched — better a small
+        positive drift caught by the reconcile job than over-credit.
+        """
         self._check_tenant(key)
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.delete", attributes={"bucket": bucket, "key": key.key}
         ):
+            # Snapshot size before deletion; if head fails (missing object,
+            # permission, network), skip quota adjustment — the daily reconcile
+            # will catch any drift. We deliberately swallow head errors here
+            # so a transient HEAD failure can't block a delete.
+            size_bytes: int | None = None
+            if self.settings.quota_check_enabled:
+                try:
+                    meta = await self.head_object(key)
+                    size_bytes = int(meta.content_length)
+                except StorageError:
+                    size_bytes = None
+
             client = self._get_boto()
             try:
                 await self._run(
@@ -291,6 +309,11 @@ class StorageClient:
                 )
             except Exception as exc:
                 raise self._map_client_error(exc, key) from exc
+
+            if self.settings.quota_check_enabled and size_bytes is not None:
+                await self.quota_checker.increment_used(
+                    key.tenant_id, key.purpose, -size_bytes
+                )
             log.info("storage.delete", bucket=bucket, key=key.key)
 
     async def list_prefix(
