@@ -129,3 +129,12 @@ async def test_me_requires_context(client: AsyncClient) -> None:
     """No X-Tenant-Id / X-User-Id headers → 401."""
     resp = await client.get("/api/identity/v1/sessions/me")
     assert resp.status_code == 401
+
+
+@pytest.mark.unit
+def test_storage_quota_write_scope_registered() -> None:
+    """storage.quota.write must be in _ALLOWED_SCOPES so the lifecycle
+    quota API can mint service-account tokens for itself."""
+    from foundation_identity.api.v1.sessions import _ALLOWED_SCOPES
+
+    assert "storage.quota.write" in _ALLOWED_SCOPES

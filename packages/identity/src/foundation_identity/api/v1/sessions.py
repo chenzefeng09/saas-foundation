@@ -99,6 +99,7 @@ _ALLOWED_SCOPES: frozenset[str] = frozenset(
         "search.read",
         "search.write",
         "billing.usage.write",
+        "storage.quota.write",
     }
 )
 

@@ -231,6 +231,47 @@ class TestRead:
         assert fake_boto.list_objects_v2.call_args.kwargs["Prefix"] == "tenants/tnt_01/"
 
 
+class TestComputeTenantUsage:
+    @pytest.mark.asyncio
+    async def test_sums_size_across_pages(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "tenants/tnt_01/a", "Size": 100},
+                          {"Key": "tenants/tnt_01/b", "Size": 250}]},
+            {"Contents": [{"Key": "tenants/tnt_01/c", "Size": 50}]},
+        ]
+        fake_boto.get_paginator.return_value = paginator
+
+        client = StorageClient.as_system(settings)
+        total = await client.compute_tenant_usage("tnt_01", BucketPurpose.WORKSPACE)
+        assert total == 400
+        paginator.paginate.assert_called_once_with(
+            Bucket="foundation-workspace", Prefix="tenants/tnt_01/"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_bucket_returns_zero(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Contents": []}]
+        fake_boto.get_paginator.return_value = paginator
+
+        client = StorageClient.as_system(settings)
+        total = await client.compute_tenant_usage("tnt_01", BucketPurpose.KB_RAW)
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_rejected(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        client = StorageClient(settings, tenant_id="tnt_01")
+        with pytest.raises(KeyValidationError):
+            await client.compute_tenant_usage("tnt_02", BucketPurpose.WORKSPACE)
+
+
 class TestPresign:
     @pytest.mark.asyncio
     async def test_generate_presigned_url(
@@ -290,6 +331,9 @@ class TestErrorMapping:
     async def test_access_denied_on_audit_delete_maps_to_locked(
         self, fake_boto: MagicMock, settings: StorageSettings
     ) -> None:
+        # head_object is called before delete to size the quota decrement;
+        # stub it so we can isolate the AccessDenied → ObjectLockedError mapping.
+        fake_boto.head_object.return_value = {"ContentLength": 0}
         fake_boto.delete_object.side_effect = _FakeClientError("AccessDenied", 403)
         client = StorageClient(settings, tenant_id="tnt_01")
         # Audit bucket has Object Lock; AccessDenied here means WORM blocked the delete.
@@ -377,6 +421,8 @@ class TestDeleteAndFactory:
     async def test_delete_object_normal(
         self, fake_boto: MagicMock, settings: StorageSettings
     ) -> None:
+        # Make head_object return a known size so the quota path runs.
+        fake_boto.head_object.return_value = {"ContentLength": 0}
         client = StorageClient(settings, tenant_id="tnt_01")
         key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
         await client.delete_object(key)
@@ -384,6 +430,66 @@ class TestDeleteAndFactory:
             Bucket="foundation-workspace",
             Key="tenants/tnt_01/workspaces/ws_1/files/f_1/x.pdf",
         )
+
+    @pytest.mark.asyncio
+    async def test_delete_object_decrements_quota(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        """head_object size feeds a negative ``increment_used`` after delete."""
+        fake_boto.head_object.return_value = {"ContentLength": 4096}
+        quota = MagicMock()
+        quota.check_before_upload = AsyncMock(return_value=None)
+        quota.increment_used = AsyncMock(return_value=None)
+
+        client = StorageClient(settings, tenant_id="tnt_01", quota_checker=quota)
+        key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
+        await client.delete_object(key)
+
+        quota.increment_used.assert_awaited_once_with(
+            "tnt_01", BucketPurpose.WORKSPACE, -4096
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_object_skips_quota_when_head_fails(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        """If head_object errors, quota stays untouched and delete proceeds.
+
+        Better a small positive drift caught by reconcile than over-credit.
+        """
+        fake_boto.head_object.side_effect = _FakeClientError("NoSuchKey", 404)
+        quota = MagicMock()
+        quota.check_before_upload = AsyncMock(return_value=None)
+        quota.increment_used = AsyncMock(return_value=None)
+
+        client = StorageClient(settings, tenant_id="tnt_01", quota_checker=quota)
+        key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
+        await client.delete_object(key)
+        quota.increment_used.assert_not_called()
+        fake_boto.delete_object.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_object_failure_skips_increment(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        """WORM-locked delete (audit bucket): we head OK then delete fails —
+        the quota must NOT decrement because the object is still there.
+        """
+        from datetime import UTC, datetime
+
+        fake_boto.head_object.return_value = {"ContentLength": 1024}
+        fake_boto.delete_object.side_effect = _FakeClientError("AccessDenied", 403)
+        quota = MagicMock()
+        quota.check_before_upload = AsyncMock(return_value=None)
+        quota.increment_used = AsyncMock(return_value=None)
+
+        client = StorageClient(settings, tenant_id="tnt_01", quota_checker=quota)
+        key = ObjectKey.for_audit_event(
+            "tnt_01", datetime(2026, 1, 1, tzinfo=UTC), "evt_1"
+        )
+        with pytest.raises(ObjectLockedError):
+            await client.delete_object(key)
+        quota.increment_used.assert_not_called()
 
     def test_get_storage_client_factory(self) -> None:
         c = get_storage_client(tenant_id="tnt_01")

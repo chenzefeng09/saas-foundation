@@ -15,7 +15,11 @@ from foundation_storage.errors import (
 )
 from foundation_storage.keys import BucketPurpose, ObjectKey
 from foundation_storage.models import ObjectMeta
-from foundation_storage.quota import NoopQuotaChecker, QuotaChecker
+from foundation_storage.quota import (
+    NoopQuotaChecker,
+    PostgresQuotaChecker,
+    QuotaChecker,
+)
 
 __all__ = [
     "BucketPurpose",
@@ -25,6 +29,7 @@ __all__ = [
     "ObjectLockedError",
     "ObjectMeta",
     "ObjectNotFoundError",
+    "PostgresQuotaChecker",
     "QuotaChecker",
     "QuotaExceededError",
     "StorageClient",

@@ -278,12 +278,30 @@ class StorageClient:
             )
 
     async def delete_object(self, key: ObjectKey) -> None:
-        """Delete an object.  Raises ``ObjectLockedError`` if WORM-protected."""
+        """Delete an object.  Raises ``ObjectLockedError`` if WORM-protected.
+
+        On success, the quota is decremented by the object's size (fetched via
+        ``head_object`` *before* deletion to avoid racing with another writer).
+        Failures from head/delete leave the quota untouched — better a small
+        positive drift caught by the reconcile job than over-credit.
+        """
         self._check_tenant(key)
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.delete", attributes={"bucket": bucket, "key": key.key}
         ):
+            # Snapshot size before deletion; if head fails (missing object,
+            # permission, network), skip quota adjustment — the daily reconcile
+            # will catch any drift. We deliberately swallow head errors here
+            # so a transient HEAD failure can't block a delete.
+            size_bytes: int | None = None
+            if self.settings.quota_check_enabled:
+                try:
+                    meta = await self.head_object(key)
+                    size_bytes = int(meta.content_length)
+                except StorageError:
+                    size_bytes = None
+
             client = self._get_boto()
             try:
                 await self._run(
@@ -291,6 +309,11 @@ class StorageClient:
                 )
             except Exception as exc:
                 raise self._map_client_error(exc, key) from exc
+
+            if self.settings.quota_check_enabled and size_bytes is not None:
+                await self.quota_checker.increment_used(
+                    key.tenant_id, key.purpose, -size_bytes
+                )
             log.info("storage.delete", bucket=bucket, key=key.key)
 
     async def list_prefix(
@@ -334,6 +357,51 @@ class StorageClient:
                     )
                 )
             return out
+
+    async def compute_tenant_usage(
+        self,
+        tenant_id: str,
+        purpose: BucketPurpose,
+    ) -> int:
+        """Return the total ``Size`` (bytes) of all objects under the tenant prefix.
+
+        Used by the lifecycle reconcile job (Phase 3 §5.3) — list_prefix
+        returns ``ObjectMeta`` objects shaped for app reads, this is a thin
+        loop over the boto3 paginator that just sums ``Size`` so we don't
+        materialise giant lists for big tenants.
+
+        Cross-tenant: when ``self.tenant_id`` is set the call is rejected
+        like every other API; reconcile uses ``StorageClient.as_system()``.
+        """
+        if self.tenant_id is not None and tenant_id != self.tenant_id:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=(
+                    f"usage tenant_id {tenant_id!r} does not match client "
+                    f"tenant_id {self.tenant_id!r}"
+                ),
+            )
+        bucket = self._bucket_for(purpose)
+        prefix = f"tenants/{tenant_id}/"
+        with tracer.start_as_current_span(
+            "storage.compute_usage",
+            attributes={"bucket": bucket, "prefix": prefix},
+        ):
+            client = self._get_boto()
+
+            def _aggregate() -> int:
+                paginator = client.get_paginator("list_objects_v2")
+                total = 0
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for item in page.get("Contents", []) or []:
+                        total += int(item.get("Size", 0))
+                return total
+
+            try:
+                total: int = await self._run(_aggregate)
+            except Exception as exc:
+                raise self._map_client_error(exc) from exc
+            return total
 
     async def generate_presigned_url(
         self,

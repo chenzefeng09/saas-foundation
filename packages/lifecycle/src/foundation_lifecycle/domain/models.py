@@ -163,6 +163,28 @@ class DestructionJob(Base):
 
 
 # ---------------------------------------------------------------------------
+# TenantStorageQuota — per-tenant, per-bucket-purpose storage allowance
+# ---------------------------------------------------------------------------
+class TenantStorageQuota(Base):
+    __tablename__ = "tenant_storage_quota"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "bucket_purpose", name="uq_storage_quota_tenant_purpose"),
+        Index("idx_storage_quota_tenant", "tenant_id"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "sqt_<ULID>"
+    tenant_id: Mapped[str] = mapped_column(
+        String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    bucket_purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    limit_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=10_737_418_240)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    soft_warn_pct: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=80)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ---------------------------------------------------------------------------
 # Outbox
 # ---------------------------------------------------------------------------
 class Outbox(Base):
