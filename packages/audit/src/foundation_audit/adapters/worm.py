@@ -1,12 +1,21 @@
 """S3 / MinIO WORM (Object Lock) adapter for critical audit events.
 
-Writes events as individual JSON objects under:
-  s3://{worm_bucket}/tenant={tenant_id}/year=YYYY/month=MM/day=DD/hour=HH/{event_id}.json
+Legacy path (default):
+  Writes events as individual JSON objects under:
+    s3://{worm_bucket}/tenant={tenant_id}/year=YYYY/month=MM/day=DD/hour=HH/{event_id}.json
+  using a freshly-built boto3 client per call.
 
-Object Lock mode: COMPLIANCE (immutable for `worm_retention_days` days).
+Phase 2 path (behind feature flag ``storage.worm_via_storage_client``):
+  Routes the same write through ``foundation_storage.StorageClient`` so that
+  retry policy, OTel spans, ENV-driven bucket name, and (later) quota hooks
+  live in one place.  The S3 key uses the new ``ObjectKey.for_audit_event``
+  layout ``tenants/{tid}/events/YYYY/MM/DD/HH/{event_id}.json`` (storage-v1 §3.2).
 
-worm_enabled defaults to False for dev; set AUDIT_WORM_ENABLED=true in production.
-Failure to write WORM is logged as WARNING and does NOT block the main audit chain.
+Object Lock mode: COMPLIANCE (immutable for ``worm_retention_days`` days).
+
+``worm_enabled`` defaults to False for dev; set ``AUDIT_WORM_ENABLED=true`` in
+production.  Failure to write WORM is logged as WARNING and does NOT block the
+main audit chain.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ from foundation_audit.observability import get_logger
 log = get_logger(__name__)
 
 _WORM_SEVERITY = frozenset({"SECURITY", "CRITICAL"})
+_FLAG_NAME = "storage.worm_via_storage_client"
 
 
 def _should_worm(event: dict[str, Any]) -> bool:
@@ -28,19 +38,21 @@ def _should_worm(event: dict[str, Any]) -> bool:
     return event.get("severity", "INFO") in _WORM_SEVERITY
 
 
-def _object_key(event: dict[str, Any]) -> str:
-    """Build the S3 object key for an event."""
+def _parse_occurred_at(event: dict[str, Any]) -> datetime:
     occurred_raw = event.get("occurred_at", datetime.now(UTC).isoformat())
     if isinstance(occurred_raw, str):
         try:
-            ts = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
+            return datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
         except ValueError:
-            ts = datetime.now(UTC)
-    elif isinstance(occurred_raw, datetime):
-        ts = occurred_raw
-    else:
-        ts = datetime.now(UTC)
+            return datetime.now(UTC)
+    if isinstance(occurred_raw, datetime):
+        return occurred_raw
+    return datetime.now(UTC)
 
+
+def _object_key(event: dict[str, Any]) -> str:
+    """Build the legacy S3 object key for an event (Hive-partition layout)."""
+    ts = _parse_occurred_at(event)
     tenant = event.get("tenant_id", "unknown")
     event_id = event.get("event_id", "unknown")
     return (
@@ -50,20 +62,97 @@ def _object_key(event: dict[str, Any]) -> str:
     )
 
 
-async def write_worm(event: dict[str, Any]) -> str | None:
-    """Write an event to S3 WORM bucket with Object Lock.
-
-    Returns the s3:// URI on success, None on failure or if worm_enabled=False.
-    """
+def _retention_until() -> datetime:
+    """RFC 3339 retention date — N years from today (per config)."""
     s = get_settings()
-    if not s.worm_enabled:
+    now = datetime.now(UTC)
+    return datetime(now.year + s.worm_retention_years, now.month, now.day, tzinfo=UTC)
+
+
+def _is_storage_client_enabled(event: dict[str, Any]) -> bool:
+    """Evaluate the Phase 2 routing flag.  Defaults to False on any error
+    (fail_open=False, matching the preset registration).
+    """
+    try:
+        from foundation_feature_flag.services.feature_flag_service import (
+            FeatureFlagService,
+        )
+    except ImportError:
+        return False
+    try:
+        svc = FeatureFlagService()
+        result = svc.is_enabled(
+            _FLAG_NAME,
+            tenant_id=event.get("tenant_id"),
+        )
+        return bool(result)
+    except Exception as exc:
+        log.warning("worm.flag_lookup.failed", flag=_FLAG_NAME, error=str(exc))
+        return False
+
+
+async def _write_via_storage_client(event: dict[str, Any]) -> str | None:
+    """Phase 2 path: write through foundation_storage.StorageClient."""
+    try:
+        from foundation_storage import (
+            ObjectKey,
+            StorageClient,
+        )
+        from foundation_storage import (
+            get_settings as get_storage_settings,
+        )
+    except ImportError:
+        log.warning("worm.storage_client.not_installed")
         return None
-    if not _should_worm(event):
-        return None
+
+    ts = _parse_occurred_at(event)
+    tenant_id = str(event.get("tenant_id", "unknown"))
+    event_id = str(event.get("event_id", "unknown"))
 
     try:
-        import boto3  # type: ignore[import-untyped]
-        from botocore.config import Config  # type: ignore[import-untyped]
+        key = ObjectKey.for_audit_event(tenant_id, ts, event_id)
+    except Exception as exc:
+        log.warning(
+            "worm.storage_client.key_invalid",
+            event_id=event_id,
+            tenant_id=tenant_id,
+            error=str(exc),
+        )
+        return None
+
+    settings = get_storage_settings()
+    client = StorageClient.as_system(settings)
+    body = json.dumps(event, default=str, ensure_ascii=False).encode()
+    retain_until = _retention_until()
+
+    try:
+        await client.put_object(
+            key=key,
+            body=body,
+            content_type="application/json",
+            object_lock_mode="COMPLIANCE",
+            object_lock_retain_until=retain_until,
+        )
+    except Exception as exc:
+        log.warning(
+            "worm.storage_client.put_failed",
+            event_id=event_id,
+            error=str(exc),
+        )
+        return None
+
+    bucket = settings.bucket_audit
+    uri = f"s3://{bucket}/{key.key}"
+    log.info("worm.written", event_id=event_id, uri=uri, route="storage_client")
+    return uri
+
+
+async def _write_via_boto3_direct(event: dict[str, Any]) -> str | None:
+    """Legacy path: build a one-shot boto3 client locally and put_object directly."""
+    s = get_settings()
+    try:
+        import boto3
+        from botocore.config import Config
 
         boto_client = boto3.client(
             "s3",
@@ -75,16 +164,10 @@ async def write_worm(event: dict[str, Any]) -> str | None:
 
         key = _object_key(event)
         body = json.dumps(event, default=str, ensure_ascii=False).encode()
-
-        # RFC 3339 retention date — 7 years default
-        retain_until = datetime(
-            datetime.now(UTC).year + s.worm_retention_years,
-            datetime.now(UTC).month,
-            datetime.now(UTC).day,
-            tzinfo=UTC,
-        )
+        retain_until = _retention_until()
 
         import asyncio
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
@@ -99,7 +182,7 @@ async def write_worm(event: dict[str, Any]) -> str | None:
         )
 
         uri = f"s3://{s.worm_bucket}/{key}"
-        log.info("worm.written", event_id=event.get("event_id"), uri=uri)
+        log.info("worm.written", event_id=event.get("event_id"), uri=uri, route="legacy")
         return uri
 
     except ImportError:
@@ -112,3 +195,26 @@ async def write_worm(event: dict[str, Any]) -> str | None:
             error=str(exc),
         )
         return None
+
+
+async def write_worm(event: dict[str, Any]) -> str | None:
+    """Write an event to S3 WORM bucket with Object Lock.
+
+    Routing:
+      - Feature flag ``storage.worm_via_storage_client`` ON  → StorageClient path
+      - flag OFF (default) or any flag-lookup failure        → legacy boto3 path
+
+    The legacy path is preserved verbatim so an emergency rollback is just a
+    flag flip; see docs/design/storage-migration-v1.md.
+
+    Returns the s3:// URI on success, None on failure or if worm_enabled=False.
+    """
+    s = get_settings()
+    if not s.worm_enabled:
+        return None
+    if not _should_worm(event):
+        return None
+
+    if _is_storage_client_enabled(event):
+        return await _write_via_storage_client(event)
+    return await _write_via_boto3_direct(event)

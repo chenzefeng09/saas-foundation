@@ -118,10 +118,28 @@ global:
     addr: http://foundation-vault:8200
     role: foundation-services
   s3:
+    # DEPRECATED (storage-v1 Phase 2): legacy single-bucket S3 节，保留兼容。
+    # 新代码读 global.storage 下的多 bucket 配置，audit/security-ops 起作用。
+    # 计划在 Phase 4 完成迁移后下版本删除本节。
     endpoint: http://foundation-minio:9000
     region: cn-default
     bucket: foundation
     existingSecret: foundation-s3-credentials
+  # ─────────────────────────────────────────────────────────────────────────
+  # storage-v1 §4: 多 bucket 对象存储。services-renderer 会把这里的字段注入
+  # 到 audit / security-ops 服务的 ENV (STORAGE_*)。large profile 想接外部
+  # S3 / OSS / S3 兼容存储，覆盖 endpoint + buckets.* 即可（见 values-large.yaml）。
+  # ─────────────────────────────────────────────────────────────────────────
+  storage:
+    endpoint: http://foundation-minio:9000
+    region: cn-default
+    existingSecret: foundation-s3-credentials
+    buckets:
+      audit: foundation-audit
+      workspace: foundation-workspace
+      kbRaw: foundation-kb-raw
+      kbDerived: foundation-kb-derived
+    presignedUrlTtlSeconds: 3600
   otelCollector:
     endpoint: http://foundation-otel-collector:4317
   opa:

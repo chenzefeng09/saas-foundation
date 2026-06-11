@@ -123,15 +123,23 @@ class ObjectKey:
     def for_audit_event(
         cls, tenant_id: str, occurred_at: datetime, event_id: str
     ) -> ObjectKey:
-        """audit/tenants/{tid}/year={Y}/month={M}/day={D}/hour={H}/{event_id}.json"""
+        """audit/tenants/{tid}/events/{YYYY}/{MM}/{DD}/{HH}/{event_id}.json
+
+        Hour segment is preserved so the layer count matches the legacy Hive-style
+        ``year={Y}/month={M}/day={D}/hour={H}`` layout used by the existing
+        ``worm.py`` writer.  Migrating old data is therefore a prefix rewrite
+        (``tenant={id}`` → ``tenants/{id}/events`` + drop ``key=`` prefixes)
+        rather than a hierarchy reshape; see storage-v1 §3.2 and §7.1.
+        """
         return cls(
             purpose=BucketPurpose.AUDIT,
             tenant_id=tenant_id,
             path_segments=(
-                f"year={occurred_at.year:04d}",
-                f"month={occurred_at.month:02d}",
-                f"day={occurred_at.day:02d}",
-                f"hour={occurred_at.hour:02d}",
+                "events",
+                f"{occurred_at.year:04d}",
+                f"{occurred_at.month:02d}",
+                f"{occurred_at.day:02d}",
+                f"{occurred_at.hour:02d}",
                 f"{event_id}.json",
             ),
         )

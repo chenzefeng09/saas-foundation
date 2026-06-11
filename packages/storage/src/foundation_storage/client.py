@@ -36,6 +36,7 @@ from foundation_storage.quota import NoopQuotaChecker, QuotaChecker
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import datetime
 
 log = get_logger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -174,8 +175,16 @@ class StorageClient:
         body: bytes,
         content_type: str | None = None,
         metadata: dict[str, str] | None = None,
+        object_lock_mode: str | None = None,
+        object_lock_retain_until: datetime | None = None,
     ) -> None:
-        """Upload ``body`` to ``key``; runs quota check before and increment after."""
+        """Upload ``body`` to ``key``; runs quota check before and increment after.
+
+        ``object_lock_mode`` / ``object_lock_retain_until`` are forwarded to S3's
+        Object Lock API.  Only set them for buckets with Object Lock enabled
+        (currently ``audit``).  ``object_lock_mode`` must be ``"COMPLIANCE"`` or
+        ``"GOVERNANCE"`` if supplied; both arguments are required together.
+        """
         self._check_tenant(key)
         bucket = self._bucket_for(key.purpose)
         # NOTE: Phase 3 will replace len(body) with the result of a subsequent
@@ -197,6 +206,25 @@ class StorageClient:
                 kwargs["ContentType"] = content_type
             if metadata:
                 kwargs["Metadata"] = metadata
+            if object_lock_mode is not None or object_lock_retain_until is not None:
+                if object_lock_mode is None or object_lock_retain_until is None:
+                    raise KeyValidationError(
+                        KEY_INVALID,
+                        detail=(
+                            "object_lock_mode and object_lock_retain_until must be "
+                            "supplied together"
+                        ),
+                    )
+                if object_lock_mode not in ("COMPLIANCE", "GOVERNANCE"):
+                    raise KeyValidationError(
+                        KEY_INVALID,
+                        detail=(
+                            f"object_lock_mode must be 'COMPLIANCE' or "
+                            f"'GOVERNANCE', got {object_lock_mode!r}"
+                        ),
+                    )
+                kwargs["ObjectLockMode"] = object_lock_mode
+                kwargs["ObjectLockRetainUntilDate"] = object_lock_retain_until
 
             try:
                 await self._run(lambda: client.put_object(**kwargs))

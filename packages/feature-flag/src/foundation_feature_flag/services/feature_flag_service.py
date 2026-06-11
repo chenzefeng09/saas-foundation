@@ -129,6 +129,20 @@ class FeatureFlagService:
             ("compliance.sm_algorithms", False, "Enable SM2/SM3/SM4 algorithms", False, False),
             ("export.allow_l4_download", False, "Allow L4 classified data download", False, False),
             ("ai.thinking_ui", True, "Show AI thinking/reasoning UI", True, True),
+            (
+                "storage.worm_via_storage_client",
+                False,
+                "Phase 2: audit worm via packages/storage StorageClient instead of direct boto3",
+                False,
+                False,
+            ),
+            (
+                "storage.security_ops_validate_key_format",
+                False,
+                "Phase 2: validate *_s3_key request body format",
+                False,
+                False,
+            ),
         ]
         for key, default, desc, fail_open, user_overridable in presets:
             # Register in gateway for fallback defaults

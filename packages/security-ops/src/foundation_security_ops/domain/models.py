@@ -55,6 +55,10 @@ class ScanRun(Base):
     # RUNNING / PASSED / FAILED / ERRORED
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     sarif_s3_key: Mapped[str | None] = mapped_column(String(500))
+    # storage-v1 §6.2: original_location for Phase 4 GC; JSON-encoded list of
+    # ``{bucket}::{key}`` (one per *_s3_key field on this row).  Populated on
+    # create; null when no S3 key is supplied.
+    s3_location: Mapped[str | None] = mapped_column(Text)
     # {"critical": 0, "high": 2, "medium": 5, "low": 10}
     findings_count: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -129,6 +133,8 @@ class Incident(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     root_cause: Mapped[str | None] = mapped_column(Text)
     pir_s3_key: Mapped[str | None] = mapped_column(String(500))
+    # storage-v1 §6.2: original_location for Phase 4 GC (see ScanRun.s3_location).
+    s3_location: Mapped[str | None] = mapped_column(Text)
     customers_notified: Mapped[bool | None] = mapped_column(Boolean)
     regulators_notified: Mapped[bool | None] = mapped_column(Boolean)
     affected_tenants: Mapped[list[str] | None] = mapped_column(ARRAY(String))
@@ -220,6 +226,8 @@ class Drill(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pir_s3_key: Mapped[str | None] = mapped_column(String(500))
+    # storage-v1 §6.2: original_location for Phase 4 GC (see ScanRun.s3_location).
+    s3_location: Mapped[str | None] = mapped_column(Text)
     participants: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     scenario_runbook: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(
