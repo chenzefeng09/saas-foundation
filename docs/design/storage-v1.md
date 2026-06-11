@@ -1,8 +1,8 @@
 # 存储层 v1 设计文档
 
-> 状态：Approved v1.0
+> 状态：Approved v1.1
 > Owner：平台基础设施
-> 实施 milestone：Phase 1–4（串行推进）
+> 实施 milestone：Phase 1–4（串行推进；Phase 1 已落地）
 > 相关文档：[audit-v1.md](./audit-v1.md) / [lifecycle-v1.md](./lifecycle-v1.md) / [security-ops-ci-v1.md](./security-ops-ci-v1.md) / [CONVENTIONS.md](../CONVENTIONS.md)
 
 > **关键决策定稿**（2026-06-11）：
@@ -124,12 +124,12 @@ tenants/{tenant_id}/{scope}/{...资源路径...}
 **foundation-audit**
 
 ```
-tenants/{tenant_id}/events/{yyyy}/{mm}/{dd}/{event_id}.json
+tenants/{tenant_id}/events/{yyyy}/{mm}/{dd}/{hh}/{event_id}.json
 ```
 
-示例：`tenants/tnt_01J5DEVXX00000000000000001/events/2026/06/11/evt_01JXYZ.json`
+示例：`tenants/tnt_01J5DEVXX00000000000000001/events/2026/06/11/14/evt_01JXYZ.json`
 
-与现有 `worm.py` 的差异：现在用 `tenant={id}/year=YYYY/month=MM/...`（Hive 分区风格），迁移后改为规范的 `tenants/{id}/events/YYYY/MM/DD/` 风格。
+与现有 `worm.py` 的差异：现有 key 为 `tenant={id}/year=YYYY/month=MM/day=DD/hour=HH/{event_id}.json`（Hive 分区风格，已带 hour 段），迁移后改为规范的 `tenants/{id}/events/YYYY/MM/DD/HH/` 风格。**hour 段保留**——避免老数据回溯查询时层级断档，迁移脚本只需做前缀替换（`tenant={id}` → `tenants/{id}`、等号 → 斜杠）。
 
 **foundation-workspace**
 
@@ -188,9 +188,12 @@ class ObjectKey:
     # 工厂方法——按用途提供具名构造
     @classmethod
     def for_audit_event(cls, tenant_id: str, occurred_at: datetime, event_id: str) -> "ObjectKey":
+        # 保留 hour 段：与现有 worm.py 层级一致，老数据迁移只需前缀替换
         return cls(tenant_id, BucketPurpose.AUDIT, (
-            "events", f"{occurred_at.year:04d}", f"{occurred_at.month:02d}",
-            f"{occurred_at.day:02d}", f"{event_id}.json",
+            "events",
+            f"{occurred_at.year:04d}", f"{occurred_at.month:02d}",
+            f"{occurred_at.day:02d}", f"{occurred_at.hour:02d}",
+            f"{event_id}.json",
         ))
 
     @classmethod
@@ -490,7 +493,11 @@ async def _delete_s3_objects(self, entry: RecycleBin,
 
 格式为 `{bucket_name}::{object_key}`，便于在多 bucket 时明确定位。
 
-**写入方责任**（重要）：现有 `LifecycleService.soft_delete()` 调用方都没传 `original_location`，字段长期为 `NULL`。Phase 4 必须改造 `soft_delete()` 签名，新增可选参数 `s3_location: dict | None = None`：
+**写入方责任**（重要）：现有 `LifecycleService.soft_delete()` 调用方都没传 `original_location`，字段长期为 `NULL`（Phase 2 调研确认：全仓零写入点）。修复分两步：
+
+- **Phase 2**：security-ops 在创建 scan_run / incident / sbom_record / drill 时，如果对应 `*_s3_key` 非空，**立即**在 recycle_bin（或业务表的对应 location 字段，看具体落点）写入 `original_location = {"s3_keys": [<bucket>::<key>]}`。这样 Phase 4 GC 上线时就有数据可清。
+- **Phase 2 例外：audit 不补**。audit bucket 是 WORM，永远不被 GC（见 §6.4），写 `original_location` 没有意义，反而增加无用 IO。
+- **Phase 4**：改造 `LifecycleService.soft_delete()` 签名，新增可选参数 `s3_location: dict | None = None`，供 workspace / kb 等新业务直接调用：
 
 ```python
 async def soft_delete(
@@ -550,28 +557,33 @@ key layout 从 `tenant={id}/year=YYYY/...` 迁移到 `tenants/{id}/events/YYYY/M
 
 bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为读 `StorageSettings.bucket_audit`（默认 `foundation-audit`）。
 
-**老 bucket 处理**：`foundation-audit-worm` 保留只读至少 6 个月（覆盖现有最长事件保留期），`StorageClient.get_object` 增加双 bucket fallback：先查新 bucket，NotFound 时回查老 bucket。feature flag `storage.audit_bucket_migration_complete` 控制关闭 fallback 时机。
+**老 bucket 处理**：现状显示 `worm.py` **只有写路径，无 read 路径**（worm.py 整个文件只有 `write_worm`），所以"双 bucket fallback 读"在 audit 范围内不存在——只要新写入切到新 bucket、老 bucket 保留只读即可。`foundation-audit-worm` 保留只读 6 个月（Phase 2 上线日起算），到期由运维双人 sign-off 下线。
 
-**灰度方案**：feature flag `storage.use_storage_package` 控制写入路径——`true` 走新包，`false` 走旧 `worm.py`。feature-flag 服务已在 `packages/feature-flag` 中实现 Unleash 集成（参见最近 commit `e119bf2`）。
+**灰度方案**：feature flag `storage.worm_via_storage_client`（`default_value=False, fail_open=False`，仿照 `export.allow_l4_download` 模式）控制写入路径——`true` 走 `StorageClient`，`false` 走旧 `worm.py` 直连 boto3。feature-flag 服务已在 `packages/feature-flag` 中实现 Unleash 集成（参见 commit `e119bf2`）。
+
+**老数据迁移**：现有 `foundation-audit-worm` 中 key 格式为 `tenant={id}/year=YYYY/month=MM/day=DD/hour=HH/{event_id}.json`，新 key 格式为 `tenants/{id}/events/YYYY/MM/DD/HH/{event_id}.json`。提供一次性迁移脚本：`mc cp --recursive` + 前缀替换（`tenant={id}` → `tenants/{id}/events`、等号 → 斜杠）。脚本属于运维 SOP，**不在本期代码改造范围**。
 
 ### 7.2 security-ops：*_s3_key 字段
 
-**数据模型**：`packages/security-ops/src/foundation_security_ops/domain/models.py` 中的 `sarif_s3_key`（第 57 行）、`pir_s3_key`（第 131 行）、`sbom_s3_key`（第 156 行）、`drill.pir_s3_key`（第 222 行）维持 `String(500)` 类型不变。
+**重要现状（Phase 2 调研后修订）**：security-ops 服务**自身不调用 boto3、不写 S3 对象**。`sarif_s3_key` / `pir_s3_key` / `sbom_s3_key` / `drill.pir_s3_key` 这些字段是**由外部调用方（CI 流水线、SDK）在 POST 请求体里作为字符串透传进来**，security-ops 只做存储和返回。真正的 S3 写入发生在 security-ops 进程之外。
 
-**key 格式扩展**：新写入的 key 携带 bucket 标识前缀，格式 `foundation-workspace::tenants/{tid}/security-ops/sarif/{id}.sarif.json`，便于在多 bucket 时定位，也方便孤儿对账。老数据（无 bucket 前缀）兼容读：读取时若无 `::` 分隔符，默认按历史 bucket 查找。
+**因此 Phase 2 不改 security-ops 内部逻辑**——所谓"切到 `packages/storage`"在 security-ops 包里**无可改之物**。Phase 2 范围内 security-ops 只做两件事：
 
-**DB migration**：不需要 schema 变更，仅需应用层写入新格式 key。
+1. **API 请求体校验**：`POST /scans/runs` 等接收 `*_s3_key` 字段的端点新增校验：字段值必须符合 `{bucket}::{key}` 格式（用 `ObjectKey.from_string` 试解析），其中 `{bucket}` 必须在 `StorageSettings.bucket_to_purpose_map()` 已知列表中。无效请求返回 400 + `FOUNDATION.STORAGE.KEY.INVALID`。
+2. **同步补写 `original_location`**：service 层 INSERT scan_run / incident / sbom_record / drill 记录时，如果对应 `*_s3_key` 非空，同步在 `recycle_bin` 或对应业务表里写入 `original_location = {bucket}::{key}` 格式（具体写入位置见 §6.2 GC 铺路），为 Phase 4 GC 准备。
 
-**切换时机**：`storage.security_ops_use_storage_package` feature flag 控制。
+**调用方改造**：外部 CI 脚本 / SDK 需要改造为用 `StorageClient` 生成 key 后再传给 security-ops API。这部分**超出 Phase 2 范围**，由消费方各自负责（属于 SDK 改造工单，独立追踪）。Phase 2 上线后，未升级的调用方会因为 400 校验失败而被发现并推动改造——这就是范围分割点。
 
-**老数据兼容读（双 bucket fallback）**：存在 `SECURITY_OPS_LEGACY_S3_BUCKET` 配置项，读路径先查新 bucket 名，NotFound 时回查旧 bucket（若配置了的话）。
+**DB migration**：不需要 schema 变更。
+
+**切换时机**：`storage.security_ops_validate_key_format` feature flag（default False / fail_open False）控制是否启用 400 校验；初期可关闭校验只做"格式不符就告警"的观测模式，给调用方留改造窗口期。
 
 ### 7.3 migration 要点汇总
 
-| 服务 | DB migration 需要 | key 格式变化 | 兼容期 | feature flag |
+| 服务 | DB migration 需要 | 改造范围 | 兼容期 | feature flag |
 |---|---|---|---|---|
-| audit | 否 | 是（需双写期） | 6 个月 | `storage.audit_bucket_migration_complete` |
-| security-ops | 否 | 是（新写携带 bucket 标识） | 直至手动清理老数据 | `storage.security_ops_use_storage_package` |
+| audit | 否 | worm.py 写入路径切 StorageClient；hour 段保留；老 bucket 6 月只读 | 6 个月（Phase 2 上线日起算） | `storage.worm_via_storage_client` (default False, fail_open False) |
+| security-ops | 否 | API 请求体校验 `*_s3_key` 格式 + 同步补 `original_location`；不动 service 内部 | — | `storage.security_ops_validate_key_format` (default False, fail_open False) |
 | workspace（新功能） | 是（新建 resource_type + recycle_bin 字段扩展） | N/A（全新） | — | — |
 | kb（新功能） | 是（新建 KB 相关表） | N/A（全新） | — | — |
 
@@ -701,7 +713,11 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 |---|---|---|
 | 配额 `used_bytes` 并发安全 | Postgres 行级原子更新（`UPDATE ... SET used_bytes = used_bytes + :delta`），不引入 Redis 或显式行锁 | Phase 3 `quota.py` |
 | `storage.quota.write` scope 注册时机 | Phase 3 实现配额 API 时一并注册到 `CONVENTIONS.md §4.x` 和 identity `_ALLOWED_SCOPES`，不提前占位 | Phase 3 验收标准 |
-| `foundation-audit-worm` 只读窗口起点 | Phase 2 上线日为起点计 6 个月，写进 runbook；过渡期残留写入由 feature flag 兜底，忽略不计 | Phase 2 runbook |
+| `foundation-audit-worm` 只读窗口起点 | Phase 2 上线日为起点计 6 个月，写进 `docs/design/storage-migration-v1.md`；过渡期残留写入由 feature flag 兜底，忽略不计 | Phase 2 migration 文档 |
+| audit key 层级 | 保留 hour 段（`tenants/{tid}/events/YYYY/MM/DD/HH/{event_id}.json`），与现有 worm.py 5 层一致，老数据迁移只做前缀替换 | Phase 2 `ObjectKey.for_audit_event` |
+| security-ops 改造范围 | security-ops 不调 boto3、不写 S3——只在 API 请求体校验 `*_s3_key` 格式 + 同步补 `original_location`；调用方（CI/SDK）改造超出本期范围 | Phase 2 §7.2 |
+| Helm `global.s3` → `global.storage` | values.yaml 新增 `global.storage` 节并由 services-renderer 真正注入 audit 服务 ENV；老 `global.s3` 节暂留兼容；values-large.yaml 补外接 S3 示例 | Phase 2 Helm 改造工作项 |
+| audit `original_location` 写入 | **不写**——audit 是 WORM 不被 GC。security-ops 在创建对象时立即补写 `original_location`，为 Phase 4 GC 铺路 | Phase 2 §6.2 |
 
 ### 10.2 真待定（需后续专项讨论）
 
@@ -751,3 +767,4 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 |---|---|---|
 | 2026-06-11 | 0.1.0 | 初版（存储层 v1 设计文档） |
 | 2026-06-11 | 1.0.0 | 定稿：5 项决策落定（隔离/节奏/并发/scope/只读窗口）；修正 minio-init 现状描述与 `global.storage`/`global.s3` 引用；id 字段 VARCHAR(30) 对齐项目惯例；明确 `soft_delete` 需新增 `s3_location` 参数（否则 GC 无效）；附录 A 改为容忍行号漂移的措辞 |
+| 2026-06-11 | 1.1.0 | Phase 2 调研期修订：audit key 保留 hour 段（5 层）；security-ops 范围澄清（不写 S3，只校验请求体 + 补 `original_location`）；audit feature flag 改名 `storage.worm_via_storage_client`；Helm `global.s3` 是孤儿节，Phase 2 同步改造 services-renderer 真正注入 ENV；audit WORM 不写 `original_location` |
