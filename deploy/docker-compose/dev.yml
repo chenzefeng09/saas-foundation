@@ -257,8 +257,14 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # minio-init — 建 WORM bucket（一次性 job）
-  # mc mb --with-lock 建带 Object Lock 的 bucket；--ignore-existing 确保幂等
+  # minio-init — 建 storage-v1 buckets（一次性 job, 幂等）
+  # storage-v1 §2.3 新增 4 个抽象层 bucket：
+  #   foundation-audit       (WORM, COMPLIANCE 7y)  —— 替代旧 foundation-audit-worm
+  #   foundation-workspace   (普通)
+  #   foundation-kb-raw      (普通)
+  #   foundation-kb-derived  (普通)
+  # 兼容期保留：foundation-audit-worm（audit 服务双写期需要老 bucket 存在；
+  # Phase 2 切换到抽象层后，由迁移脚本统一搬迁，再下线本 bucket）。
   # ---------------------------------------------------------------------------
   minio-init:
     image: minio/mc:latest
@@ -272,11 +278,23 @@ services:
       - |
         set -e
         mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-foundation} ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
-        # Create WORM bucket with Object Lock enabled (--with-lock)
+
+        # --- storage-v1 新 bucket（Phase 1 引入） ---
+        # AUDIT: Object Lock + 7 年 COMPLIANCE
+        mc mb --with-lock --ignore-existing local/foundation-audit
+        mc retention set --default COMPLIANCE "7y" local/foundation-audit
+        # WORKSPACE / KB_RAW / KB_DERIVED: 普通 bucket
+        mc mb --ignore-existing local/foundation-workspace
+        mc mb --ignore-existing local/foundation-kb-raw
+        mc mb --ignore-existing local/foundation-kb-derived
+
+        # --- 兼容期保留（doublewrite 期需要） ---
+        # foundation-audit-worm: 旧 audit 服务直写 bucket；Phase 2 抽象层接通后，
+        # 由迁移脚本搬运历史对象到 foundation-audit，再下线本 bucket。
         mc mb --with-lock --ignore-existing local/foundation-audit-worm
-        # Set default COMPLIANCE retention: 7 years
         mc retention set --default COMPLIANCE "7y" local/foundation-audit-worm
-        echo "=== minio-init: foundation-audit-worm bucket ready ==="
+
+        echo "=== minio-init: storage-v1 buckets ready (audit/workspace/kb-raw/kb-derived + legacy worm) ==="
     networks: [foundation]
 
   # ===========================================================================

@@ -1,0 +1,53 @@
+# =============================================================================
+# Storage library CI — packages/storage (foundation-storage)
+#
+# 轻量 workflow，不复用 service-ci.yml（后者要求 main.py / FastAPI 入口）。
+# 只跑：ruff + mypy + pytest with coverage（≥80%）。
+# =============================================================================
+
+name: Storage CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/storage/**"
+      - ".github/workflows/storage-ci.yml"
+  pull_request:
+    paths:
+      - "packages/storage/**"
+      - ".github/workflows/storage-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint + Unit Test (storage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/storage
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python + Poetry
+        uses: ./.github/actions/setup-foundation
+        with:
+          python-version: "3.12"
+          working-directory: packages/storage
+
+      - name: Ruff check
+        run: poetry run ruff check src tests --output-format=github
+
+      - name: Mypy strict
+        run: poetry run mypy src
+
+      - name: Pytest with coverage
+        run: |
+          poetry run pytest tests/unit \
+            --cov=foundation_storage \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -v
