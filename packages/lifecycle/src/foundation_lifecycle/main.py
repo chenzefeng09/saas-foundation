@@ -42,27 +42,78 @@ async def _run_reconcile_job(drift_alert_pct: float) -> None:
         log.error("storage.quota.reconcile_error", error=str(exc))
 
 
+async def _run_orphan_reconcile_job(
+    *, dry_run: bool, grace_period_days: int
+) -> None:
+    """APScheduler entry — daily S3 ↔ DB orphan sweep (storage-v1 §6.3)."""
+    from foundation_lifecycle.services.storage_orphan_reconcile import (
+        reconcile_orphans,
+    )
+    from foundation_storage import StorageClient, get_settings as get_storage_settings
+
+    storage_client = StorageClient.as_system(get_storage_settings())
+    try:
+        async with session_scope() as session:
+            report = await reconcile_orphans(
+                session,
+                storage_client,
+                dry_run=dry_run,
+                grace_period_days=grace_period_days,
+            )
+        log.info(
+            "storage.orphan.reconcile_complete",
+            direction_a_orphans=report.direction_a_orphans,
+            direction_a_deleted=report.direction_a_deleted,
+            direction_b_missing=report.direction_b_missing,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        log.error("storage.orphan.reconcile_error", error=str(exc))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("startup", version=__version__)
     s = get_settings()
     scheduler: Any | None = None
-    if s.reconcile_enabled:
+    if s.reconcile_enabled or s.orphan_reconcile_enabled:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
 
         scheduler = AsyncIOScheduler()
         # Standard 5-field cron: "m h dom mon dow"
-        trigger = CronTrigger.from_crontab(s.reconcile_cron)
-        scheduler.add_job(
-            _run_reconcile_job,
-            trigger=trigger,
-            kwargs={"drift_alert_pct": s.reconcile_drift_alert_pct},
-            id="storage_quota_reconcile",
-            replace_existing=True,
-        )
+        if s.reconcile_enabled:
+            scheduler.add_job(
+                _run_reconcile_job,
+                trigger=CronTrigger.from_crontab(s.reconcile_cron),
+                kwargs={"drift_alert_pct": s.reconcile_drift_alert_pct},
+                id="storage_quota_reconcile",
+                replace_existing=True,
+            )
+            log.info(
+                "scheduler.add_job",
+                job="storage_quota_reconcile",
+                cron=s.reconcile_cron,
+            )
+        if s.orphan_reconcile_enabled:
+            scheduler.add_job(
+                _run_orphan_reconcile_job,
+                trigger=CronTrigger.from_crontab(s.orphan_reconcile_cron),
+                kwargs={
+                    "dry_run": s.orphan_reconcile_dry_run,
+                    "grace_period_days": s.orphan_grace_period_days,
+                },
+                id="storage_orphan_reconcile",
+                replace_existing=True,
+            )
+            log.info(
+                "scheduler.add_job",
+                job="storage_orphan_reconcile",
+                cron=s.orphan_reconcile_cron,
+                dry_run=s.orphan_reconcile_dry_run,
+            )
         scheduler.start()
-        log.info("scheduler.start", job="storage_quota_reconcile", cron=s.reconcile_cron)
+        log.info("scheduler.start")
     try:
         yield
     finally:
