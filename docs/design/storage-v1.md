@@ -1,8 +1,8 @@
 # 存储层 v1 设计文档
 
-> 状态：Approved v1.1
+> 状态：Approved v1.2
 > Owner：平台基础设施
-> 实施 milestone：Phase 1–4（串行推进；Phase 1 已落地）
+> 实施 milestone：Phase 1–4（串行推进；Phase 1、2 已落地）
 > 相关文档：[audit-v1.md](./audit-v1.md) / [lifecycle-v1.md](./lifecycle-v1.md) / [security-ops-ci-v1.md](./security-ops-ci-v1.md) / [CONVENTIONS.md](../CONVENTIONS.md)
 
 > **关键决策定稿**（2026-06-11）：
@@ -376,7 +376,7 @@ class ObjectLockedError(StorageError):
 
 ```sql
 CREATE TABLE lifecycle.tenant_storage_quota (
-    id              VARCHAR(30) PRIMARY KEY,    -- "tsq_<ULID>" (prefix 4 + ULID 26 = 30)
+    id              VARCHAR(30) PRIMARY KEY,    -- "sqt_<ULID>" (prefix 4 + ULID 26 = 30，对齐 lifecycle 既有 bin_/crt_/dsj_ 惯例)
     tenant_id       VARCHAR(30) NOT NULL
                     REFERENCES tenant.tenant(id) ON DELETE CASCADE,
     bucket_purpose  VARCHAR(32) NOT NULL,       -- "audit"/"workspace"/"kb_raw"/"kb_derived"
@@ -481,17 +481,29 @@ async def _delete_s3_objects(self, entry: RecycleBin,
         # 不阻断 DB 硬删除；对账任务会发现孤儿对象
 ```
 
-`original_location` 字段（`lifecycle.recycle_bin` 表已有此列，类型 `Text`，注释为 "JSON: where to find the original data"）存储格式约定：
+`original_location` 字段（`lifecycle.recycle_bin` 表已有此列，类型 `Text`，注释为 "JSON: where to find the original data"）存储格式约定（**v1.2 修订：与 Phase 2 security-ops 业务表 `s3_location` 列对齐，存裸 list**）：
 
 ```json
-{
-  "s3_keys": [
-    "foundation-workspace::tenants/tnt_xxx/workspaces/ws_yyy/files/fil_zzz/report.pdf"
-  ]
-}
+[
+  "foundation-workspace::tenants/tnt_xxx/workspaces/ws_yyy/files/fil_zzz/report.pdf"
+]
 ```
 
-格式为 `{bucket_name}::{object_key}`，便于在多 bucket 时明确定位。
+每个元素格式为 `{bucket_name}::{object_key}`，便于在多 bucket 时明确定位。
+
+**copy 路径（Phase 4 实现）**：
+
+```
+security-ops DELETE /scans/{id}
+  ↓
+读取 ScanRun.s3_location (Phase 2 已存的裸 list)
+  ↓
+LifecycleService.soft_delete(..., s3_location=parse_json_list)
+  ↓
+RecycleBin.original_location = json.dumps(s3_location list, ensure_ascii=False)
+```
+
+零格式转换——业务表和 recycle_bin 都存裸 list。
 
 **写入方责任**（重要）：现有 `LifecycleService.soft_delete()` 调用方都没传 `original_location`，字段长期为 `NULL`（Phase 2 调研确认：全仓零写入点）。修复分两步：
 
@@ -711,6 +723,12 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 
 | 事项 | 决议 | 落地位置 |
 |---|---|---|
+| Phase 3 ID 前缀 | `sqt_` 三字母+下划线（对齐 lifecycle 既有 `bin_`/`crt_`/`dsj_` 惯例），不是初稿的 `tsq_` | Phase 3 migration |
+| Phase 3 scope 校验入口 | lifecycle 服务现状零 scope 校验，Phase 3 自建 `require_scope(scope)` Depends，不套用既有 | Phase 3 `api/dependencies.py` |
+| Phase 4 sec-ops 删除路径 | 同步加 `DELETE /scans/{id}` / `DELETE /incidents/{id}` / `DELETE /drills/{id}`，调 `soft_delete` 并从业务表 `s3_location` 列读取传入 | Phase 4 |
+| Phase 4 `original_location` 格式 | 与 sec-ops 业务表 `s3_location` 列对齐，存裸 list `["bucket::key", ...]`，不包 dict 外壳 | Phase 4 |
+| Phase 4 `list_prefix` 分页 | 给 `StorageClient.list_prefix` 加 `continuation_token` 参数和返回值，向后兼容 | Phase 4 |
+| Phase 4 audit bucket 孤儿对账 | 本期跳过（audit 写 ClickHouse `worm_uri` 不写 lifecycle，跨存储扫描成本高）；§6.4 已说 audit 不接 GC | Phase 4 |
 | 配额 `used_bytes` 并发安全 | Postgres 行级原子更新（`UPDATE ... SET used_bytes = used_bytes + :delta`），不引入 Redis 或显式行锁 | Phase 3 `quota.py` |
 | `storage.quota.write` scope 注册时机 | Phase 3 实现配额 API 时一并注册到 `CONVENTIONS.md §4.x` 和 identity `_ALLOWED_SCOPES`，不提前占位 | Phase 3 验收标准 |
 | `foundation-audit-worm` 只读窗口起点 | Phase 2 上线日为起点计 6 个月，写进 `docs/design/storage-migration-v1.md`；过渡期残留写入由 feature flag 兜底，忽略不计 | Phase 2 migration 文档 |
@@ -768,3 +786,4 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 | 2026-06-11 | 0.1.0 | 初版（存储层 v1 设计文档） |
 | 2026-06-11 | 1.0.0 | 定稿：5 项决策落定（隔离/节奏/并发/scope/只读窗口）；修正 minio-init 现状描述与 `global.storage`/`global.s3` 引用；id 字段 VARCHAR(30) 对齐项目惯例；明确 `soft_delete` 需新增 `s3_location` 参数（否则 GC 无效）；附录 A 改为容忍行号漂移的措辞 |
 | 2026-06-11 | 1.1.0 | Phase 2 调研期修订：audit key 保留 hour 段（5 层）；security-ops 范围澄清（不写 S3，只校验请求体 + 补 `original_location`）；audit feature flag 改名 `storage.worm_via_storage_client`；Helm `global.s3` 是孤儿节，Phase 2 同步改造 services-renderer 真正注入 ENV；audit WORM 不写 `original_location` |
+| 2026-06-12 | 1.2.0 | Phase 3/4 调研期修订：(1) Phase 3 ID 前缀改 `sqt_` 对齐 lifecycle 既有 `bin_/crt_/dsj_` 惯例；(2) Phase 3 自建 `require_scope` Depends（lifecycle 现状零 scope 校验）；(3) Phase 4 同步加 security-ops DELETE 端点 + soft_delete 调用（不然 GC 无对象可清）；(4) `original_location` 改存裸 list `["bucket::key"]` 对齐业务表 `s3_location`；(5) Phase 4 给 `list_prefix` 加分页参数；(6) Phase 4 跳过 audit bucket 孤儿对账 |
