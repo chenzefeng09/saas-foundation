@@ -4,20 +4,22 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ulid
-from sqlalchemy import select, update
+from foundation_storage import ObjectKey
+from foundation_storage.errors import ObjectLockedError, StorageError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.domain.models import (
     DestructionCertificate,
     DestructionJob,
     LegalHold,
+    Outbox,
     RecycleBin,
     ResourceType,
     RetentionPolicyOverride,
-    Outbox,
 )
 from foundation_lifecycle.errors import (
     LEGAL_HOLD_ACTIVE,
@@ -26,6 +28,13 @@ from foundation_lifecycle.errors import (
     FoundationError,
 )
 from foundation_lifecycle.observability import get_logger
+from foundation_lifecycle.services.storage_location import (
+    encode_locations,
+    parse_s3_location,
+)
+
+if TYPE_CHECKING:
+    from foundation_storage import StorageClient
 
 log = get_logger(__name__)
 
@@ -48,6 +57,7 @@ class LifecycleService:
         resource_name: str | None,
         deleted_by: str,
         request_id: str,
+        s3_location: list[str] | None = None,
     ) -> RecycleBin:
         # Verify resource type exists
         rt = await session.get(ResourceType, resource_type_id)
@@ -90,6 +100,7 @@ class LifecycleService:
             resource_name=resource_name,
             deleted_by=deleted_by,
             expires_at=expires_at,
+            original_location=encode_locations(s3_location),
         )
         session.add(entry)
         self._emit(session, tenant_id, "foundation.lifecycle.soft_deleted",
@@ -116,6 +127,7 @@ class LifecycleService:
     async def hard_delete(
         self, session: AsyncSession, *, tenant_id: str, bin_id: str,
         destroyed_by: str, witness_user_id: str | None, request_id: str,
+        storage_client: StorageClient | None = None,
     ) -> None:
         entry = await session.get(RecycleBin, bin_id)
         if entry is None or entry.tenant_id != tenant_id:
@@ -137,6 +149,11 @@ class LifecycleService:
 
         rt = await session.get(ResourceType, entry.resource_type_id)
         destruction_method = rt.destruction_method if rt else "truncate"
+
+        # GC underlying S3 objects before flipping hard_deleted_at. We never
+        # let a storage failure block the DB-side destruction — drift gets
+        # caught by the orphan reconcile job (storage-v1 §6.3).
+        await self._gc_objects(storage_client, entry)
 
         now = datetime.now(UTC)
         entry.hard_deleted_at = now
@@ -166,6 +183,7 @@ class LifecycleService:
     # ------------------------------------------------------------------ Retention Cron
     async def sweep_expired(
         self, session: AsyncSession, *, limit: int = 500,
+        storage_client: StorageClient | None = None,
     ) -> int:
         """Hard-delete all recycle bin entries past their expiry. Returns count."""
         now = datetime.now(UTC)
@@ -192,6 +210,7 @@ class LifecycleService:
             )
             if active_lh is not None:
                 continue
+            await self._gc_objects(storage_client, entry)
             entry.hard_deleted_at = now
             count += 1
 
@@ -233,3 +252,37 @@ class LifecycleService:
             aggregate_id=payload.get("resource_id", ""),
             payload=payload, request_id=request_id,
         ))
+
+    async def _gc_objects(
+        self,
+        storage_client: StorageClient | None,
+        entry: RecycleBin,
+    ) -> None:
+        """Delete the S3 objects recorded in ``entry.original_location``.
+
+        Per storage-v1 §6: WORM-protected (audit) objects raise
+        ``ObjectLockedError`` and are silently skipped; any other storage
+        error is logged but does NOT abort the DB-side hard-delete — the
+        daily orphan reconcile (storage-v1 §6.3) catches the drift.
+        """
+        if storage_client is None or not entry.original_location:
+            return
+        keys: list[ObjectKey] = parse_s3_location(entry.original_location)
+        for key in keys:
+            try:
+                await storage_client.delete_object(key)
+            except ObjectLockedError:
+                log.warning(
+                    "storage.gc.object_locked",
+                    tenant_id=entry.tenant_id,
+                    resource_id=entry.resource_id,
+                    key=key.key,
+                )
+            except StorageError as exc:
+                log.error(
+                    "storage.gc.delete_failed",
+                    tenant_id=entry.tenant_id,
+                    resource_id=entry.resource_id,
+                    key=key.key,
+                    error=str(exc),
+                )

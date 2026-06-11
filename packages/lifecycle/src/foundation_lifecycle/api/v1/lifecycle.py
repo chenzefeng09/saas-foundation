@@ -16,6 +16,9 @@ router = APIRouter()
 
 class SoftDeleteRequest(BaseModel):
     resource_type_id: str; resource_id: str; resource_name: str | None = None
+    # Optional ``["bucket::key", ...]`` so lifecycle GC can clean S3 on
+    # hard-delete; see storage-v1 §6.2.
+    s3_location: list[str] | None = None
 
 class RestoreRequest(BaseModel):
     restored_by: str | None = None
@@ -40,7 +43,8 @@ async def soft_delete(
 ) -> dict:
     entry = await svc.soft_delete(session, tenant_id=ctx.tenant_id,
         resource_type_id=body.resource_type_id, resource_id=body.resource_id,
-        resource_name=body.resource_name, deleted_by=ctx.user_id or "", request_id=request_id)
+        resource_name=body.resource_name, deleted_by=ctx.user_id or "", request_id=request_id,
+        s3_location=body.s3_location)
     return {"bin_id": entry.id, "expires_at": entry.expires_at.isoformat()}
 
 @router.post("/recycle-bin/{bin_id}:restore", operation_id="restore")
