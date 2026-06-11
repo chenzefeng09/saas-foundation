@@ -467,6 +467,62 @@ class TestWormHelper:
             result = asyncio.run(write_worm({"severity": "CRITICAL", "event_id": "evt_X"}))
         assert result is None
 
+    def test_worm_via_storage_client_path(self) -> None:
+        """Flag ON → write goes through StorageClient.put_object with COMPLIANCE lock."""
+        import asyncio
+        from foundation_audit.adapters import worm as worm_mod
+
+        captured: dict[str, Any] = {}
+
+        async def fake_put_object(**kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        fake_client = type("C", (), {"put_object": staticmethod(fake_put_object)})()
+
+        fake_audit_settings = type("S", (), {
+            "worm_enabled": True,
+            "worm_retention_years": 7,
+            "worm_bucket": "legacy-bucket",  # must not be reached
+            "s3_endpoint": "http://ignored",
+            "s3_access_key": "x",
+            "s3_secret_key": "x",
+        })()
+
+        fake_storage_settings = type("SS", (), {"bucket_audit": "foundation-audit"})()
+
+        with patch.object(worm_mod, "get_settings", return_value=fake_audit_settings), \
+             patch.object(worm_mod, "_is_storage_client_enabled", return_value=True), \
+             patch(
+                 "foundation_storage.StorageClient.as_system",
+                 return_value=fake_client,
+             ), \
+             patch(
+                 "foundation_storage.get_settings",
+                 return_value=fake_storage_settings,
+             ):
+            uri = asyncio.run(worm_mod.write_worm({
+                "severity": "SECURITY",
+                "event_id": "evt_NEW01",
+                "tenant_id": "tnt_T2",
+                "occurred_at": "2026-06-15T10:30:00+00:00",
+            }))
+
+        # URI assembled from storage settings bucket_audit + new layout key
+        assert uri == (
+            "s3://foundation-audit/tenants/tnt_T2/events/2026/06/15/10/evt_NEW01.json"
+        )
+        # put_object received the correct kwargs
+        assert captured["content_type"] == "application/json"
+        assert captured["object_lock_mode"] == "COMPLIANCE"
+        assert captured["object_lock_retain_until"].year >= datetime.now(UTC).year + 7
+        assert captured["key"].key == (
+            "tenants/tnt_T2/events/2026/06/15/10/evt_NEW01.json"
+        )
+        assert isinstance(captured["body"], bytes)
+        # body is valid JSON containing the event_id
+        payload = json.loads(captured["body"])
+        assert payload["event_id"] == "evt_NEW01"
+
 
 # ---------------------------------------------------------------------------
 # Tests for ingest_service record_attempts
