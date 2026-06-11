@@ -39,7 +39,25 @@ class TestFactories:
         ts = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         k = ObjectKey.for_audit_event("tnt_01", ts, "evt_xyz")
         assert k.purpose == BucketPurpose.AUDIT
-        assert k.key == "tenants/tnt_01/year=2026/month=01/day=02/hour=03/evt_xyz.json"
+        assert k.key == "tenants/tnt_01/events/2026/01/02/03/evt_xyz.json"
+
+    def test_for_audit_event_distinct_hours_yield_distinct_keys(self) -> None:
+        """Hour segment differentiates keys within the same day (storage-v1 §3.2)."""
+        evt_id = "evt_same"
+        h03 = ObjectKey.for_audit_event(
+            "tnt_01", datetime(2026, 6, 11, 3, 30, 0, tzinfo=UTC), evt_id
+        )
+        h14 = ObjectKey.for_audit_event(
+            "tnt_01", datetime(2026, 6, 11, 14, 30, 0, tzinfo=UTC), evt_id
+        )
+        h23 = ObjectKey.for_audit_event(
+            "tnt_01", datetime(2026, 6, 11, 23, 59, 59, tzinfo=UTC), evt_id
+        )
+        assert h03.key == "tenants/tnt_01/events/2026/06/11/03/evt_same.json"
+        assert h14.key == "tenants/tnt_01/events/2026/06/11/14/evt_same.json"
+        assert h23.key == "tenants/tnt_01/events/2026/06/11/23/evt_same.json"
+        # the three keys must be distinct so that intra-day collisions can't happen
+        assert len({h03.key, h14.key, h23.key}) == 3
 
     def test_for_workspace_file(self) -> None:
         k = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
