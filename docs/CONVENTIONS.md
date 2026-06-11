@@ -236,6 +236,7 @@ service 的完整身份。
 | `notification.send` | 走通知中心发送消息 | 业务事件触发器 |
 | `search.read` / `search.write` | 搜索读/写 | 业务服务 |
 | `billing.usage.write` | 上报用量 | 计量埋点 worker |
+| `storage.quota.write` | 写入/更新租户存储配额上限 | 平台管理员 API |
 
 约束：
 - 每个 scope **不携带**租户语义；租户由 JWT `tenant_id` claim 强制
