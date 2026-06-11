@@ -211,14 +211,16 @@ class TestRead:
             ]
         }
         client = StorageClient(settings, tenant_id="tnt_01")
-        items = await client.list_prefix(
+        items, next_token = await client.list_prefix(
             BucketPurpose.WORKSPACE, "tnt_01", prefix_segments=["workspaces", "ws_1"]
         )
         assert len(items) == 1
         assert items[0].content_length == 12
+        assert next_token is None
         kwargs = fake_boto.list_objects_v2.call_args.kwargs
         assert kwargs["Bucket"] == "foundation-workspace"
         assert kwargs["Prefix"] == "tenants/tnt_01/workspaces/ws_1/"
+        assert "ContinuationToken" not in kwargs
 
     @pytest.mark.asyncio
     async def test_list_prefix_no_segments(
@@ -226,9 +228,81 @@ class TestRead:
     ) -> None:
         fake_boto.list_objects_v2.return_value = {"Contents": []}
         client = StorageClient(settings, tenant_id="tnt_01")
-        items = await client.list_prefix(BucketPurpose.WORKSPACE, "tnt_01")
+        items, next_token = await client.list_prefix(BucketPurpose.WORKSPACE, "tnt_01")
         assert items == []
+        assert next_token is None
         assert fake_boto.list_objects_v2.call_args.kwargs["Prefix"] == "tenants/tnt_01/"
+
+    @pytest.mark.asyncio
+    async def test_list_prefix_returns_continuation_token(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        fake_boto.list_objects_v2.return_value = {
+            "Contents": [
+                {"Key": "tenants/tnt_01/a", "Size": 1},
+            ],
+            "NextContinuationToken": "tok_abc",
+        }
+        client = StorageClient(settings, tenant_id="tnt_01")
+        items, next_token = await client.list_prefix(
+            BucketPurpose.WORKSPACE, "tnt_01"
+        )
+        assert len(items) == 1
+        assert next_token == "tok_abc"
+
+    @pytest.mark.asyncio
+    async def test_list_prefix_passes_continuation_token(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        fake_boto.list_objects_v2.return_value = {"Contents": []}
+        client = StorageClient(settings, tenant_id="tnt_01")
+        await client.list_prefix(
+            BucketPurpose.WORKSPACE, "tnt_01", continuation_token="tok_in"
+        )
+        kwargs = fake_boto.list_objects_v2.call_args.kwargs
+        assert kwargs["ContinuationToken"] == "tok_in"
+
+    @pytest.mark.asyncio
+    async def test_iter_prefix_follows_continuation_across_pages(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        page1 = {
+            "Contents": [
+                {"Key": "tenants/tnt_01/a", "Size": 1},
+                {"Key": "tenants/tnt_01/b", "Size": 2},
+            ],
+            "NextContinuationToken": "tok_p2",
+        }
+        page2 = {
+            "Contents": [
+                {"Key": "tenants/tnt_01/c", "Size": 3},
+            ],
+        }
+        fake_boto.list_objects_v2.side_effect = [page1, page2]
+
+        client = StorageClient(settings, tenant_id="tnt_01")
+        collected: list[str] = []
+        async for meta in client.iter_prefix(BucketPurpose.WORKSPACE, "tnt_01"):
+            collected.append(meta.key)
+        assert collected == [
+            "tenants/tnt_01/a",
+            "tenants/tnt_01/b",
+            "tenants/tnt_01/c",
+        ]
+        assert fake_boto.list_objects_v2.call_count == 2
+        second_call_kwargs = fake_boto.list_objects_v2.call_args_list[1].kwargs
+        assert second_call_kwargs["ContinuationToken"] == "tok_p2"
+
+    @pytest.mark.asyncio
+    async def test_iter_prefix_empty_yields_nothing(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        fake_boto.list_objects_v2.return_value = {"Contents": []}
+        client = StorageClient(settings, tenant_id="tnt_01")
+        out: list[str] = []
+        async for meta in client.iter_prefix(BucketPurpose.WORKSPACE, "tnt_01"):
+            out.append(meta.key)
+        assert out == []
 
 
 class TestComputeTenantUsage:

@@ -71,3 +71,13 @@ INCIDENT_NOT_FOUND: Final = ErrorCode(
     404, "Incident not found",
     "The requested incident does not exist.", "应急事件记录不存在。",
 )
+SCAN_NOT_FOUND: Final = ErrorCode(
+    "FOUNDATION.SECURITY_OPS.SCAN.NOT_FOUND",
+    404, "Scan run not found",
+    "The requested scan run does not exist.", "扫描记录不存在。",
+)
+DRILL_NOT_FOUND: Final = ErrorCode(
+    "FOUNDATION.SECURITY_OPS.DRILL.NOT_FOUND",
+    404, "Drill not found",
+    "The requested drill does not exist.", "演练记录不存在。",
+)

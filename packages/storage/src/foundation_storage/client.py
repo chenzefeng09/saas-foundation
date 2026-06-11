@@ -35,7 +35,7 @@ from foundation_storage.observability import get_logger
 from foundation_storage.quota import NoopQuotaChecker, QuotaChecker
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
     from datetime import datetime
 
 log = get_logger(__name__)
@@ -322,8 +322,18 @@ class StorageClient:
         tenant_id: str,
         prefix_segments: Iterable[str] = (),
         max_keys: int = 1000,
-    ) -> list[ObjectMeta]:
-        """List objects under ``tenants/{tenant_id}/{prefix...}``."""
+        continuation_token: str | None = None,
+    ) -> tuple[list[ObjectMeta], str | None]:
+        """List objects under ``tenants/{tenant_id}/{prefix...}``.
+
+        Returns ``(items, next_continuation_token)``.  When the bucket has more
+        keys than ``max_keys`` the next page can be fetched by passing
+        ``next_continuation_token`` as ``continuation_token``.  ``next`` is
+        ``None`` on the final page.
+
+        For non-paginated iteration over a whole prefix, prefer
+        :py:meth:`iter_prefix` which follows the token automatically.
+        """
         if self.tenant_id is not None and tenant_id != self.tenant_id:
             raise KeyValidationError(
                 KEY_INVALID,
@@ -339,11 +349,16 @@ class StorageClient:
             "storage.list", attributes={"bucket": bucket, "prefix": prefix}
         ):
             client = self._get_boto()
+            kwargs: dict[str, Any] = {
+                "Bucket": bucket,
+                "Prefix": prefix,
+                "MaxKeys": max_keys,
+            }
+            if continuation_token is not None:
+                kwargs["ContinuationToken"] = continuation_token
             try:
                 resp = await self._run(
-                    lambda: client.list_objects_v2(
-                        Bucket=bucket, Prefix=prefix, MaxKeys=max_keys
-                    )
+                    lambda: client.list_objects_v2(**kwargs)
                 )
             except Exception as exc:
                 raise self._map_client_error(exc) from exc
@@ -356,7 +371,39 @@ class StorageClient:
                         last_modified=item.get("LastModified"),
                     )
                 )
-            return out
+            next_token_raw = resp.get("NextContinuationToken")
+            next_token: str | None = (
+                next_token_raw if isinstance(next_token_raw, str) and next_token_raw else None
+            )
+            return out, next_token
+
+    async def iter_prefix(
+        self,
+        purpose: BucketPurpose,
+        tenant_id: str,
+        prefix_segments: Iterable[str] = (),
+        page_size: int = 1000,
+    ) -> AsyncIterator[ObjectMeta]:
+        """Iterate every object under ``tenants/{tenant_id}/{prefix...}``.
+
+        Follows S3 ``NextContinuationToken`` transparently so callers don't
+        have to thread the token themselves.  Used by the orphan reconcile
+        job (storage-v1 §6.3).
+        """
+        segments = list(prefix_segments)
+        token: str | None = None
+        while True:
+            items, token = await self.list_prefix(
+                purpose,
+                tenant_id,
+                prefix_segments=segments,
+                max_keys=page_size,
+                continuation_token=token,
+            )
+            for item in items:
+                yield item
+            if token is None:
+                return
 
     async def compute_tenant_usage(
         self,

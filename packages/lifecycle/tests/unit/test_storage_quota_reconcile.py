@@ -2,30 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-import types
-from enum import StrEnum
 from typing import Any
-
-import pytest
 
 from foundation_lifecycle.domain.models import TenantStorageQuota
 
-
-# foundation_storage is not a hard dep of lifecycle (late import). Stub a
-# minimal module so the import inside reconcile_used_bytes succeeds.
-@pytest.fixture(autouse=True)
-def _stub_foundation_storage(monkeypatch: pytest.MonkeyPatch) -> None:
-    mod = types.ModuleType("foundation_storage")
-
-    class BucketPurpose(StrEnum):
-        AUDIT = "audit"
-        WORKSPACE = "workspace"
-        KB_RAW = "kb_raw"
-        KB_DERIVED = "kb_derived"
-
-    mod.BucketPurpose = BucketPurpose  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "foundation_storage", mod)
+# Phase 4: foundation_storage is now a proper path-dep (chore commit dropped the
+# late-import stub).  Tests construct a real BucketPurpose-aware fake client.
 
 
 def _row(

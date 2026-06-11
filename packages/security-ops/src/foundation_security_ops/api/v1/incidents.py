@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +79,23 @@ async def declare_incident(
         request_id=request_id,
     )
     return _incident_out(inc)
+
+
+@router.delete(
+    "/incidents/{inc_id}",
+    status_code=204,
+    response_class=Response,
+    tags=["incidents"],
+)
+async def delete_incident(
+    inc_id: str,
+    session: AsyncSession = Depends(db_session),
+    svc: SecurityOpsService = Depends(security_ops_service),
+    request_id: str = Depends(current_request_id),
+) -> Response:
+    # storage-v1 §6.2: hand off retention + S3 GC to lifecycle.
+    await svc.delete_incident(session, inc_id, request_id=request_id)
+    return Response(status_code=204)
 
 
 @router.get("/incidents/{inc_id}", tags=["incidents"])

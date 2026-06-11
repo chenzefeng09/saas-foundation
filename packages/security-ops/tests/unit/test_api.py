@@ -301,3 +301,26 @@ class TestDrillsApi:
         )
         assert resp.status_code == 201
         assert resp.json()["kind"] == "TABLETOP"
+
+
+# ─── Delete endpoints (storage-v1 §6.2) ──────────────────────────────────────
+
+
+class TestDeleteEndpoints:
+    def test_delete_scan_run(self, client):
+        client._mock_svc.delete_scan_run = AsyncMock(return_value=None)
+        resp = client.delete("/api/security-ops/v1/scans/runs/scan_TEST01")
+        assert resp.status_code == 204
+        client._mock_svc.delete_scan_run.assert_awaited_once()
+
+    def test_delete_incident(self, client):
+        client._mock_svc.delete_incident = AsyncMock(return_value=None)
+        resp = client.delete("/api/security-ops/v1/incidents/inc_TEST01")
+        assert resp.status_code == 204
+        client._mock_svc.delete_incident.assert_awaited_once()
+
+    def test_delete_drill(self, client):
+        client._mock_svc.delete_drill = AsyncMock(return_value=None)
+        resp = client.delete("/api/security-ops/v1/drills/drill_TEST01")
+        assert resp.status_code == 204
+        client._mock_svc.delete_drill.assert_awaited_once()

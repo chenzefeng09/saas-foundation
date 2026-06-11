@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     reconcile_cron: str = "0 3 * * *"  # daily 03:00
     reconcile_drift_alert_pct: float = 1.0
 
+    # Storage orphan reconcile cron (Phase 4 — storage-v1 §6.3). Walks every
+    # non-audit tenant prefix; flags S3 objects that have no recycle_bin row
+    # AND are older than orphan_grace_period_days. dry_run defaults to True so
+    # we never delete user data on the first roll-out; flip after a soak.
+    orphan_reconcile_enabled: bool = True
+    orphan_reconcile_cron: str = "0 4 * * *"  # daily 04:00 — after quota
+    orphan_grace_period_days: int = 7
+    orphan_reconcile_dry_run: bool = True
+
     # Crypto service (for key destruction via KEK)
     crypto_url: str = "http://127.0.0.1:8004/api/crypto/v1"
 

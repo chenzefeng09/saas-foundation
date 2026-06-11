@@ -21,7 +21,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import ulid
-from sqlalchemy import select
+from foundation_lifecycle.services.lifecycle_service import LifecycleService
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_security_ops.domain.models import (
@@ -35,7 +36,9 @@ from foundation_security_ops.domain.models import (
     Vulnerability,
 )
 from foundation_security_ops.errors import (
+    DRILL_NOT_FOUND,
     INCIDENT_NOT_FOUND,
+    SCAN_NOT_FOUND,
     VALIDATION_FAILED,
     VULN_NOT_FOUND,
     FoundationError,
@@ -672,6 +675,101 @@ class SecurityOpsService:
         session.add(finding)
         await session.flush()
         return finding
+
+    # ──────────────────────────────────────────── DELETE → recycle bin ───
+    # storage-v1 §6.2: DELETE endpoints route the row's raw ``s3_location``
+    # through LifecycleService.soft_delete so the recycle bin (not this
+    # service) owns the retention window and Phase 4 GC can clean S3 when
+    # the bin entry expires.
+
+    # security-ops resources are platform-scoped — use a sentinel tenant id
+    # so the lifecycle.recycle_bin row still satisfies its NOT NULL.
+    _PLATFORM_TENANT_ID = "_platform"
+    _RT_SCAN_RUN = "security_ops.scan_run"
+    _RT_INCIDENT = "security_ops.incident"
+    _RT_DRILL = "security_ops.drill"
+
+    async def _soft_delete_then_drop(
+        self,
+        session: AsyncSession,
+        *,
+        row: Any,
+        resource_type_id: str,
+        model: type,
+        request_id: str,
+        deleted_by: str,
+    ) -> None:
+        """Common path: soft-delete to recycle bin, then physically drop the row.
+
+        We physically delete the security-ops table row (no ``deleted_at``
+        column) because ``lifecycle.recycle_bin`` is the single source of
+        truth for retention.  Storing the same window in two places would
+        force every reader to OR the two queries.
+        """
+        s3_loc_raw = getattr(row, "s3_location", None)
+        s3_location: list[str] | None = None
+        if s3_loc_raw:
+            import json as _json
+            try:
+                decoded = _json.loads(s3_loc_raw)
+                if isinstance(decoded, list):
+                    s3_location = [str(x) for x in decoded if x]
+            except (ValueError, TypeError):
+                log.warning(
+                    "security_ops.delete.s3_location_unparseable",
+                    table=model.__name__,
+                    row_id=row.id,
+                )
+
+        lifecycle_svc = LifecycleService()
+        await lifecycle_svc.soft_delete(
+            session,
+            tenant_id=self._PLATFORM_TENANT_ID,
+            resource_type_id=resource_type_id,
+            resource_id=row.id,
+            resource_name=None,
+            deleted_by=deleted_by,
+            request_id=request_id,
+            s3_location=s3_location,
+        )
+        await session.execute(delete(model).where(model.id == row.id))  # type: ignore[attr-defined]
+        await session.flush()
+
+    async def delete_scan_run(
+        self, session: AsyncSession, scan_id: str, *, request_id: str,
+        deleted_by: str = "system",
+    ) -> None:
+        row = await session.get(ScanRun, scan_id)
+        if row is None:
+            raise FoundationError(SCAN_NOT_FOUND, f"ScanRun {scan_id!r} not found")
+        await self._soft_delete_then_drop(
+            session, row=row, resource_type_id=self._RT_SCAN_RUN,
+            model=ScanRun, request_id=request_id, deleted_by=deleted_by,
+        )
+
+    async def delete_incident(
+        self, session: AsyncSession, inc_id: str, *, request_id: str,
+        deleted_by: str = "system",
+    ) -> None:
+        row = await session.get(Incident, inc_id)
+        if row is None:
+            raise FoundationError(INCIDENT_NOT_FOUND, f"Incident {inc_id!r} not found")
+        await self._soft_delete_then_drop(
+            session, row=row, resource_type_id=self._RT_INCIDENT,
+            model=Incident, request_id=request_id, deleted_by=deleted_by,
+        )
+
+    async def delete_drill(
+        self, session: AsyncSession, drill_id: str, *, request_id: str,
+        deleted_by: str = "system",
+    ) -> None:
+        row = await session.get(Drill, drill_id)
+        if row is None:
+            raise FoundationError(DRILL_NOT_FOUND, f"Drill {drill_id!r} not found")
+        await self._soft_delete_then_drop(
+            session, row=row, resource_type_id=self._RT_DRILL,
+            model=Drill, request_id=request_id, deleted_by=deleted_by,
+        )
 
     # ──────────────────────────────────────────── Internal helpers ───────
 
