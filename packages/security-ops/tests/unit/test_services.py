@@ -91,6 +91,95 @@ class TestReportScanRun:
         delta = crit_vuln.due_at - crit_vuln.found_at
         assert timedelta(hours=23) < delta <= timedelta(hours=25)
 
+    async def test_s3_key_format_drift_warns_when_flag_off(
+        self, svc, fake_session, request_id, scan_time, caplog
+    ):
+        """storage-v1 §7.2: flag OFF → only emit warning, do not block (default)."""
+        from unittest.mock import patch
+
+        with patch(
+            "foundation_security_ops.services.security_ops_service._flag_enabled",
+            return_value=False,
+        ):
+            scan, _ = await svc.report_scan_run(
+                fake_session,
+                type="SAST",
+                tool="semgrep",
+                target="repo:x",
+                commit_sha=None,
+                pipeline_id=None,
+                started_at=scan_time,
+                finished_at=None,
+                status="PASSED",
+                sarif_s3_key="not-a-valid-storage-v1-key",
+                findings_count={},
+                request_id=request_id,
+            )
+        # Bad-format key did NOT block creation.
+        assert scan.sarif_s3_key == "not-a-valid-storage-v1-key"
+        # s3_location populated even for a "drift" raw key — Phase 4 GC needs *something*.
+        assert scan.s3_location is not None
+        assert "not-a-valid-storage-v1-key" in scan.s3_location
+
+    async def test_s3_key_format_drift_blocks_when_flag_on(
+        self, svc, fake_session, request_id, scan_time
+    ):
+        """storage-v1 §7.2: flag ON → bad key raises VALIDATION_FAILED."""
+        from unittest.mock import patch
+        from foundation_security_ops.errors import VALIDATION_FAILED, FoundationError
+
+        with patch(
+            "foundation_security_ops.services.security_ops_service._flag_enabled",
+            return_value=True,
+        ):
+            with pytest.raises(FoundationError) as exc_info:
+                await svc.report_scan_run(
+                    fake_session,
+                    type="SAST",
+                    tool="semgrep",
+                    target="repo:x",
+                    commit_sha=None,
+                    pipeline_id=None,
+                    started_at=scan_time,
+                    finished_at=None,
+                    status="PASSED",
+                    sarif_s3_key="completely-wrong-format",
+                    findings_count={},
+                    request_id=request_id,
+                )
+        assert exc_info.value.error_code is VALIDATION_FAILED
+
+    async def test_s3_key_valid_format_passes_with_flag_on(
+        self, svc, fake_session, request_id, scan_time
+    ):
+        """Well-formed storage-v1 key passes validation; s3_location captured."""
+        from unittest.mock import patch
+
+        valid_key = (
+            "foundation-workspace::tenants/tnt_T1/security-ops/scan/scan_X/sarif.json"
+        )
+        with patch(
+            "foundation_security_ops.services.security_ops_service._flag_enabled",
+            return_value=True,
+        ):
+            scan, _ = await svc.report_scan_run(
+                fake_session,
+                type="SAST",
+                tool="semgrep",
+                target="repo:x",
+                commit_sha=None,
+                pipeline_id=None,
+                started_at=scan_time,
+                finished_at=None,
+                status="PASSED",
+                sarif_s3_key=valid_key,
+                findings_count={},
+                request_id=request_id,
+            )
+        assert scan.sarif_s3_key == valid_key
+        assert scan.s3_location is not None
+        assert valid_key in scan.s3_location
+
     async def test_outbox_event_emitted_on_failure(self, svc, fake_session, request_id, scan_time):
         from foundation_security_ops.domain.models import Outbox
 

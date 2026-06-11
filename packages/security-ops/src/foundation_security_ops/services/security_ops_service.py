@@ -36,6 +36,7 @@ from foundation_security_ops.domain.models import (
 )
 from foundation_security_ops.errors import (
     INCIDENT_NOT_FOUND,
+    VALIDATION_FAILED,
     VULN_NOT_FOUND,
     FoundationError,
 )
@@ -43,8 +44,12 @@ from foundation_security_ops.observability import get_logger
 from foundation_security_ops.services import license_policy, sla
 from foundation_security_ops.services.sbom_adapter import (
     SbomToolUnavailable,
-    generate_sbom as _syft_generate,
     stub_sbom,
+)
+from foundation_security_ops.services.sbom_adapter import (
+    generate_sbom as _syft_generate,
+)
+from foundation_security_ops.services.sbom_adapter import (
     verify_attestation as _cosign_verify,
 )
 
@@ -58,6 +63,93 @@ _BLOCK_SEVERITIES = {"CRITICAL", "HIGH"}
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{ulid.new()!s}"
+
+
+# ── storage-v1 §7.2: validate *_s3_key request body format ───────────────────
+# security-ops itself does NOT write S3 — keys come in over the wire from CI
+# pipelines / SDK callers and we trust them.  But Phase 2 starts policing the
+# wire format so future writers can rely on a single canonical layout
+# (``{bucket}::tenants/{tid}/...``).  The behaviour is feature-flagged so a
+# bad rollout can't block CI before all callers have caught up.
+
+_KEY_FORMAT_FLAG = "storage.security_ops_validate_key_format"
+
+
+def _validate_s3_key_format(s3_key: str) -> None:
+    """Parse ``s3_key`` with foundation_storage.ObjectKey.from_string.
+
+    Raises ``FoundationError(VALIDATION_FAILED)`` on any parse failure.  Caller
+    is responsible for the feature-flag gate; this helper always raises.
+    """
+    try:
+        from foundation_storage import ObjectKey
+        from foundation_storage import get_settings as get_storage_settings
+        from foundation_storage.errors import KeyValidationError
+    except ImportError as exc:  # pragma: no cover - defensive
+        raise FoundationError(
+            VALIDATION_FAILED,
+            detail=f"foundation_storage not installed: {exc}",
+        ) from exc
+
+    settings = get_storage_settings()
+    try:
+        ObjectKey.from_string(s3_key, settings.bucket_to_purpose_map())
+    except KeyValidationError as exc:
+        raise FoundationError(
+            VALIDATION_FAILED,
+            detail=f"s3_key {s3_key!r} does not match storage-v1 format: {exc.detail}",
+            extra={"s3_key": s3_key},
+        ) from exc
+
+
+def _flag_enabled(name: str) -> bool:
+    """Evaluate a feature flag; treat any failure as OFF (fail_open=False)."""
+    try:
+        from foundation_feature_flag.services.feature_flag_service import (
+            FeatureFlagService,
+        )
+        svc = FeatureFlagService()
+        return bool(svc.is_enabled(name))
+    except Exception as exc:
+        log.warning("feature_flag.lookup.failed", flag=name, error=str(exc))
+        return False
+
+
+def _check_s3_keys(s3_keys: list[str | None]) -> None:
+    """Run validation for every non-None s3_key supplied; flag-gated.
+
+    Flag OFF: only emit a warning per drift (log fields ``security_ops.s3_key.format_drift``).
+    Flag ON : raise FoundationError(VALIDATION_FAILED) on first drift.
+    """
+    enabled = _flag_enabled(_KEY_FORMAT_FLAG)
+    for key in s3_keys:
+        if not key:
+            continue
+        try:
+            _validate_s3_key_format(key)
+        except FoundationError as exc:
+            if enabled:
+                raise
+            log.warning(
+                "security_ops.s3_key.format_drift",
+                s3_key=key,
+                detail=exc.detail,
+            )
+
+
+def _encode_s3_location(s3_keys: list[str | None]) -> str | None:
+    """Pack one-or-more raw ``*_s3_key`` strings into the row's ``s3_location``.
+
+    Returns ``None`` if no keys are supplied so we don't pollute rows that
+    have no S3 dependency.  Format is JSON list (small, human-readable, lets
+    Phase 4 GC iterate without parsing per-field knowledge).
+    """
+    import json as _json
+
+    valid = [k for k in s3_keys if k]
+    if not valid:
+        return None
+    return _json.dumps(valid, ensure_ascii=False)
 
 
 class SecurityOpsService:
@@ -94,6 +186,8 @@ class SecurityOpsService:
 
         Returns (scan_run, list_of_new_vulns).
         """
+        # storage-v1 §7.2: validate *_s3_key request body format (feature-flagged).
+        _check_s3_keys([sarif_s3_key])
         scan = ScanRun(
             id=_new_id("scan"),
             type=type.upper(),
@@ -105,6 +199,7 @@ class SecurityOpsService:
             finished_at=finished_at,
             status=status.upper(),
             sarif_s3_key=sarif_s3_key,
+            s3_location=_encode_s3_location([sarif_s3_key]),
             findings_count=findings_count,
         )
         session.add(scan)
@@ -464,10 +559,13 @@ class SecurityOpsService:
         if inc is None:
             raise FoundationError(INCIDENT_NOT_FOUND, f"Incident {inc_id!r} not found")
 
+        # storage-v1 §7.2: validate *_s3_key request body format (feature-flagged).
+        _check_s3_keys([pir_s3_key])
         inc.status = "RESOLVED"
         inc.resolved_at = datetime.now(UTC)
         inc.root_cause = root_cause
         inc.pir_s3_key = pir_s3_key
+        inc.s3_location = _encode_s3_location([pir_s3_key])
         self._emit(session, None, "foundation.security_ops.incident.resolved",
                    {"inc_id": inc_id, "root_cause": root_cause}, request_id)
         await session.flush()
@@ -523,10 +621,14 @@ class SecurityOpsService:
         drill = await session.get(Drill, drill_id)
         if drill is None:
             raise ValueError(f"Drill {drill_id!r} not found")
+        # storage-v1 §7.2: validate *_s3_key request body format (feature-flagged).
+        if pir_s3_key:
+            _check_s3_keys([pir_s3_key])
         drill.status = "COMPLETED"
         drill.completed_at = datetime.now(UTC)
         if pir_s3_key:
             drill.pir_s3_key = pir_s3_key
+            drill.s3_location = _encode_s3_location([pir_s3_key])
         self._emit(session, None, "foundation.security_ops.drill.completed",
                    {"drill_id": drill_id, "kind": drill.kind}, request_id)
         await session.flush()
