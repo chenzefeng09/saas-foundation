@@ -231,6 +231,47 @@ class TestRead:
         assert fake_boto.list_objects_v2.call_args.kwargs["Prefix"] == "tenants/tnt_01/"
 
 
+class TestComputeTenantUsage:
+    @pytest.mark.asyncio
+    async def test_sums_size_across_pages(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "tenants/tnt_01/a", "Size": 100},
+                          {"Key": "tenants/tnt_01/b", "Size": 250}]},
+            {"Contents": [{"Key": "tenants/tnt_01/c", "Size": 50}]},
+        ]
+        fake_boto.get_paginator.return_value = paginator
+
+        client = StorageClient.as_system(settings)
+        total = await client.compute_tenant_usage("tnt_01", BucketPurpose.WORKSPACE)
+        assert total == 400
+        paginator.paginate.assert_called_once_with(
+            Bucket="foundation-workspace", Prefix="tenants/tnt_01/"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_bucket_returns_zero(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Contents": []}]
+        fake_boto.get_paginator.return_value = paginator
+
+        client = StorageClient.as_system(settings)
+        total = await client.compute_tenant_usage("tnt_01", BucketPurpose.KB_RAW)
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_rejected(
+        self, fake_boto: MagicMock, settings: StorageSettings
+    ) -> None:
+        client = StorageClient(settings, tenant_id="tnt_01")
+        with pytest.raises(KeyValidationError):
+            await client.compute_tenant_usage("tnt_02", BucketPurpose.WORKSPACE)
+
+
 class TestPresign:
     @pytest.mark.asyncio
     async def test_generate_presigned_url(

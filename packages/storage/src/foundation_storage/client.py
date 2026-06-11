@@ -358,6 +358,51 @@ class StorageClient:
                 )
             return out
 
+    async def compute_tenant_usage(
+        self,
+        tenant_id: str,
+        purpose: BucketPurpose,
+    ) -> int:
+        """Return the total ``Size`` (bytes) of all objects under the tenant prefix.
+
+        Used by the lifecycle reconcile job (Phase 3 §5.3) — list_prefix
+        returns ``ObjectMeta`` objects shaped for app reads, this is a thin
+        loop over the boto3 paginator that just sums ``Size`` so we don't
+        materialise giant lists for big tenants.
+
+        Cross-tenant: when ``self.tenant_id`` is set the call is rejected
+        like every other API; reconcile uses ``StorageClient.as_system()``.
+        """
+        if self.tenant_id is not None and tenant_id != self.tenant_id:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=(
+                    f"usage tenant_id {tenant_id!r} does not match client "
+                    f"tenant_id {self.tenant_id!r}"
+                ),
+            )
+        bucket = self._bucket_for(purpose)
+        prefix = f"tenants/{tenant_id}/"
+        with tracer.start_as_current_span(
+            "storage.compute_usage",
+            attributes={"bucket": bucket, "prefix": prefix},
+        ):
+            client = self._get_boto()
+
+            def _aggregate() -> int:
+                paginator = client.get_paginator("list_objects_v2")
+                total = 0
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for item in page.get("Contents", []) or []:
+                        total += int(item.get("Size", 0))
+                return total
+
+            try:
+                total: int = await self._run(_aggregate)
+            except Exception as exc:
+                raise self._map_client_error(exc) from exc
+            return total
+
     async def generate_presigned_url(
         self,
         key: ObjectKey,

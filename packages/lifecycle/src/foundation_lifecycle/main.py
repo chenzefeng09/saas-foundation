@@ -3,6 +3,7 @@
 from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 import uvicorn
 from fastapi import FastAPI
 from foundation_lifecycle import __version__
@@ -10,15 +11,66 @@ from foundation_lifecycle.api.exception_handlers import install_exception_handle
 from foundation_lifecycle.api.middleware import RequestIdMiddleware, TenantContextMiddleware
 from foundation_lifecycle.api.v1 import api_v1
 from foundation_lifecycle.config import get_settings
-from foundation_lifecycle.domain.db import dispose_engine
+from foundation_lifecycle.domain.db import dispose_engine, session_scope
 from foundation_lifecycle.observability import get_logger, setup_observability
 
 log = get_logger(__name__)
 
+
+async def _run_reconcile_job(drift_alert_pct: float) -> None:
+    """APScheduler entry — opens its own session and storage client."""
+    from foundation_lifecycle.services.storage_quota_reconcile import (
+        reconcile_used_bytes,
+    )
+    from foundation_storage import StorageClient, get_settings as get_storage_settings
+
+    storage_client = StorageClient.as_system(get_storage_settings())
+    try:
+        async with session_scope() as session:
+            report = await reconcile_used_bytes(
+                session,
+                storage_client,
+                drift_alert_pct=drift_alert_pct,
+            )
+        log.info(
+            "storage.quota.reconcile_complete",
+            quotas_scanned=report.quotas_scanned,
+            drifts_corrected=report.drifts_corrected,
+            total_drift_bytes=report.total_drift_bytes,
+        )
+    except Exception as exc:
+        log.error("storage.quota.reconcile_error", error=str(exc))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("startup", version=__version__)
-    yield; log.info("shutdown"); await dispose_engine()
+    s = get_settings()
+    scheduler: Any | None = None
+    if s.reconcile_enabled:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = AsyncIOScheduler()
+        # Standard 5-field cron: "m h dom mon dow"
+        trigger = CronTrigger.from_crontab(s.reconcile_cron)
+        scheduler.add_job(
+            _run_reconcile_job,
+            trigger=trigger,
+            kwargs={"drift_alert_pct": s.reconcile_drift_alert_pct},
+            id="storage_quota_reconcile",
+            replace_existing=True,
+        )
+        scheduler.start()
+        log.info("scheduler.start", job="storage_quota_reconcile", cron=s.reconcile_cron)
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+            log.info("scheduler.shutdown")
+        log.info("shutdown")
+        await dispose_engine()
 
 def create_app() -> FastAPI:
     s = get_settings()
