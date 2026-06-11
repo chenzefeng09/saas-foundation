@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,23 @@ async def list_drills(
 ) -> dict[str, Any]:
     drills = await svc.list_drills(session, kind=filter_kind)
     return {"items": [_drill_out(d) for d in drills], "next_cursor": None}
+
+
+@router.delete(
+    "/drills/{drill_id}",
+    status_code=204,
+    response_class=Response,
+    tags=["drills"],
+)
+async def delete_drill(
+    drill_id: str,
+    session: AsyncSession = Depends(db_session),
+    svc: SecurityOpsService = Depends(security_ops_service),
+    request_id: str = Depends(current_request_id),
+) -> Response:
+    # storage-v1 §6.2: hand off retention + S3 GC to lifecycle.
+    await svc.delete_drill(session, drill_id, request_id=request_id)
+    return Response(status_code=204)
 
 
 class ScheduleDrillRequest(BaseModel):

@@ -26,9 +26,12 @@ structlog = "^24.4.0"
 ulid-py = "^1.1.0"
 
 # Internal foundation packages (Phase 2: validate *_s3_key request body format
-# via foundation-storage; query feature flag via foundation-feature-flag).
+# via foundation-storage; query feature flag via foundation-feature-flag.
+# Phase 4: DELETE endpoints route through foundation-lifecycle so the recycle
+# bin owns the S3 cleanup window — see storage-v1 §6.2).
 foundation-storage = { path = "../storage", develop = true }
 foundation-feature-flag = { path = "../feature-flag", develop = true }
+foundation-lifecycle = { path = "../lifecycle", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
@@ -66,7 +69,7 @@ quote-style = "double"
 python_version = "3.12"
 
 [[tool.mypy.overrides]]
-module = ["foundation_storage.*", "foundation_feature_flag.*", "ulid.*"]
+module = ["foundation_storage.*", "foundation_feature_flag.*", "foundation_lifecycle.*", "ulid.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

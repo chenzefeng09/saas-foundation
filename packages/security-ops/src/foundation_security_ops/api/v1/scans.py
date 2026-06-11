@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +62,23 @@ async def list_scan_runs(
         status_filter=filter_status,
     )
     return {"items": [_scan_out(r) for r in runs], "next_cursor": None}
+
+
+@router.delete(
+    "/scans/runs/{scan_id}",
+    status_code=204,
+    response_class=Response,
+    tags=["scans"],
+)
+async def delete_scan_run(
+    scan_id: str,
+    session: AsyncSession = Depends(db_session),
+    svc: SecurityOpsService = Depends(security_ops_service),
+    request_id: str = Depends(current_request_id),
+) -> Response:
+    # storage-v1 §6.2: hand off retention + S3 GC to lifecycle.
+    await svc.delete_scan_run(session, scan_id, request_id=request_id)
+    return Response(status_code=204)
 
 
 @router.post("/scans/runs", status_code=201, tags=["scans"])

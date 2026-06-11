@@ -493,3 +493,106 @@ class TestDrillService:
     async def test_complete_nonexistent_drill_raises(self, svc, fake_session, request_id):
         with pytest.raises(ValueError, match="not found"):
             await svc.complete_drill(fake_session, "drill_GHOST", request_id=request_id)
+
+
+# ════════════════════════════════════════════════════════════ Delete flow ════
+# storage-v1 §6.2: DELETE endpoints hand off to lifecycle.soft_delete and
+# then physically drop the row.
+
+
+class TestDeleteRoutesToLifecycle:
+    async def test_delete_scan_run_forwards_s3_location(
+        self, svc, fake_session, request_id, monkeypatch
+    ):
+        scan = ScanRun(
+            id="scan_DEL01", type="SAST", tool="semgrep", target="repo:x",
+            started_at=datetime.now(UTC), status="PASSED", findings_count={},
+            s3_location='["foundation-workspace::tenants/_platform/security-ops/scan/scan_DEL01/sarif.json"]',
+        )
+        fake_session.put(scan)
+
+        captured: dict[str, object] = {}
+
+        async def _fake_soft_delete(self_, session, **kwargs):
+            captured.update(kwargs)
+            from foundation_lifecycle.domain.models import RecycleBin
+            return RecycleBin(
+                id="bin_X", tenant_id=kwargs["tenant_id"],
+                resource_type_id=kwargs["resource_type_id"],
+                resource_id=kwargs["resource_id"],
+                deleted_by=kwargs["deleted_by"],
+                expires_at=datetime.now(UTC) + timedelta(days=30),
+            )
+
+        from foundation_lifecycle.services.lifecycle_service import LifecycleService
+        monkeypatch.setattr(LifecycleService, "soft_delete", _fake_soft_delete)
+
+        await svc.delete_scan_run(fake_session, "scan_DEL01", request_id=request_id)
+
+        assert captured["resource_type_id"] == "security_ops.scan_run"
+        assert captured["resource_id"] == "scan_DEL01"
+        assert captured["s3_location"] == [
+            "foundation-workspace::tenants/_platform/security-ops/scan/scan_DEL01/sarif.json"
+        ]
+
+    async def test_delete_incident_handles_null_s3_location(
+        self, svc, fake_session, request_id, monkeypatch
+    ):
+        inc = Incident(
+            id="inc_DEL01", severity="HIGH", category="OUTAGE",
+            title="x", detected_at=datetime.now(UTC),
+            reported_by="oncall", status="DETECTED",
+            s3_location=None,
+        )
+        fake_session.put(inc)
+
+        captured: dict[str, object] = {}
+
+        async def _fake_soft_delete(self_, session, **kwargs):
+            captured.update(kwargs)
+            from foundation_lifecycle.domain.models import RecycleBin
+            return RecycleBin(
+                id="bin_Y", tenant_id=kwargs["tenant_id"],
+                resource_type_id=kwargs["resource_type_id"],
+                resource_id=kwargs["resource_id"],
+                deleted_by=kwargs["deleted_by"],
+                expires_at=datetime.now(UTC) + timedelta(days=30),
+            )
+
+        from foundation_lifecycle.services.lifecycle_service import LifecycleService
+        monkeypatch.setattr(LifecycleService, "soft_delete", _fake_soft_delete)
+
+        await svc.delete_incident(fake_session, "inc_DEL01", request_id=request_id)
+        assert captured["s3_location"] is None
+
+    async def test_delete_drill_happy_path(
+        self, svc, fake_session, request_id, monkeypatch
+    ):
+        drill = Drill(
+            id="drill_DEL01", kind="TABLETOP",
+            scheduled_at=datetime.now(UTC), status="SCHEDULED",
+        )
+        fake_session.put(drill)
+
+        from foundation_lifecycle.services.lifecycle_service import LifecycleService
+
+        async def _fake_soft_delete(self_, session, **kwargs):
+            from foundation_lifecycle.domain.models import RecycleBin
+            return RecycleBin(
+                id="bin_Z", tenant_id=kwargs["tenant_id"],
+                resource_type_id=kwargs["resource_type_id"],
+                resource_id=kwargs["resource_id"],
+                deleted_by=kwargs["deleted_by"],
+                expires_at=datetime.now(UTC) + timedelta(days=30),
+            )
+
+        monkeypatch.setattr(LifecycleService, "soft_delete", _fake_soft_delete)
+
+        await svc.delete_drill(fake_session, "drill_DEL01", request_id=request_id)
+        # row dropped via session.execute(delete) — fake session just no-ops.
+
+    async def test_delete_scan_run_missing_raises(self, svc, fake_session, request_id):
+        with pytest.raises(FoundationError, match="not found"):
+            await svc.delete_scan_run(
+                fake_session, "scan_NONE", request_id=request_id
+            )
