@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 import pytest
 
@@ -62,18 +63,24 @@ class TestFactories:
 
 
 class TestSerialization:
+    _BUCKET_MAP: ClassVar[dict[str, BucketPurpose]] = {
+        "foundation-audit": BucketPurpose.AUDIT,
+        "foundation-workspace": BucketPurpose.WORKSPACE,
+        "foundation-kb-raw": BucketPurpose.KB_RAW,
+        "foundation-kb-derived": BucketPurpose.KB_DERIVED,
+    }
+
     def test_roundtrip_workspace(self) -> None:
         k = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
         s = k.to_serialized("foundation-workspace")
         assert s == "foundation-workspace::tenants/tnt_01/workspaces/ws_1/files/f_1/x.pdf"
-        back = ObjectKey.from_string(s)
+        back = ObjectKey.from_string(s, self._BUCKET_MAP)
         assert back == k
 
-    def test_roundtrip_kb_derived_suffix_priority(self) -> None:
-        """Bucket suffix matching prefers ``-kb-derived`` over ``-kb-raw``."""
+    def test_roundtrip_kb_derived(self) -> None:
         k = ObjectKey.for_kb_chunk("tnt_01", "kb_1", "doc_1", "c_1")
         s = k.to_serialized("foundation-kb-derived")
-        back = ObjectKey.from_string(s)
+        back = ObjectKey.from_string(s, self._BUCKET_MAP)
         assert back.purpose == BucketPurpose.KB_DERIVED
         assert back == k
 
@@ -81,23 +88,46 @@ class TestSerialization:
         ts = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         k = ObjectKey.for_audit_event("tnt_01", ts, "evt_x")
         s = k.to_serialized("foundation-audit")
-        back = ObjectKey.from_string(s)
+        back = ObjectKey.from_string(s, self._BUCKET_MAP)
+        assert back == k
+
+    def test_roundtrip_staging_bucket_name(self) -> None:
+        """Staging-style bucket name works when explicitly registered in the map."""
+        staging_map = {
+            "foundation-audit-staging": BucketPurpose.AUDIT,
+        }
+        ts = datetime(2026, 3, 10, 12, 0, 0, tzinfo=UTC)
+        k = ObjectKey.for_audit_event("tnt_01", ts, "evt_staging")
+        s = k.to_serialized("foundation-audit-staging")
+        back = ObjectKey.from_string(s, staging_map)
+        assert back == k
+        assert back.purpose == BucketPurpose.AUDIT
+
+    def test_roundtrip_custom_bucket_name(self) -> None:
+        """Fully custom (customer) bucket names work when in the explicit map."""
+        custom_map = {"acme-corp-audit-logs": BucketPurpose.AUDIT}
+        ts = datetime(2026, 5, 1, 8, 0, 0, tzinfo=UTC)
+        k = ObjectKey.for_audit_event("tnt_acme", ts, "evt_1")
+        s = k.to_serialized("acme-corp-audit-logs")
+        back = ObjectKey.from_string(s, custom_map)
         assert back == k
 
     def test_from_string_missing_sep(self) -> None:
         with pytest.raises(KeyValidationError):
-            ObjectKey.from_string("nosep")
+            ObjectKey.from_string("nosep", self._BUCKET_MAP)
 
     def test_from_string_empty_parts(self) -> None:
         with pytest.raises(KeyValidationError):
-            ObjectKey.from_string("::tenants/x/a")
+            ObjectKey.from_string("::tenants/x/a", self._BUCKET_MAP)
         with pytest.raises(KeyValidationError):
-            ObjectKey.from_string("foundation-audit::")
+            ObjectKey.from_string("foundation-audit::", self._BUCKET_MAP)
 
-    def test_from_string_unknown_suffix(self) -> None:
-        with pytest.raises(KeyValidationError):
-            ObjectKey.from_string("random-bucket::tenants/tnt_01/a")
+    def test_from_string_unknown_bucket(self) -> None:
+        with pytest.raises(KeyValidationError, match="unknown bucket"):
+            ObjectKey.from_string("random-bucket::tenants/tnt_01/a", self._BUCKET_MAP)
 
     def test_from_string_missing_tenants_prefix(self) -> None:
         with pytest.raises(KeyValidationError):
-            ObjectKey.from_string("foundation-audit::other/tnt_01/a")
+            ObjectKey.from_string(
+                "foundation-audit::other/tnt_01/a", self._BUCKET_MAP
+            )

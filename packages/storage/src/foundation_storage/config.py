@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from foundation_storage.keys import BucketPurpose
 
 
 class StorageSettings(BaseSettings):
@@ -37,6 +40,15 @@ class StorageSettings(BaseSettings):
     # Quota.  Phase 1: only an interface; real DB-backed checker arrives in Phase 3.
     quota_check_enabled: bool = True
     quota_db_dsn: str | None = None
+
+    def bucket_to_purpose_map(self) -> Mapping[str, BucketPurpose]:
+        """Inverse of bucket_purpose -> bucket_name; used by ObjectKey.from_string."""
+        return {
+            self.bucket_audit: BucketPurpose.AUDIT,
+            self.bucket_workspace: BucketPurpose.WORKSPACE,
+            self.bucket_kb_raw: BucketPurpose.KB_RAW,
+            self.bucket_kb_derived: BucketPurpose.KB_DERIVED,
+        }
 
 
 @lru_cache(maxsize=1)

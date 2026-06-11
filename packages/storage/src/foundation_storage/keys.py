@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -76,13 +77,18 @@ class ObjectKey:
     # --------------------------------------------------------------- parsers
 
     @classmethod
-    def from_string(cls, serialized: str) -> ObjectKey:
+    def from_string(
+        cls,
+        serialized: str,
+        bucket_to_purpose: Mapping[str, BucketPurpose],
+    ) -> ObjectKey:
         """Parse ``{bucket}::tenants/{tenant_id}/...`` back into an ObjectKey.
 
-        ``bucket`` is mapped to BucketPurpose by its *suffix* — the physical name
-        ends in one of: ``-audit`` / ``-workspace`` / ``-kb-raw`` / ``-kb-derived``.
-        The caller-supplied physical name is **not** kept on the returned object
-        (the StorageClient handles physical mapping at I/O time).
+        ``bucket_to_purpose`` is an explicit mapping from physical bucket name to
+        ``BucketPurpose``. Derive it from
+        ``StorageSettings.bucket_to_purpose_map()``. The caller-supplied physical
+        name is **not** kept on the returned object (the StorageClient handles
+        physical mapping at I/O time).
         """
         if "::" not in serialized:
             raise KeyValidationError(
@@ -92,7 +98,13 @@ class ObjectKey:
         if not bucket_name or not key:
             raise KeyValidationError(KEY_INVALID, detail="empty bucket or key part")
 
-        purpose = _purpose_from_bucket_suffix(bucket_name)
+        try:
+            purpose = bucket_to_purpose[bucket_name]
+        except KeyError as exc:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=f"unknown bucket {bucket_name!r}; not in configured bucket map",
+            ) from exc
 
         # Expect "tenants/{tenant_id}/seg1/seg2/..."
         parts = key.split("/")
@@ -195,22 +207,3 @@ class ObjectKey:
                 f"{chunk_id}.json",
             ),
         )
-
-
-_PURPOSE_SUFFIXES: tuple[tuple[str, BucketPurpose], ...] = (
-    # order matters: more-specific suffixes first
-    ("-kb-derived", BucketPurpose.KB_DERIVED),
-    ("-kb-raw", BucketPurpose.KB_RAW),
-    ("-workspace", BucketPurpose.WORKSPACE),
-    ("-audit", BucketPurpose.AUDIT),
-)
-
-
-def _purpose_from_bucket_suffix(bucket_name: str) -> BucketPurpose:
-    for suffix, purpose in _PURPOSE_SUFFIXES:
-        if bucket_name.endswith(suffix):
-            return purpose
-    raise KeyValidationError(
-        KEY_INVALID,
-        detail=f"cannot infer BucketPurpose from bucket name {bucket_name!r}",
-    )
