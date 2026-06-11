@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from foundation_storage import BucketPurpose, StorageClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,8 +22,8 @@ log = get_logger(__name__)
 
 
 # Purpose strings stored in the table map onto BucketPurpose enum values
-# in foundation_storage. We don't import the enum eagerly to keep the
-# lifecycle dependency footprint small.
+# in foundation_storage; foundation_storage is now a path-dep so we import
+# the enum directly instead of duck-typing.
 _KNOWN_PURPOSES = frozenset({"audit", "workspace", "kb_raw", "kb_derived"})
 
 
@@ -35,18 +36,15 @@ class ReconcileReport:
 
 async def reconcile_used_bytes(
     session: AsyncSession,
-    storage_client: object,  # foundation_storage.StorageClient (avoid hard import)
+    storage_client: StorageClient,
     *,
     drift_alert_pct: float,
 ) -> ReconcileReport:
     """Reconcile every quota row's ``used_bytes`` against the live bucket.
 
-    ``storage_client`` is duck-typed as having
-    ``async compute_tenant_usage(tenant_id, BucketPurpose) -> int``.
-    Constructed by the caller as ``StorageClient.as_system(...)``.
+    Caller constructs ``storage_client`` as ``StorageClient.as_system(...)``
+    so it can iterate across tenants.
     """
-    from foundation_storage import BucketPurpose  # late import
-
     rows = list((await session.scalars(select(TenantStorageQuota))).all())
     scanned = 0
     drifts = 0
@@ -63,7 +61,7 @@ async def reconcile_used_bytes(
             continue
         purpose = BucketPurpose(row.bucket_purpose)
         try:
-            actual = await storage_client.compute_tenant_usage(  # type: ignore[attr-defined]
+            actual = await storage_client.compute_tenant_usage(
                 row.tenant_id, purpose
             )
         except Exception as exc:

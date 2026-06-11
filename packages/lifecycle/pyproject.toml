@@ -28,6 +28,11 @@ structlog = "^24.4.0"
 ulid-py = "^1.1.0"
 apscheduler = "^3.10.0"
 
+# Internal foundation packages (Phase 4: GC needs first-class access to
+# StorageClient / ObjectKey / BucketPurpose / bucket_to_purpose_map — late
+# imports got too dirty once delete_object + list_prefix entered the loop).
+foundation-storage = { path = "../storage", develop = true }
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
 pytest-asyncio = "^0.24.0"
@@ -61,7 +66,7 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
-module = ["ulid.*","apscheduler.*","foundation_storage.*"]
+module = ["ulid.*","apscheduler.*"]
 ignore_missing_imports = true
 [tool.pytest.ini_options]
 minversion = "8.0"
