@@ -1,0 +1,753 @@
+# 存储层 v1 设计文档
+
+> 状态：Approved v1.0
+> Owner：平台基础设施
+> 实施 milestone：Phase 1–4（串行推进）
+> 相关文档：[audit-v1.md](./audit-v1.md) / [lifecycle-v1.md](./lifecycle-v1.md) / [security-ops-ci-v1.md](./security-ops-ci-v1.md) / [CONVENTIONS.md](../CONVENTIONS.md)
+
+> **关键决策定稿**（2026-06-11）：
+> - 租户隔离 = **prefix-per-tenant**（单 bucket + `tenants/{tenant_id}/` 前缀）
+> - 推进节奏 = **串行**，Phase 1 → 2 → 3 → 4 全部落地后再上工作区/知识库业务
+> - 配额并发安全 = **Postgres 行级原子更新**（`UPDATE ... SET used_bytes = used_bytes + :delta`），不引入 Redis
+> - `storage.quota.write` scope 注册 = **Phase 3 时同步**进 `CONVENTIONS.md §4.x` 和 identity 的 `_ALLOWED_SCOPES`
+> - 老 `foundation-audit-worm` bucket 6 个月只读窗口 = **Phase 2 上线日为起点**，写进 runbook
+
+---
+
+## 1. 目标与非目标
+
+### 1.1 目标
+
+| 目标 | 说明 |
+|---|---|
+| 统一抽象层 | 所有服务通过 `packages/storage` 访问对象存储，禁止各服务自建 boto3 client |
+| 多 bucket 支持 | 按用途拆分 bucket，每类数据的生命周期和合规要求可独立配置 |
+| 租户前缀强制 | key 必须以 `tenants/{tenant_id}/` 开头，由构造器强制，业务方不得绕过 |
+| 配额管理 | 按租户 + bucket 用途分别计量，上传前检查，超额拒绝并告警 |
+| GC 闭环 | lifecycle 服务软删除触发后，S3 对象最终物理删除，形成完整清理链路 |
+| 可观测 | 上传/下载/删除操作产生 OTel span + 结构化日志 + Prometheus 指标 |
+
+### 1.2 非目标
+
+| 非目标 | 说明 |
+|---|---|
+| 跨区复制 / 多活 | 留 Phase 3+ 或由平台层（MinIO 联邦）处理，本文档不设计 |
+| 冷热分层 | S3 lifecycle policy 接口预留，本期不实现自动分层 |
+| 向量存储 | 向量进 pgvector 或独立向量库，不归本存储层管理 |
+| 块存储 / 文件系统语义 | 只做对象存储（S3 API），不提供 POSIX 接口 |
+| 客户端加密（CSE） | 字段级加密由 `packages/crypto` 负责，存储层只做透传 |
+
+---
+
+## 2. Bucket 划分
+
+### 2.1 Bucket 清单
+
+| Bucket 用途 | 默认名（dev） | 读写模式 | Object Lock | 生命周期特征 |
+|---|---|---|---|---|
+| 审计 WORM | `foundation-audit` | 仅写入，不支持修改/删除 | COMPLIANCE 模式，7 年保留 | 追加密集型；靠 S3 lifecycle policy 到期归档 |
+| 工作区文件 | `foundation-workspace` | 读写均衡，预签名 URL 上传 | 关闭 | 用户主动删除 + GC 清理 |
+| 知识库原始文档 | `foundation-kb-raw` | 写少读多；文档上传后较稳定 | 关闭 | 与 KB 文档同生命周期 |
+| 知识库派生物 | `foundation-kb-derived` | 重写频繁（重建索引时全量覆盖） | 关闭 | 可随时重新生成；GC 主动清理 |
+
+说明：
+- audit bucket 继承现有 `foundation-audit-worm` 的 Object Lock 配置，做重命名（见 §7 迁移策略）。
+- workspace / kb-raw / kb-derived 三个 bucket 在 Phase 1 完成抽象层后、Phase 2 时随迁移工作一并创建。
+- security-ops 的 SARIF/PIR/SBOM 报告归入 `foundation-workspace`（同为结构化文件，无 WORM 需求），具体 key layout 见 §3。
+
+### 2.2 Bucket 命名规范
+
+环境后缀策略：dev 不加后缀，staging 加 `-staging`，prod 加 `-prod`（或由 Helm values 注入）：
+
+```
+foundation-audit          # dev
+foundation-audit-staging  # staging
+foundation-audit-prod     # prod
+```
+
+Helm values 示例（`deploy/helm/foundation/values.yaml` 现有 `global.s3` 节将被 `global.storage` 取代，Phase 2 时保留 `global.s3` 做一段时间兼容映射，新代码统一读 `global.storage`）：
+
+```yaml
+global:
+  storage:
+    endpoint: http://foundation-minio:9000
+    region: cn-default
+    existingSecret: foundation-s3-credentials
+    buckets:
+      audit:      foundation-audit
+      workspace:  foundation-workspace
+      kbRaw:      foundation-kb-raw
+      kbDerived:  foundation-kb-derived
+    presignedUrlTtlSeconds: 3600
+```
+
+### 2.3 minio-init job 扩展目标
+
+**现状**：`deploy/docker-compose/dev.yml` 中现有 `minio-init` job 仅创建 `foundation-audit-worm` 一个 bucket（含 Object Lock）。
+
+**扩展目标**（Phase 1 完成）：扩展为创建全部 4 个 bucket：
+
+```yaml
+minio-init:
+  command:
+    - |
+      set -e
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}
+      # audit：Object Lock（COMPLIANCE，7 年）
+      mc mb --with-lock --ignore-existing local/foundation-audit
+      mc retention set --default COMPLIANCE "7y" local/foundation-audit
+      # workspace / kb-raw / kb-derived：普通 bucket
+      mc mb --ignore-existing local/foundation-workspace
+      mc mb --ignore-existing local/foundation-kb-raw
+      mc mb --ignore-existing local/foundation-kb-derived
+      echo "=== minio-init: all buckets ready ==="
+```
+
+Helm 中对应一个同名 Job（`hooks: post-install,post-upgrade`），用 `mc` 镜像执行相同逻辑，bucket 名从 `global.storage.buckets.*` 读取。
+
+---
+
+## 3. Key Layout 规范
+
+### 3.1 强制前缀格式
+
+所有对象 key 必须以 `tenants/{tenant_id}/` 开头，后接用途范围（scope）和资源层级：
+
+```
+tenants/{tenant_id}/{scope}/{...资源路径...}
+```
+
+`{tenant_id}` 使用不含等号的规范前缀（区别于现有 worm.py 中的 `tenant={id}` 格式——迁移时统一切换，见 §7）。
+
+### 3.2 各 Bucket Key Layout
+
+**foundation-audit**
+
+```
+tenants/{tenant_id}/events/{yyyy}/{mm}/{dd}/{event_id}.json
+```
+
+示例：`tenants/tnt_01J5DEVXX00000000000000001/events/2026/06/11/evt_01JXYZ.json`
+
+与现有 `worm.py` 的差异：现在用 `tenant={id}/year=YYYY/month=MM/...`（Hive 分区风格），迁移后改为规范的 `tenants/{id}/events/YYYY/MM/DD/` 风格。
+
+**foundation-workspace**
+
+```
+tenants/{tenant_id}/workspaces/{workspace_id}/files/{file_id}/{filename}
+tenants/{tenant_id}/security-ops/{resource_type}/{resource_id}/{filename}
+```
+
+`resource_type` 取值：`sarif`、`pir`、`sbom`（对应 security-ops 现有 `*_s3_key` 字段）。
+
+示例：
+```
+tenants/tnt_01J5.../security-ops/sarif/scn_01J5.../trivy-results.sarif.json
+tenants/tnt_01J5.../workspaces/ws_01J5.../files/fil_01J5.../report.pdf
+```
+
+**foundation-kb-raw**
+
+```
+tenants/{tenant_id}/kb/{kb_id}/docs/{doc_id}/{filename}
+```
+
+示例：`tenants/tnt_01J5.../kb/kb_01J5.../docs/doc_01J5.../design.pdf`
+
+**foundation-kb-derived**
+
+```
+tenants/{tenant_id}/kb/{kb_id}/chunks/{doc_id}/{chunk_id}.jsonl
+tenants/{tenant_id}/kb/{kb_id}/embeddings-cache/{model_id}/{doc_id}.npz
+tenants/{tenant_id}/kb/{kb_id}/pipeline-artifacts/{run_id}/{artifact_name}
+```
+
+### 3.3 抽象层如何强制 key 前缀
+
+`packages/storage` 中的 `ObjectKey` 构造器是唯一合法的 key 生成入口。业务方**不得**手动拼接字符串传入客户端。
+
+```python
+# 伪代码——展示 API 形状，非完整实现
+@dataclass(frozen=True)
+class ObjectKey:
+    tenant_id: str
+    bucket_purpose: BucketPurpose  # BucketPurpose.AUDIT / WORKSPACE / KB_RAW / KB_DERIVED
+    path_segments: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not TENANT_ID_PATTERN.match(self.tenant_id):
+            raise KeyValidationError(f"invalid tenant_id: {self.tenant_id!r}")
+        for seg in self.path_segments:
+            if "/" in seg or seg in (".", ".."):
+                raise KeyValidationError(f"invalid path segment: {seg!r}")
+
+    @property
+    def key(self) -> str:
+        return f"tenants/{self.tenant_id}/" + "/".join(self.path_segments)
+
+    # 工厂方法——按用途提供具名构造
+    @classmethod
+    def for_audit_event(cls, tenant_id: str, occurred_at: datetime, event_id: str) -> "ObjectKey":
+        return cls(tenant_id, BucketPurpose.AUDIT, (
+            "events", f"{occurred_at.year:04d}", f"{occurred_at.month:02d}",
+            f"{occurred_at.day:02d}", f"{event_id}.json",
+        ))
+
+    @classmethod
+    def for_workspace_file(cls, tenant_id: str, workspace_id: str,
+                           file_id: str, filename: str) -> "ObjectKey":
+        return cls(tenant_id, BucketPurpose.WORKSPACE, (
+            "workspaces", workspace_id, "files", file_id, filename,
+        ))
+```
+
+### 3.4 跨租户访问禁止机制
+
+- `StorageClient` 在初始化时绑定一个 `TenantContext`（从 `foundation_context` contextvars 读取）。
+- 每次调用 `put_object / get_object / ...` 时，强制用 `client._tenant_id` 构造 key，业务方传入的 `ObjectKey` 若 `tenant_id` 不等于 client 绑定的 `tenant_id` 则抛 `KeyValidationError`。
+- SYSTEM actor（后台任务）可使用 `StorageClient.as_system()` 绕过租户绑定，但必须显式传 `tenant_id` 参数并在调用链上记录审计。
+
+---
+
+## 4. `packages/storage` 抽象层 API 契约
+
+### 4.1 包结构
+
+```
+packages/storage/
+├── pyproject.toml                     # 纯库包；no FastAPI；依赖 boto3, pydantic-settings
+├── src/foundation_storage/
+│   ├── __init__.py                    # 暴露: StorageClient, ObjectKey, BucketPurpose,
+│   │                                  #        StorageError, QuotaExceededError,
+│   │                                  #        ObjectNotFoundError, KeyValidationError
+│   ├── client.py                      # StorageClient 主体
+│   ├── keys.py                        # ObjectKey, BucketPurpose
+│   ├── config.py                      # StorageSettings (pydantic-settings)
+│   ├── errors.py                      # 统一异常类型
+│   ├── quota.py                       # 配额检查接口（Phase 3 填充实现）
+│   └── observability.py              # OTel span 装饰器
+├── tests/
+│   ├── unit/
+│   └── integration/                   # 用 moto 或 pytest-minio fixture
+```
+
+遵循 `docs/CONVENTIONS.md §1.2` 包结构约定。作为纯库（no HTTP server），不含 `api/` 目录。
+
+### 4.2 核心类
+
+**StorageClient 设计选择**
+
+采用**单 client + bucket_purpose 参数**方案，而非为每个 bucket 创建独立 sub-client 类。理由：
+- bucket 名通过配置注入，client 不感知实际名称——业务方只知道 `BucketPurpose.AUDIT`；
+- 减少类的数量，测试和 mock 成本更低；
+- bucket_purpose 在 key 构造时已经确定，client 只是做一次 `purposes_to_bucket[purpose]` 查找。
+
+```python
+# 伪代码——展示 API 形状
+class StorageClient:
+    """S3/MinIO 统一客户端。
+
+    通过 BucketPurpose 枚举寻址 bucket，强制 ObjectKey 校验。
+    线程安全：内部 boto3 client 懒初始化并复用。
+    异步：所有 IO 操作通过 asyncio.run_in_executor 执行，与 audit worm.py 保持一致。
+    """
+
+    def __init__(self, settings: StorageSettings, tenant_id: str | None = None) -> None: ...
+
+    # ── 核心 CRUD ──────────────────────────────────────────────────────
+    async def put_object(
+        self, key: ObjectKey, body: bytes | BinaryIO,
+        content_type: str = "application/octet-stream",
+        object_lock_mode: Literal["COMPLIANCE", "GOVERNANCE"] | None = None,
+        object_lock_retain_until: datetime | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> str: ...  # 返回 s3://{bucket}/{key}
+
+    async def get_object(self, key: ObjectKey) -> bytes: ...
+
+    async def head_object(self, key: ObjectKey) -> ObjectMeta: ...
+    # ObjectMeta: content_length, content_type, last_modified, metadata
+
+    async def delete_object(self, key: ObjectKey) -> None: ...
+    # audit bucket 的 Object Lock 会在 S3 层物理拦截，异常透传为 StorageError
+
+    async def list_prefix(
+        self, tenant_id: str, bucket_purpose: BucketPurpose,
+        prefix_segments: tuple[str, ...], max_keys: int = 1000,
+        continuation_token: str | None = None,
+    ) -> tuple[list[ObjectMeta], str | None]: ...  # (items, next_token)
+
+    # ── 预签名 URL ──────────────────────────────────────────────────────
+    async def generate_presigned_url(
+        self, key: ObjectKey,
+        operation: Literal["put_object", "get_object"],
+        expires_in: int | None = None,  # 默认读 settings.presigned_url_ttl_seconds
+    ) -> str: ...
+
+    # ── 分片上传 ────────────────────────────────────────────────────────
+    async def initiate_multipart(self, key: ObjectKey,
+                                  content_type: str = "application/octet-stream") -> str: ...
+    # 返回 upload_id
+    async def upload_part(self, key: ObjectKey, upload_id: str,
+                          part_number: int, body: bytes) -> str: ...  # 返回 ETag
+    async def complete_multipart(self, key: ObjectKey, upload_id: str,
+                                  parts: list[dict]) -> str: ...  # 返回 s3:// URI
+    async def abort_multipart(self, key: ObjectKey, upload_id: str) -> None: ...
+```
+
+**TenantContext 来源**
+
+从 `foundation_identity.domain.base.foundation_context`（`ContextVar[FoundationContext | None]`）读取，与其他服务的做法一致（`packages/identity/src/foundation_identity/domain/base.py:34`）。`StorageClient` 工厂函数：
+
+```python
+def get_storage_client() -> StorageClient:
+    ctx = foundation_context.get()
+    tenant_id = ctx.tenant_id if ctx else None
+    return StorageClient(get_settings(), tenant_id=tenant_id)
+```
+
+### 4.3 配置项
+
+```python
+class StorageSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="STORAGE_", ...)
+
+    endpoint: str = "http://127.0.0.1:9001"
+    region: str = "cn-default"
+    access_key: str = "foundation"
+    secret_key: str = "minio_change_me_min_12_chars"
+
+    # bucket 名映射（可被各环境 ENV 覆盖）
+    bucket_audit:       str = "foundation-audit"
+    bucket_workspace:   str = "foundation-workspace"
+    bucket_kb_raw:      str = "foundation-kb-raw"
+    bucket_kb_derived:  str = "foundation-kb-derived"
+
+    presigned_url_ttl_seconds: int = 3600
+    multipart_threshold_bytes: int = 50 * 1024 * 1024   # 50 MB
+
+    # 配额相关（Phase 3）
+    quota_check_enabled: bool = True
+    quota_db_dsn: PostgresDsn | None = None  # 若与主 DB 共用，可留空走主 DSN
+```
+
+### 4.4 异常模型
+
+```python
+class StorageError(Exception):
+    """基类；包含 bucket_purpose, key, upstream_error"""
+
+class QuotaExceededError(StorageError):
+    """上传前检查超额；HTTP 映射 → 429"""
+    tenant_id: str
+    bucket_purpose: BucketPurpose
+    limit_bytes: int
+    used_bytes: int
+
+class ObjectNotFoundError(StorageError):
+    """get_object / head_object 时对象不存在；HTTP → 404"""
+
+class KeyValidationError(StorageError):
+    """key 前缀违规或 path segment 非法；HTTP → 400"""
+
+class ObjectLockedError(StorageError):
+    """尝试删除 WORM 对象；HTTP → 409"""
+```
+
+### 4.5 异步策略
+
+与现有 `packages/audit/src/foundation_audit/adapters/worm.py:88-98` 保持一致：使用 `asyncio.run_in_executor(None, lambda: boto_client.xxx(...))` 而非 aioboto3。
+
+理由：
+- 现有代码已有 boto3 precedent，避免引入第二种异步 S3 库；
+- aioboto3 维护活跃度弱于 boto3；
+- run_in_executor 对于存储 IO 足够（线程池阻塞，非 CPU 密集）。
+
+---
+
+## 5. 租户配额数据模型
+
+### 5.1 表定义
+
+表放在 `lifecycle` schema，与 lifecycle service 的 DB migration 合并管理（`packages/lifecycle/migrations/`）：
+
+```sql
+CREATE TABLE lifecycle.tenant_storage_quota (
+    id              VARCHAR(30) PRIMARY KEY,    -- "tsq_<ULID>" (prefix 4 + ULID 26 = 30)
+    tenant_id       VARCHAR(30) NOT NULL
+                    REFERENCES tenant.tenant(id) ON DELETE CASCADE,
+    bucket_purpose  VARCHAR(32) NOT NULL,       -- "audit"/"workspace"/"kb_raw"/"kb_derived"
+    limit_bytes     BIGINT NOT NULL DEFAULT 10737418240,  -- 10 GB 默认
+    used_bytes      BIGINT NOT NULL DEFAULT 0,
+    soft_warn_pct   SMALLINT NOT NULL DEFAULT 80,         -- 达到 80% 时告警
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_quota_tenant_purpose UNIQUE (tenant_id, bucket_purpose)
+);
+
+CREATE INDEX idx_storage_quota_tenant ON lifecycle.tenant_storage_quota (tenant_id);
+```
+
+按 `bucket_purpose` 分行，因为 audit（7 年 WORM）和 workspace（用户文件）的配额业务含义完全不同，额度独立管理。
+
+### 5.2 配额检查时机
+
+```
+PUT /workspaces/{id}/files  →  StorageClient.put_object()
+                                    │
+                                    ▼
+                             QuotaChecker.check_before_upload(
+                               tenant_id, bucket_purpose, estimated_bytes
+                             )
+                                    │ 超额
+                                    ▼
+                             raise QuotaExceededError(...)
+                                    │ 未超额
+                                    ▼
+                             boto3.put_object(...)
+                                    │ 成功
+                                    ▼
+                             QuotaChecker.increment_used(
+                               tenant_id, bucket_purpose, actual_bytes
+                             )
+```
+
+`estimated_bytes` 来自请求 `Content-Length`；实际字节数从 `head_object` 返回的 `content_length` 获得（put 完成后异步更新，避免 pre-flight head 的 race）。
+
+### 5.3 used_bytes 维护策略
+
+推荐**实时累加 + 每日对账校正**：
+
+- **实时累加**：put 成功后 `UPDATE ... SET used_bytes = used_bytes + actual_bytes`；delete 成功后同步扣减。性能好，误差来自失败操作未回滚。
+- **每日对账**：定时任务通过 `s3api list-objects-v2` 或 MinIO `mc admin info` 聚合前缀大小，与 DB 值对比；差值超阈值（如 1%）则强制覆写并记审计告警。
+
+对账数据源：MinIO 优先用 `mc du --recursive local/bucket/tenants/{tenant_id}/` 获得精确字节数；AWS S3 用 CloudWatch `BucketSizeBytes` + `s3api list-objects-v2`（后者较慢，建议缓存 24h）。
+
+### 5.4 管理 API
+
+配额查询和调整接口由 `lifecycle-service` 提供（`lifecycle` schema 的 owner），与 lifecycle 现有的 retention override 管理风格一致：
+
+```
+GET  /api/lifecycle/v1/storage-quotas?tenant_id=xxx
+PATCH /api/lifecycle/v1/storage-quotas/{tenant_id}/{bucket_purpose}
+      { "limit_bytes": 53687091200, "soft_warn_pct": 85 }
+```
+
+这些 API 属于平台管理员操作，需要 `authz` RBAC 中的 `storage.quota.write` 权限。
+
+---
+
+## 6. GC 与 lifecycle 接通
+
+### 6.1 现状
+
+`packages/lifecycle/src/foundation_lifecycle/services/lifecycle_service.py:119-165` 中的 `hard_delete()` 方法设置 `entry.hard_deleted_at = now`，但没有任何 S3 删除操作。`sweep_expired()` 同理（第 169-209 行）。
+
+### 6.2 改造方案
+
+在 `hard_delete()` 和 `sweep_expired()` 中，通过 `packages/storage` 执行 `delete_object`：
+
+```python
+# 伪代码——展示改造后的 hard_delete 关键片段
+async def hard_delete(self, session, *, ..., storage_client: StorageClient | None = None):
+    ...
+    entry.hard_deleted_at = now
+
+    # 新增：删除关联的 S3 对象（如果有）
+    if entry.original_location and storage_client:
+        await self._delete_s3_objects(entry, storage_client)
+
+    await session.flush()
+
+async def _delete_s3_objects(self, entry: RecycleBin,
+                              storage_client: StorageClient) -> None:
+    """幂等删除 S3 对象；Object Lock bucket 的错误记录但不阻断。"""
+    if not entry.original_location:
+        return
+    try:
+        loc = json.loads(entry.original_location)
+        s3_keys = loc.get("s3_keys", [])
+        for key_str in s3_keys:
+            key = ObjectKey.from_string(key_str)  # 解析已存储的 key
+            await storage_client.delete_object(key)
+    except ObjectLockedError:
+        log.warning("gc.s3.object_locked", bin_id=entry.id)  # audit bucket 正常现象
+    except ObjectNotFoundError:
+        log.warning("gc.s3.already_deleted", bin_id=entry.id)  # 幂等，可忽略
+    except StorageError as exc:
+        log.error("gc.s3.delete_failed", bin_id=entry.id, error=str(exc))
+        # 不阻断 DB 硬删除；对账任务会发现孤儿对象
+```
+
+`original_location` 字段（`lifecycle.recycle_bin` 表已有此列，类型 `Text`，注释为 "JSON: where to find the original data"）存储格式约定：
+
+```json
+{
+  "s3_keys": [
+    "foundation-workspace::tenants/tnt_xxx/workspaces/ws_yyy/files/fil_zzz/report.pdf"
+  ]
+}
+```
+
+格式为 `{bucket_name}::{object_key}`，便于在多 bucket 时明确定位。
+
+**写入方责任**（重要）：现有 `LifecycleService.soft_delete()` 调用方都没传 `original_location`，字段长期为 `NULL`。Phase 4 必须改造 `soft_delete()` 签名，新增可选参数 `s3_location: dict | None = None`：
+
+```python
+async def soft_delete(
+    self, session, *,
+    resource_type: str, resource_id: str,
+    tenant_id: str, deleted_by: str,
+    s3_location: dict | None = None,  # 新增；调用方传入需 GC 的 S3 key 列表
+    ...,
+) -> RecycleBin: ...
+```
+
+各业务服务（audit / security-ops / workspace / kb）在调用 `soft_delete` 时必须显式传入对应的 `s3_keys`，否则 Phase 4 GC 无法回收对象（会被孤儿对账任务发现）。Phase 4 todo 中包含改造现有 `soft_delete` 调用点的工作项。
+
+### 6.3 孤儿对账任务
+
+扫描两个方向：
+
+**方向 A（DB 无记录但对象存在 → 待清理）**
+1. 遍历 bucket 中某租户前缀下的所有对象；
+2. 提取 key 中的 `resource_id`；
+3. 查询 DB 中对应的 `recycle_bin` / 业务表是否存在；
+4. 若不存在且对象创建时间超过宽限期（默认 7 天），标记为 `ORPHAN` 并加入待清理队列。
+
+**方向 B（DB 有记录但对象不存在 → 数据丢失）**
+1. 查询 `recycle_bin.hard_deleted_at IS NOT NULL` 且 `original_location` 有 S3 key 的记录；
+2. `head_object` 检查对象是否存在；
+3. 若早于 `hard_deleted_at` 就消失了（非 GC 删除），打 `storage.object_missing` 告警。
+
+### 6.4 audit WORM bucket 与 GC
+
+`foundation-audit` bucket 的 Object Lock COMPLIANCE 模式**物理拦截**任何删除和修改请求（包括 root 用户）。GC 任务不得尝试删除此 bucket 中的对象。
+
+到期销毁通过 S3/MinIO lifecycle policy 实现：
+
+```json
+{
+  "Rules": [{
+    "ID": "audit-expire-after-7y",
+    "Prefix": "tenants/",
+    "Status": "Enabled",
+    "Expiration": { "Days": 2555 }
+  }]
+}
+```
+
+`packages/storage` 预留 `configure_lifecycle_policy(bucket_purpose, rules)` 接口，本期不实现自动配置，由运维手动在 MinIO Console / AWS Console 设置。
+
+---
+
+## 7. 现有服务迁移策略
+
+### 7.1 audit：worm.py → packages/storage
+
+**改造内容**：`packages/audit/src/foundation_audit/adapters/worm.py` 中的 boto3 client 建立逻辑替换为 `StorageClient`。
+
+key layout 从 `tenant={id}/year=YYYY/...` 迁移到 `tenants/{id}/events/YYYY/MM/DD/`。
+
+bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为读 `StorageSettings.bucket_audit`（默认 `foundation-audit`）。
+
+**老 bucket 处理**：`foundation-audit-worm` 保留只读至少 6 个月（覆盖现有最长事件保留期），`StorageClient.get_object` 增加双 bucket fallback：先查新 bucket，NotFound 时回查老 bucket。feature flag `storage.audit_bucket_migration_complete` 控制关闭 fallback 时机。
+
+**灰度方案**：feature flag `storage.use_storage_package` 控制写入路径——`true` 走新包，`false` 走旧 `worm.py`。feature-flag 服务已在 `packages/feature-flag` 中实现 Unleash 集成（参见最近 commit `e119bf2`）。
+
+### 7.2 security-ops：*_s3_key 字段
+
+**数据模型**：`packages/security-ops/src/foundation_security_ops/domain/models.py` 中的 `sarif_s3_key`（第 57 行）、`pir_s3_key`（第 131 行）、`sbom_s3_key`（第 156 行）、`drill.pir_s3_key`（第 222 行）维持 `String(500)` 类型不变。
+
+**key 格式扩展**：新写入的 key 携带 bucket 标识前缀，格式 `foundation-workspace::tenants/{tid}/security-ops/sarif/{id}.sarif.json`，便于在多 bucket 时定位，也方便孤儿对账。老数据（无 bucket 前缀）兼容读：读取时若无 `::` 分隔符，默认按历史 bucket 查找。
+
+**DB migration**：不需要 schema 变更，仅需应用层写入新格式 key。
+
+**切换时机**：`storage.security_ops_use_storage_package` feature flag 控制。
+
+**老数据兼容读（双 bucket fallback）**：存在 `SECURITY_OPS_LEGACY_S3_BUCKET` 配置项，读路径先查新 bucket 名，NotFound 时回查旧 bucket（若配置了的话）。
+
+### 7.3 migration 要点汇总
+
+| 服务 | DB migration 需要 | key 格式变化 | 兼容期 | feature flag |
+|---|---|---|---|---|
+| audit | 否 | 是（需双写期） | 6 个月 | `storage.audit_bucket_migration_complete` |
+| security-ops | 否 | 是（新写携带 bucket 标识） | 直至手动清理老数据 | `storage.security_ops_use_storage_package` |
+| workspace（新功能） | 是（新建 resource_type + recycle_bin 字段扩展） | N/A（全新） | — | — |
+| kb（新功能） | 是（新建 KB 相关表） | N/A（全新） | — | — |
+
+---
+
+## 8. 落地 Phase 拆分
+
+### Phase 1：`packages/storage` 抽象层
+
+目标：建立标准库，现有服务可选接入。
+
+- [ ] 创建 `packages/storage/` 目录，`pyproject.toml`（Poetry，Python 3.12+）
+- [ ] 实现 `StorageSettings`（`config.py`）
+- [ ] 实现 `BucketPurpose` 枚举和 `ObjectKey` 构造器（`keys.py`）
+- [ ] 实现 `StorageClient`（`client.py`）：`put_object / get_object / head_object / delete_object / list_prefix / generate_presigned_url / initiate_multipart / complete_multipart / abort_multipart`
+- [ ] 实现 `StorageError / QuotaExceededError / ObjectNotFoundError / KeyValidationError / ObjectLockedError`（`errors.py`）
+- [ ] OTel span 装饰器（`observability.py`）
+- [ ] 单元测试（moto mock）+ 集成测试（pytest-minio 或本地 MinIO fixture）
+- [ ] 更新 `deploy/docker-compose/dev.yml` 的 `minio-init` job 创建全部 4 个 bucket
+
+**验收标准**：
+- `pytest packages/storage --cov=foundation_storage --cov-fail-under=80` 通过
+- `mypy --strict packages/storage/src` 零错误
+- 集成测试覆盖 put/get/delete/presign/multipart 全路径
+- 手动在 dev 栈验证 4 个 bucket 正常创建
+
+### Phase 2：Bucket 拆分 + 存量迁移
+
+目标：audit 和 security-ops 切换到新抽象层，workspace bucket 就绪。
+
+- [ ] 更新 `packages/audit/src/foundation_audit/adapters/worm.py`：写入路径走 `StorageClient`（feature flag 保护）
+- [ ] audit bucket 创建（`foundation-audit`）+ 配置 Object Lock + 验证 7 年 COMPLIANCE retention
+- [ ] `foundation-audit-worm` 设为只读（去除 write policy）
+- [ ] 更新 security-ops 写入路径：`*_s3_key` 新值携带 bucket 标识
+- [ ] Helm values 扩展 `global.storage.buckets` 映射，各 profile（small/medium/large）补全
+- [ ] `values-large.yaml` 中 `minio.enabled: false` 时，`global.storage.endpoint` 改指外部 S3
+
+**验收标准**：
+- dev 栈 audit 事件写入 `foundation-audit` bucket 可在 MinIO Console 验证
+- security-ops 扫描结果 SARIF key 格式含 bucket 标识
+- audit worm.py 的 feature flag 切换可在不重启的情况下生效
+- staging 环境双 bucket fallback 读测试通过
+
+### Phase 3：租户配额
+
+目标：上传前强制配额检查，定期对账。
+
+- [ ] DB migration：`lifecycle` schema 新增 `tenant_storage_quota` 表
+- [ ] `packages/storage/src/foundation_storage/quota.py`：`QuotaChecker` 实现
+- [ ] `StorageClient.put_object` 调用前执行配额检查（`quota_check_enabled=True` 时）
+- [ ] put 成功后异步 increment `used_bytes`
+- [ ] lifecycle-service 新增 `/api/lifecycle/v1/storage-quotas` CRUD 端点
+- [ ] 每日对账 cron job（复用 lifecycle service 的 APScheduler 调度，见 `lifecycle.config.sweep_enabled`）
+- [ ] 对账告警：差值超 1% 时写 audit event + OTel metrics
+
+**验收标准**：
+- 超额上传返回 `429 QuotaExceededError`，响应体含 `limit_bytes / used_bytes`
+- 单元测试：quota check 调用顺序（先 check 后 put）可通过 mock 验证
+- 对账任务可手动触发并在日志中输出差值报告
+- 配额调整 API 经 authz 权限检查，未授权返回 403
+
+### Phase 4：GC 接通 + 孤儿对账
+
+目标：lifecycle hard_delete 真正触发 S3 删除，孤儿对象可被发现和清理。
+
+- [ ] `LifecycleService.soft_delete()` 签名新增 `s3_location: dict | None`，并改造所有现有调用点显式传入 S3 key（否则 GC 拿不到 key，本期所有清理失效）
+- [ ] `lifecycle_service.hard_delete()` 和 `sweep_expired()` 接入 `StorageClient.delete_object`
+- [ ] `recycle_bin.original_location` 约定格式文档化 + 写入工具函数（`parse_s3_location`）
+- [ ] 孤儿对账任务（方向 A + 方向 B，见 §6.3）
+- [ ] audit WORM bucket 跳过 GC 逻辑（`ObjectLockedError` 静默处理）
+- [ ] S3 lifecycle policy 配置脚本（minio-init job 扩展；不自动触发，需运维确认）
+
+**验收标准**：
+- hard_delete 调用后，对应 `foundation-workspace` 中对象不再存在（集成测试验证）
+- 孤儿对账任务扫描输出：孤儿对象数量、数据丢失告警数量（可观测）
+- audit bucket 中的对象在 hard_delete 时不被删除（Object Lock 拦截，测试验证异常处理路径）
+- `DestructionJob.resources_destroyed` 计数与实际 S3 删除数一致
+
+---
+
+## 9. 风险与回滚
+
+### 9.1 老数据迁移失败
+
+风险：audit key layout 切换期间，新旧格式共存，查询逻辑若未兼容会丢失历史数据。
+
+缓解：双 bucket fallback（`storage.audit_bucket_migration_complete` flag 默认 `false`）；老 bucket 保留只读 6 个月；只有经过数据完整性验证并手动翻转 flag 后才切断 fallback。
+
+回滚：翻转 feature flag 到 `false`，立即回到旧写路径，零停机。
+
+### 9.2 配额 used_bytes 漂移
+
+风险：失败的 put（网络中断、客户端取消）未能回滚 `used_bytes`，累积正向漂移；失败的 delete 导致 `used_bytes` 未减，积累负向漂移。
+
+缓解：每日对账任务强制校正（§5.3）；对账差值告警让漂移可见；软上限（`soft_warn_pct=80%`）给运维提前介入的窗口。
+
+### 9.3 Bucket Rename 风险
+
+`foundation-audit-worm` → `foundation-audit` 是实质上的新建，因为 S3/MinIO 不支持 bucket 重命名。
+
+策略：
+1. 新建 `foundation-audit` bucket（含 Object Lock 配置）；
+2. 双写期（新审计事件写新 bucket，老事件留老 bucket）；
+3. 6 个月内老 bucket 只读；
+4. 6 个月后如业务确认无回溯需求，由运维手动下线老 bucket（不可逆，需两人 sign-off）。
+
+### 9.4 MinIO → AWS S3 切换时的差异点
+
+| 差异点 | MinIO 行为 | AWS S3 行为 | 影响 |
+|---|---|---|---|
+| Object Lock COMPLIANCE 删除 | root 用户无法删除（MinIO 严格） | 任何用户含 root 均不可删除 | 一致，无影响 |
+| Lifecycle policy 语法 | 基本兼容 S3 XML 格式 | 标准 S3 | 切换时需测试 lifecycle policy 应用结果 |
+| `s3v4` 签名 | 完全支持 | 支持 | 无影响 |
+| `endpoint_url` 参数 | 需要显式传入 | 不传（`None`）走 AWS 域名 | `StorageSettings.endpoint` 为空时去掉 `endpoint_url` 参数 |
+| 预签名 URL 有效期上限 | 无硬上限 | PUT 最长 7 天，GET 最长 7 天 | `presigned_url_ttl_seconds` 默认 3600，不受影响 |
+| 分片上传 part size | 最小 5 MB | 最小 5 MB，最后一 part 可更小 | 兼容，无影响 |
+
+切换步骤：将 `StorageSettings.endpoint` 置空，`access_key / secret_key` 换为 IAM 凭证（或走 EC2 instance profile），bucket 名按实际 S3 bucket 名覆盖 ENV。
+
+---
+
+## 10. 待定问题与已决议事项
+
+### 10.1 本次定稿已决议（不再待定）
+
+| 事项 | 决议 | 落地位置 |
+|---|---|---|
+| 配额 `used_bytes` 并发安全 | Postgres 行级原子更新（`UPDATE ... SET used_bytes = used_bytes + :delta`），不引入 Redis 或显式行锁 | Phase 3 `quota.py` |
+| `storage.quota.write` scope 注册时机 | Phase 3 实现配额 API 时一并注册到 `CONVENTIONS.md §4.x` 和 identity `_ALLOWED_SCOPES`，不提前占位 | Phase 3 验收标准 |
+| `foundation-audit-worm` 只读窗口起点 | Phase 2 上线日为起点计 6 个月，写进 runbook；过渡期残留写入由 feature flag 兜底，忽略不计 | Phase 2 runbook |
+
+### 10.2 真待定（需后续专项讨论）
+
+1. **S3 lifecycle policy 自动配置**：本期由运维手动设置，后续是否通过 minio-init job 或 Terraform 自动化？何时实施？
+
+2. **冷热分层时机**：audit bucket 和 kb-derived bucket 的访问频次随时间衰减，何时引入 S3 Glacier 或 MinIO ILM tiering？触发条件（时间？对象大小？）待定。
+
+3. **跨区复制策略**：large profile 部署在多 AZ 时，`foundation-audit` 和 `foundation-workspace` 是否需要跨区同步？MinIO site replication vs AWS S3 Cross-Region Replication 的选型待定。
+
+4. **向量库选型**：`foundation-kb-derived` 不放向量本身，但 chunk embedding 存储（pgvector vs 独立向量库）是知识库子项目的核心决策，影响 `kb-derived` bucket 的实际使用量，需知识库团队明确。
+
+5. **预签名 URL 滥用防护**：预签名 URL 一经生成即可公开访问，无法在发出后撤销（除非 bucket policy 辅助）。是否需要记录生成日志 + 访问审计？建议 Phase 3 时评估。
+
+---
+
+## 附录 A：与现有代码对应关系
+
+| 本文档引用位置 | 代码文件 | 行号/说明 |
+|---|---|---|
+> 行号为 2026-06-11 定稿时的位置，仅供查找参考；以代码为准，编辑器搜符号名更可靠。
+
+| 本文档引用位置 | 代码文件 | 位置/说明 |
+|---|---|---|
+| 现有 boto3 client 建立 | `packages/audit/src/foundation_audit/adapters/worm.py` | 第 68-74 行附近 |
+| `asyncio.run_in_executor` 模式 | 同上 | 第 89-99 行附近 |
+| `FoundationContext` 定义 | `packages/identity/src/foundation_identity/domain/base.py` | 第 16-36 行附近 |
+| `foundation_context` ContextVar | 同上 | 第 34 行附近 |
+| lifecycle `hard_delete` 改造点 | `packages/lifecycle/src/foundation_lifecycle/services/lifecycle_service.py` | 第 119-165 行附近 |
+| lifecycle `sweep_expired` 改造点 | 同上 | 第 169-209 行附近 |
+| lifecycle `soft_delete` 签名 | 同上 | 第 85-93 行附近（需新增 `s3_location` 参数） |
+| `recycle_bin.original_location` 字段 | `packages/lifecycle/src/foundation_lifecycle/domain/models.py` | 第 94 行附近 |
+| `sarif_s3_key` 字段 | `packages/security-ops/src/foundation_security_ops/domain/models.py` | 第 57 行附近 |
+| `pir_s3_key` / `sbom_s3_key` | 同上 | 第 131、156 行附近 |
+| `drill.pir_s3_key` | 同上 | 第 222 行附近 |
+| `settings.worm_bucket` 配置项 | `packages/audit/src/foundation_audit/config.py` | 第 81 行附近，默认值 `foundation-audit-worm` |
+| minio-init 现有 job（仅创建 `foundation-audit-worm`） | `deploy/docker-compose/dev.yml` | 第 263-280 行附近，Phase 1 需扩展为 4 bucket |
+| MinIO Helm values（medium） | `deploy/helm/foundation/values-medium.yaml` | 第 111-116 行附近 |
+| MinIO Helm values（large 关闭） | `deploy/helm/foundation/values-large.yaml` | 第 51-52 行附近 |
+| 现有 `global.s3` Helm 节（待替换为 `global.storage`） | `deploy/helm/foundation/values.yaml` | 第 120-124 行附近 |
+| scope catalogue | `docs/CONVENTIONS.md` | §4.x（第 226 行附近的 "Scope catalogue"） |
+
+---
+
+*变更记录*
+
+| 日期 | 版本 | 变更 |
+|---|---|---|
+| 2026-06-11 | 0.1.0 | 初版（存储层 v1 设计文档） |
+| 2026-06-11 | 1.0.0 | 定稿：5 项决策落定（隔离/节奏/并发/scope/只读窗口）；修正 minio-init 现状描述与 `global.storage`/`global.s3` 引用；id 字段 VARCHAR(30) 对齐项目惯例；明确 `soft_delete` 需新增 `s3_location` 参数（否则 GC 无效）；附录 A 改为容忍行号漂移的措辞 |
