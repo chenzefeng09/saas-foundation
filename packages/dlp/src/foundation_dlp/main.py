@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import make_asgi_app
 
 from foundation_dlp import __version__
 from foundation_dlp.api.exception_handlers import install_exception_handlers
@@ -36,6 +37,8 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIdMiddleware)
     install_exception_handlers(app)
     setup_observability(app)
+    # Prometheus scrape endpoint (excluded from OTel tracing in observability.py).
+    app.mount("/metrics", make_asgi_app())
     app.include_router(api_v1, prefix=settings.api_prefix)
     return app
 

@@ -301,10 +301,13 @@ class UnleashGateway:
 
         try:
             with httpx.Client(timeout=10) as client:
-                # Probe for existing toggle. The single-flag GET is still available
-                # in v5/v6 (the init-flags.sh script relies on it), so we keep it.
+                # Probe for existing toggle via the project-scoped endpoint. The
+                # global GET /api/admin/features/{key} returns 404 on v5/v6 even when
+                # the flag exists project-scoped, which mis-routed existing flags into
+                # the create branch below and produced a 409 Conflict on every sync.
                 get_resp = client.get(
-                    f"{base}/api/admin/features/{flag_key}", headers=headers
+                    f"{base}/api/admin/projects/{project}/features/{flag_key}",
+                    headers=headers,
                 )
                 if get_resp.status_code == 404:
                     # Create new toggle (project-scoped). v5+ removed the global

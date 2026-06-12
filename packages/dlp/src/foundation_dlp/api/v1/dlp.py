@@ -1,6 +1,8 @@
 """DLP + Classification API endpoints (dlp-classification-v1 §3)."""
 
-from fastapi import APIRouter, Depends, Query
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,4 +91,80 @@ async def scan_content(
     request_id: str = Depends(current_request_id),
 ) -> dict:
     return await svc.scan_content(session, tenant_id=ctx.tenant_id, content=body.content,
-        resource_type=body.resource_type, resource_id=body.resource_id, request_id=request_id)
+        resource_type=body.resource_type, resource_id=body.resource_id,
+        user_id=ctx.user_id, request_id=request_id)
+
+
+# -- Governance / Oversight (read-only) --
+def _parse_before(before: str | None) -> datetime | None:
+    """Parse an ISO-8601 occurred_at cursor; tolerate a trailing 'Z'."""
+    if not before:
+        return None
+    try:
+        return datetime.fromisoformat(before.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid 'before' cursor: {before}") from exc
+
+
+@router.get("/events", operation_id="listDlpEvents")
+async def list_events(
+    check_type: str | None = Query(None),
+    decision: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    before: str | None = Query(None, description="ISO occurred_at cursor (keyset, desc)"),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: DLPService = Depends(dlp_service),
+) -> dict:
+    rows = await svc.list_events(session, tenant_id=ctx.tenant_id, check_type=check_type,
+        decision=decision, before=_parse_before(before), limit=limit)
+    items = [
+        {"id": e.id, "check_type": e.check_type, "decision": e.decision, "user_id": e.user_id,
+         "resource_type": e.resource_type, "resource_id": e.resource_id,
+         "reason_code": e.reason_code, "detail": e.detail,
+         "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
+         "request_id": e.request_id}
+        for e in rows
+    ]
+    next_before = (
+        rows[-1].occurred_at.isoformat() if len(rows) == limit and rows[-1].occurred_at else None
+    )
+    return {"items": items, "next_before": next_before}
+
+
+@router.get("/classifications", operation_id="listClassifications")
+async def list_classifications(
+    sensitivity: str | None = Query(None, pattern=r"^L[1-5]$"),
+    resource_type: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    before: str | None = Query(None, description="ISO updated_at cursor (keyset, desc)"),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: DLPService = Depends(dlp_service),
+) -> dict:
+    rows = await svc.list_classifications(session, tenant_id=ctx.tenant_id, sensitivity=sensitivity,
+        resource_type=resource_type, before=_parse_before(before), limit=limit)
+    items = [
+        {"resource_type": c.resource_type, "resource_id": c.resource_id,
+         "sensitivity": c.sensitivity, "tags": c.tags, "reason": c.reason,
+         "tagged_by": c.tagged_by,
+         "tagged_at": c.tagged_at.isoformat() if c.tagged_at else None,
+         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+         "downgradable": c.downgradable}
+        for c in rows
+    ]
+    next_before = (
+        rows[-1].updated_at.isoformat() if len(rows) == limit and rows[-1].updated_at else None
+    )
+    return {"items": items, "next_before": next_before}
+
+
+@router.get("/stats", operation_id="dlpStats")
+async def dlp_stats(
+    since: str | None = Query(None, description="ISO lower bound on occurred_at; default 30d ago"),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: DLPService = Depends(dlp_service),
+) -> dict:
+    since_dt = _parse_before(since) or (datetime.now(UTC) - timedelta(days=30))
+    return await svc.stats(session, tenant_id=ctx.tenant_id, since=since_dt)

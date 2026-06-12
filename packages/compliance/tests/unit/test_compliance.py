@@ -222,6 +222,19 @@ class TestReports:
         assert "安全区域边界" in section_names
         assert "安全计算环境" in section_names
 
+    async def test_generate_report_pipl(self, svc, fake_session, tenant_id, request_id):
+        report = await svc.generate_report(
+            fake_session, tenant_id=tenant_id, report_type="pipl_annual",
+            compliance_modes=["pipl"],
+            generated_by="dpo_001", request_id=request_id,
+        )
+        sections = report.content_json.get("sections", [])
+        section_names = [s["name"] for s in sections]
+        assert len(sections) == 7
+        assert "个人信息处理者基本情况" in section_names
+        assert "个人信息主体权利响应" in section_names
+        assert "跨境传输与安全保障措施（PIPL §38）" in section_names
+
     async def test_generate_report_multiple_modes(self, svc, fake_session, tenant_id, request_id):
         report = await svc.generate_report(
             fake_session, tenant_id=tenant_id, report_type="full_compliance",

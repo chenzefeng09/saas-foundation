@@ -10,6 +10,7 @@ Regulatory coverage:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -155,7 +156,7 @@ class ComplianceService:
 
     async def generate_report(
         self, session: AsyncSession, *, tenant_id: str,
-        report_type: str, compliance_modes: list[str],
+        report_type: str, compliance_modes: list[ComplianceMode],
         generated_by: str, request_id: str,
     ) -> ComplianceReport:
         """Generate a compliance report (e.g. SOC2 control mapping)."""
@@ -175,7 +176,7 @@ class ComplianceService:
         await session.flush()
         return report
 
-    def _get_report_sections(self, report_type: str, modes: list[str]) -> list[dict]:
+    def _get_report_sections(self, report_type: str, modes: Sequence[str]) -> list[dict]:
         sections = []
         if "soc2" in modes:
             sections.append({"name": "Security", "controls": ["CC1-CC9"], "status": "MAPPED"})
@@ -191,6 +192,18 @@ class ComplianceService:
             sections.append({"name": "安全通信网络", "controls": ["8.1.2.1-8.1.2.3"], "status": "MAPPED"})
             sections.append({"name": "安全区域边界", "controls": ["8.1.3.1-8.1.3.6"], "status": "MAPPED"})
             sections.append({"name": "安全计算环境", "controls": ["8.1.4.1-8.1.4.10"], "status": "MAPPED"})
+        if "pipl" in modes:
+            pipl_sections: list[tuple[str, list[str]]] = [
+                ("个人信息处理者基本情况", ["PIPL §51"]),
+                ("个人信息处理活动概览", ["PIPL §17", "ROPA"]),
+                ("告知与同意机制（含单独同意、敏感个人信息告知）", ["PIPL §14", "PIPL §29-30"]),  # noqa: RUF001
+                ("个人信息主体权利响应", ["PIPL §44-50", "DSAR"]),
+                ("个人信息保护影响评估（PIA）", ["PIPL §55-56", "DPIA"]),  # noqa: RUF001
+                ("跨境传输与安全保障措施（PIPL §38）", ["PIPL §38-39"]),  # noqa: RUF001
+                ("合规风险与整改", ["PIPL §64-66"]),
+            ]
+            for name, controls in pipl_sections:
+                sections.append({"name": name, "controls": controls, "status": "MAPPED"})
         return sections
 
     def _emit(self, session, tenant_id, event_type, payload, request_id):

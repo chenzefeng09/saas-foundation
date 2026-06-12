@@ -203,6 +203,19 @@ def _extract_tenant_id(claims: dict[str, Any]) -> str:
     return default
 
 
+def _extract_clearance(claims: dict[str, Any]) -> str:
+    """Pull the user's security clearance (L1-L5) from a verified token.
+
+    Realm config injects a ``clearance`` claim (user-attribute mapper).  Tokens
+    minted before that mapper was added — or users without the attribute set —
+    will not carry it; default to ``L2`` rather than failing.
+    """
+    candidate = claims.get("clearance")
+    if isinstance(candidate, str) and candidate in {"L1", "L2", "L3", "L4", "L5"}:
+        return candidate
+    return "L2"
+
+
 # --------------------------------------------------------------------------- #
 # POST /sessions — end-user login (Keycloak password grant)
 # --------------------------------------------------------------------------- #
@@ -1486,6 +1499,7 @@ async def get_me(
         tenant_id = _extract_tenant_id(claims)
         realm_access = claims.get("realm_access") or {}
         roles = list(realm_access.get("roles") or [])
+        clearance = _extract_clearance(claims)
         db_display_name = None
     else:
         # SSO-federated subject — resolve via the provisioned user row.
@@ -1508,6 +1522,7 @@ async def get_me(
         user_id = row.id
         tenant_id = row.tenant_id
         roles = list(row.roles or [])
+        clearance = row.clearance or "L2"
         db_display_name = row.display_name
 
     # P2-B: keep the session alive (idle clock) or revoke it (idle/absolute timeout).
@@ -1529,6 +1544,7 @@ async def get_me(
         email=email,
         display_name=display_name,
         roles=roles,
+        clearance=clearance,
         mfa_enabled=False,
         locale="zh-CN",
     )

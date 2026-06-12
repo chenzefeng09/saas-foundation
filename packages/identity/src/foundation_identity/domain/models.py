@@ -78,6 +78,8 @@ class User(_TenantBound, Base):
     keycloak_user_id: Mapped[str | None] = mapped_column(String(64), unique=False)
     external_id: Mapped[str | None] = mapped_column(String(255))  # SCIM externalId
     roles: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    # "L1".."L5"; nullable for legacy rows, read side defaults to L2
+    clearance: Mapped[str | None] = mapped_column(String(2), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

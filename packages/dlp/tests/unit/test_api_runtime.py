@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -221,3 +222,98 @@ def test_sensitive_words_read_and_create() -> None:
     assert list_response.json()["items"][0]["name"] == "id-card"
     assert create_response.status_code == 201
     assert create_response.json()["created"] is True
+
+
+# --------------------------------------------------------------------------- governance reads
+
+
+class _GovDLPService:
+    """Records call kwargs and returns fixed governance payloads."""
+
+    def __init__(self) -> None:
+        self.calls: dict[str, dict[str, Any]] = {}
+
+    async def list_events(self, _session: Any, **kwargs: Any) -> list[Any]:
+        self.calls["list_events"] = kwargs
+        from foundation_dlp.domain.models import DLPEvent
+
+        return [
+            DLPEvent(id=2, tenant_id=kwargs["tenant_id"], check_type="SCAN",
+                     decision="QUARANTINE", user_id=USER_ID, resource_type="doc",
+                     resource_id="d1", reason_code=None, detail='{"max_sensitivity": "L4"}',
+                     occurred_at=datetime(2026, 6, 1, tzinfo=UTC), request_id="req_x"),
+        ]
+
+    async def list_classifications(self, _session: Any, **kwargs: Any) -> list[Any]:
+        self.calls["list_classifications"] = kwargs
+        return [
+            Classification(id="cls_a", tenant_id=kwargs["tenant_id"], resource_type="doc",
+                           resource_id="d1", sensitivity="L4", tags=["pii"], reason="r",
+                           tagged_by=USER_ID, tagged_at=datetime(2026, 6, 1, tzinfo=UTC),
+                           updated_at=datetime(2026, 6, 2, tzinfo=UTC), downgradable=False),
+        ]
+
+    async def stats(self, _session: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls["stats"] = kwargs
+        return {"by_decision": {"ALLOW": 3}, "by_check_type": {"SCAN": 1},
+                "by_sensitivity": {"L4": 2}, "total_events": 3}
+
+
+def _gov_client() -> tuple[TestClient, _GovDLPService]:
+    app = create_app()
+    svc = _GovDLPService()
+
+    async def fake_db_session() -> AsyncIterator[_FakeSession]:
+        yield _FakeSession()
+
+    app.dependency_overrides[db_session] = fake_db_session
+    app.dependency_overrides[dlp_service] = lambda: svc
+    return TestClient(app, raise_server_exceptions=False), svc
+
+
+def test_events_endpoint_lists_and_passes_filters() -> None:
+    client, svc = _gov_client()
+    response = client.get(
+        "/api/dlp/v1/core/events",
+        params={"check_type": "SCAN", "decision": "QUARANTINE", "limit": 50},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["check_type"] == "SCAN"
+    assert body["items"][0]["id"] == 2
+    assert body["next_before"] is None  # fewer rows than limit
+    assert svc.calls["list_events"]["tenant_id"] == TENANT_ID
+    assert svc.calls["list_events"]["check_type"] == "SCAN"
+
+
+def test_events_endpoint_rejects_oversized_limit() -> None:
+    response = _gov_client()[0].get(
+        "/api/dlp/v1/core/events", params={"limit": 999}, headers=_headers())
+    assert response.status_code == 422
+
+
+def test_classifications_endpoint_lists() -> None:
+    client, svc = _gov_client()
+    response = client.get(
+        "/api/dlp/v1/core/classifications",
+        params={"sensitivity": "L4"},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["sensitivity"] == "L4"
+    assert item["downgradable"] is False
+    assert svc.calls["list_classifications"]["sensitivity"] == "L4"
+
+
+def test_stats_endpoint_returns_aggregates() -> None:
+    response = _gov_client()[0].get("/api/dlp/v1/core/stats", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["by_decision"] == {"ALLOW": 3}
+    assert body["by_sensitivity"] == {"L4": 2}
+    assert body["total_events"] == 3

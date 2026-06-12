@@ -102,3 +102,138 @@ class TestContentScan:
             request_id=request_id)
         assert result["hits"] == []
         assert result["max_sensitivity"] == "L1"
+
+
+def _default_rules() -> list:
+    """Mirror of the built-in global rules seeded by migration 0002_dlp_default_rules.
+
+    Built here (not via migration) so the scan logic can be unit-tested without a DB.
+    """
+    specs = [
+        ("dlprule_pii_cn_idcard", "中国身份证", r"\b\d{17}[\dXx]\b", "L4"),
+        ("dlprule_pii_cn_phone", "中国手机号", r"\b1[3-9]\d{9}\b", "L3"),
+        ("dlprule_pii_bankcard", "银行卡号", r"\b\d{16,19}\b", "L4"),
+        ("dlprule_pii_email", "邮箱", r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "L2"),
+        ("dlprule_secret_aws_akid", "AWS Access Key", r"\bAKIA[0-9A-Z]{16}\b", "L4"),
+        ("dlprule_secret_private_key", "私钥头", r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "L4"),
+        ("dlprule_secret_api_key", "通用 API Key", r"(?i)\bapi[_-]?key\b\s*[:=]\s*\S+", "L3"),
+    ]
+    return [
+        make_dlp_rule(rule_id=rid, tenant_id=None, name=name, rule_type="REGEX",
+                      pattern=pattern, min_sensitivity=sens)
+        for rid, name, pattern, sens in specs
+    ]
+
+
+class TestDefaultRulesScan:
+    """Scan behavior against the built-in global DLP rules (action mapping included)."""
+
+    async def test_idcard_quarantine(self, svc: DLPService, fake_session, tenant_id: str, request_id: str) -> None:
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="客户身份证 11010119900307691X 备案", resource_type="doc", resource_id="d1",
+            request_id=request_id)
+        assert result["max_sensitivity"] == "L4"
+        assert result["action"] == "QUARANTINE"
+
+    async def test_email_only_scan_required(self, svc: DLPService, fake_session, tenant_id: str, request_id: str) -> None:
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="联系邮箱 alice@example.com 谢谢", resource_type="doc", resource_id="d2",
+            request_id=request_id)
+        assert result["max_sensitivity"] == "L2"
+        assert result["action"] == "SCAN_REQUIRED"
+
+    async def test_aws_key_quarantine(self, svc: DLPService, fake_session, tenant_id: str, request_id: str) -> None:
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="export AWS key AKIAIOSFODNN7EXAMPLE here", resource_type="doc", resource_id="d3",
+            request_id=request_id)
+        assert any(h["rule_id"] == "dlprule_secret_aws_akid" for h in result["hits"])
+        assert result["max_sensitivity"] == "L4"
+        assert result["action"] == "QUARANTINE"
+
+    async def test_api_key_assignment_scan_required(self, svc: DLPService, fake_session, tenant_id: str, request_id: str) -> None:
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="config: api_key = sk-abc123def", resource_type="doc", resource_id="d4",
+            request_id=request_id)
+        assert result["max_sensitivity"] == "L3"
+        assert result["action"] == "SCAN_REQUIRED"
+
+    async def test_clean_content_allow(self, svc: DLPService, fake_session, tenant_id: str, request_id: str) -> None:
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="这是一段关于产品路线图的普通描述", resource_type="doc", resource_id="d5",
+            request_id=request_id)
+        assert result["hits"] == []
+        assert result["max_sensitivity"] == "L1"
+        assert result["action"] == "ALLOW"
+
+
+class TestScanPersistence:
+    """A hit-producing scan must persist a durable dlp_event row (not just the outbox)."""
+
+    async def test_hit_persists_dlp_event_with_detail(
+        self, svc: DLPService, fake_session, tenant_id: str, request_id: str
+    ) -> None:
+        import json as _json
+
+        from foundation_dlp.domain.models import DLPEvent
+
+        fake_session.queue_scalars(_default_rules())
+        result = await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="客户身份证 11010119900307691X 备案", resource_type="doc", resource_id="d1",
+            user_id="usr_scanner", request_id=request_id)
+
+        events = [obj for obj in fake_session.added if isinstance(obj, DLPEvent)]
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.check_type == "SCAN"
+        assert ev.decision == result["action"] == "QUARANTINE"
+        assert ev.tenant_id == tenant_id
+        assert ev.user_id == "usr_scanner"
+        assert ev.resource_type == "doc"
+        assert ev.resource_id == "d1"
+        # detail is a JSON string carrying the matched rule(s).
+        detail = _json.loads(ev.detail)
+        assert detail["max_sensitivity"] == "L4"
+        assert any(r["rule_id"] == "dlprule_pii_cn_idcard" for r in detail["rules"])
+
+    async def test_clean_scan_persists_no_event(
+        self, svc: DLPService, fake_session, tenant_id: str, request_id: str
+    ) -> None:
+        from foundation_dlp.domain.models import DLPEvent
+
+        fake_session.queue_scalars(_default_rules())
+        await svc.scan_content(session=fake_session, tenant_id=tenant_id,
+            content="普通的产品路线图描述", resource_type="doc", resource_id="d2",
+            request_id=request_id)
+        assert not [obj for obj in fake_session.added if isinstance(obj, DLPEvent)]
+
+
+class TestGovernanceReads:
+    """Service-layer queries backing the /core governance endpoints."""
+
+    async def test_list_events_filters_and_orders(
+        self, svc: DLPService, fake_session, tenant_id: str
+    ) -> None:
+        from foundation_dlp.domain.models import DLPEvent
+
+        rows = [DLPEvent(id=3, tenant_id=tenant_id, check_type="SCAN", decision="QUARANTINE")]
+        fake_session.queue_scalars(rows)
+        out = await svc.list_events(fake_session, tenant_id=tenant_id, check_type="SCAN", limit=10)
+        assert [e.id for e in out] == [3]
+
+    async def test_stats_aggregates(self, svc: DLPService, fake_session, tenant_id: str) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        fake_session.queue_execute([("ALLOW", 5), ("DENY", 2)])
+        fake_session.queue_execute([("READ", 4), ("SCAN", 3)])
+        fake_session.queue_execute([("L3", 6), ("L4", 1)])
+        out = await svc.stats(fake_session, tenant_id=tenant_id,
+            since=datetime.now(UTC) - timedelta(days=30))
+        assert out["by_decision"] == {"ALLOW": 5, "DENY": 2}
+        assert out["by_check_type"] == {"READ": 4, "SCAN": 3}
+        assert out["by_sensitivity"] == {"L3": 6, "L4": 1}
+        assert out["total_events"] == 7

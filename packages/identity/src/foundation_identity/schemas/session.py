@@ -176,5 +176,6 @@ class MeResponse(BaseModel):
     email: str
     display_name: str
     roles: list[str] = Field(default_factory=list)
+    clearance: str = "L2"
     mfa_enabled: bool = False
     locale: str = "zh-CN"

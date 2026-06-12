@@ -6,6 +6,7 @@ that actually runs them.  Install with ``pip install foundation-sdk[fastapi]``.
 
 from foundation_sdk._fastapi import (
     RequestContextMiddleware,
+    get_clearance,
     get_request_id,
     get_tenant_id,
     get_user_id,
@@ -16,6 +17,7 @@ from foundation_sdk._fastapi import (
 
 __all__ = [
     "RequestContextMiddleware",
+    "get_clearance",
     "get_request_id",
     "get_tenant_id",
     "get_user_id",

@@ -47,6 +47,7 @@ __all__ = [
     "get_request_id",
     "get_tenant_id",
     "get_user_id",
+    "get_clearance",
     "push_identity",
     "RequestContextMiddleware",
 ]
@@ -60,6 +61,7 @@ logger = logging.getLogger(__name__)
 _request_id_var: ContextVar[str] = ContextVar("foundation.request_id", default="")
 _tenant_id_var: ContextVar[str] = ContextVar("foundation.tenant_id", default="")
 _user_id_var: ContextVar[str] = ContextVar("foundation.user_id", default="")
+_clearance_var: ContextVar[str] = ContextVar("foundation.clearance", default="")
 
 
 def get_request_id() -> str:
@@ -72,6 +74,10 @@ def get_tenant_id() -> str:
 
 def get_user_id() -> str:
     return _user_id_var.get()
+
+
+def get_clearance() -> str:
+    return _clearance_var.get()
 
 
 def push_identity(*, tenant_id: str, user_id: str) -> None:
@@ -122,6 +128,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         # an error (e.g. a write endpoint) or fine (e.g. /healthz).
         _tenant_id_var.set(request.headers.get("X-Tenant-Id", ""))
         _user_id_var.set(request.headers.get("X-User-Id", ""))
+        _clearance_var.set(request.headers.get("X-User-Clearance", ""))
 
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
