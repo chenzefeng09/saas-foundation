@@ -1213,7 +1213,7 @@ services:
            '{"super_admin"}',
            false, 0),
           -- alice@tenant-a.local → Tenant A → member
-          ('usr_01J5DEVUSRALICE00000000000',
+          ('usr_01KT7TZ70AM2RK8P0C0ALICE01',
            'tnt_01J5DEVXX00000000000000001',
            'alice@tenant-a.local',
            'Alice',
@@ -1222,7 +1222,7 @@ services:
            '{"member"}',
            false, 0),
           -- bob@tenant-a.local → Tenant A → member
-          ('usr_01J5DEVUSR0BOB000000000000',
+          ('usr_01KT7TZ70AM2RK8P0C0BOB0001',
            'tnt_01J5DEVXX00000000000000001',
            'bob@tenant-a.local',
            'Bob',
@@ -1231,7 +1231,7 @@ services:
            '{"member"}',
            false, 0),
           -- carol@tenant-b.local → Tenant B → member
-          ('usr_01J5DEVUSRCAROL00000000000',
+          ('usr_01KT7TZ70AM2RK8P0C0CAROL01',
            'tnt_01J5DEVXX00000000000000002',
            'carol@tenant-b.local',
            'Carol',
@@ -1675,7 +1675,7 @@ services:
         VALUES
           ('pmr_01DEVTNA0PENDING00000001',
            'tnt_01J5DEVXX00000000000000001',
-           'usr_01J5DEVUSRALICE00000000000',
+           'usr_01KT7TZ70AM2RK8P0C0ALICE01',
            '需要临时访问生产数据库排查工单 INC-1042',
            ARRAY['billing:read','billing:write'],
            60, 'INC-1042', 'PENDING',
@@ -1689,7 +1689,7 @@ services:
         VALUES
           ('pmr_01DEVTNA0PENDING00000002',
            'tnt_01J5DEVXX00000000000000001',
-           'usr_01J5DEVUSR0BOB000000000000',
+           'usr_01KT7TZ70AM2RK8P0C0BOB0001',
            '需要临时升权处理客户紧急工单 INC-2087',
            ARRAY['session:read','session:write'],
            90, 'INC-2087', 'PENDING',
@@ -1703,7 +1703,7 @@ services:
         VALUES
           ('pmr_01DEVTNA0APPROVED0000001',
            'tnt_01J5DEVXX00000000000000001',
-           'usr_01J5DEVUSR0BOB000000000000',
+           'usr_01KT7TZ70AM2RK8P0C0BOB0001',
            '季度合规审计需要只读访问审计日志',
            ARRAY['audit:read'],
            120, 'AUDIT-Q2', 'APPROVED',
@@ -1723,7 +1723,7 @@ services:
           ('pms_01DEVTNA0ACTIVE00000001',
            'tnt_01J5DEVXX00000000000000001',
            'pmr_01DEVTNA0APPROVED0000001',
-           'usr_01J5DEVUSR0BOB000000000000',
+           'usr_01KT7TZ70AM2RK8P0C0BOB0001',
            'usr_01KT7TZ70AM2RK8P0C01KMBPRR',
            ARRAY['audit:read'],
            now() - interval '110 minutes',
@@ -2010,7 +2010,7 @@ services:
         VALUES
           ('inc_01DEVSECOPS00000000000001',
            'HIGH', 'DDOS', 'API 网关遭遇间歇性流量洪峰',
-           now() - interval '6 hours', 'usr_01J5DEVUSRALICE00000000000',
+           now() - interval '6 hours', 'usr_01KT7TZ70AM2RK8P0C0ALICE01',
            'usr_01KT7TZ70AM2RK8P0C01KMBPRR', 'INVESTIGATING')
         ON CONFLICT (id) DO NOTHING;
 
@@ -2070,7 +2070,7 @@ services:
            'tnt_01J5DEVXX00000000000000001',
            'rt_document00000000000000001',
            'file_01DEVTNADEMODELETED0001', '2024-Q4-财报草稿.docx',
-           'usr_01J5DEVUSRALICE00000000000',
+           'usr_01KT7TZ70AM2RK8P0C0ALICE01',
            now() - interval '3 days', now() + interval '27 days',
            '{"bucket":"foundation-storage","key":"tnt_a/2024-q4-draft.docx"}')
         ON CONFLICT (id) DO NOTHING;
@@ -2122,10 +2122,10 @@ services:
           ('ddr_01DEVTNA00000000000000001',
            'tnt_01J5DEVXX00000000000000001',
            'user_data',
-           '["usr_01J5DEVUSRCAROL00000000000"]'::jsonb,
+           '["usr_01KT7TZ70AM2RK8P0C0CAROL01"]'::jsonb,
            'crypto_shred',
            '用户行使被遗忘权，申请销毁其全部个人数据',
-           'usr_01J5DEVUSRALICE00000000000',
+           'usr_01KT7TZ70AM2RK8P0C0ALICE01',
            NULL, 'PENDING_APPROVAL')
         ON CONFLICT (id) DO NOTHING;
 
