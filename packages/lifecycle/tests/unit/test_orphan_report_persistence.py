@@ -7,8 +7,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 from foundation_lifecycle.domain.models import OrphanReconcileReport
 
 

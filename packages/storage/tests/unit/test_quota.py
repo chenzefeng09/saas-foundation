@@ -172,3 +172,68 @@ class TestPostgresQuotaIncrementUsed:
     def test_satisfies_protocol(self) -> None:
         q: QuotaChecker = PostgresQuotaChecker(_session_factory(MagicMock()))
         assert isinstance(q, QuotaChecker)
+
+
+class TestPostgresQuotaMetrics:
+    """Phase 7: every check_before_upload should bump
+    ``storage.quota.upload_total`` exactly once with the right ``result``
+    label so the Prometheus scrape never under-counts."""
+
+    @pytest.mark.asyncio
+    async def test_accepted_emits_accepted_counter(
+        self, fake_sqlalchemy: MagicMock
+    ) -> None:
+        from unittest.mock import patch
+
+        session = MagicMock()
+        result = MagicMock()
+        result.first.return_value = (1_000, 100)
+        session.execute = AsyncMock(return_value=result)
+
+        q = PostgresQuotaChecker(_session_factory(session))
+        with patch("foundation_storage.quota._upload_counter") as counter:
+            await q.check_before_upload("tnt_01", BucketPurpose.WORKSPACE, 500)
+            counter.add.assert_called_once_with(
+                1, {"bucket_purpose": "workspace", "result": "accepted"}
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejected_emits_rejected_counter(
+        self, fake_sqlalchemy: MagicMock
+    ) -> None:
+        from unittest.mock import patch
+
+        session = MagicMock()
+        result = MagicMock()
+        result.first.return_value = (1_000, 800)
+        session.execute = AsyncMock(return_value=result)
+
+        q = PostgresQuotaChecker(_session_factory(session))
+        with patch("foundation_storage.quota._upload_counter") as counter:
+            with pytest.raises(QuotaExceededError):
+                await q.check_before_upload(
+                    "tnt_01", BucketPurpose.WORKSPACE, 300
+                )
+            counter.add.assert_called_once_with(
+                1, {"bucket_purpose": "workspace", "result": "rejected"}
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_row_emits_accepted_counter(
+        self, fake_sqlalchemy: MagicMock
+    ) -> None:
+        from unittest.mock import patch
+
+        session = MagicMock()
+        result = MagicMock()
+        result.first.return_value = None
+        session.execute = AsyncMock(return_value=result)
+
+        q = PostgresQuotaChecker(_session_factory(session))
+        with patch("foundation_storage.quota._upload_counter") as counter:
+            await q.check_before_upload(
+                "tnt_01", BucketPurpose.WORKSPACE, 999_999
+            )
+            counter.add.assert_called_once_with(
+                1, {"bucket_purpose": "workspace", "result": "accepted"}
+            )
