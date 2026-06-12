@@ -51,6 +51,15 @@ vault:
 minio:
   enabled: false
 # large profile: 需用户提供外部 S3 / OSS / S3 兼容对象存储。
+# minio-init Job 在 minio.enabled=false 时**不会渲染**——运维必须先在客户云控制台
+# 手动创建 4 个 bucket 再 helm install / helm upgrade，否则服务首次写入会失败。
+# 创建步骤（以 AWS S3 举例，OSS / 兼容存储步骤类似）：
+#   1. aws s3api create-bucket --bucket acme-corp-foundation-audit-prod \
+#        --object-lock-enabled-for-bucket --region cn-north-1
+#   2. aws s3api put-object-lock-configuration --bucket acme-corp-foundation-audit-prod \
+#        --object-lock-configuration '{"ObjectLockEnabled":"Enabled",
+#          "Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Years":7}}}'
+#   3. 其余 3 个 bucket 用 `aws s3api create-bucket` 即可（无需 lock）
 # 在 values-prod-secrets.yaml 中覆盖 global.storage 即可：
 # global:
 #   storage:
@@ -63,6 +72,8 @@ minio:
 #       kbRaw: acme-corp-foundation-kb-raw-prod
 #       kbDerived: acme-corp-foundation-kb-derived-prod
 #     presignedUrlTtlSeconds: 3600
+#     audit:
+#       retentionYears: 7  # 与 put-object-lock-configuration 里的 Years 保持一致
 # 旧 global.s3 节本期保留兼容，下版本计划下线。
 
 # Unleash — large 关闭 subchart；使用外置 Unleash 高可用集群

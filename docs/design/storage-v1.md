@@ -1,8 +1,8 @@
 # 存储层 v1 设计文档
 
-> 状态：Approved v1.2
+> 状态：Approved v1.3
 > Owner：平台基础设施
-> 实施 milestone：Phase 1–4（串行推进；Phase 1、2 已落地）
+> 实施 milestone：Phase 1–6 全部落地（Phase 1-4 包代码 + Phase 5 dev 栈部署 + Phase 6 Helm bucket bootstrap）
 > 相关文档：[audit-v1.md](./audit-v1.md) / [lifecycle-v1.md](./lifecycle-v1.md) / [security-ops-ci-v1.md](./security-ops-ci-v1.md) / [CONVENTIONS.md](../CONVENTIONS.md)
 
 > **关键决策定稿**（2026-06-11）：
@@ -103,7 +103,13 @@ minio-init:
       echo "=== minio-init: all buckets ready ==="
 ```
 
-Helm 中对应一个同名 Job（`hooks: post-install,post-upgrade`），用 `mc` 镜像执行相同逻辑，bucket 名从 `global.storage.buckets.*` 读取。
+Helm 中对应同款 Job — 见 [`deploy/helm/foundation/templates/minio-init.yaml`](../../deploy/helm/foundation/templates/minio-init.yaml)（Phase 6 落地）：
+
+- `helm.sh/hook: post-install,post-upgrade` + `hook-delete-policy: before-hook-creation,hook-succeeded` —— 每次 `helm install` / `helm upgrade` 都跑一次，老 Pod 自动清理
+- 凭据走 `global.storage.existingSecret`（同 audit / security-ops 用的 Secret，key 为 `access-key` / `secret-key`），通过 `MC_HOST_local=http://$(KEY):$(SECRET)@endpoint` 注入避免 argv 泄露
+- bucket 名从 `global.storage.buckets.*` 读取，Object Lock retention 从 `global.storage.audit.retentionYears` 读（默认 7）
+- `mc mb --ignore-existing` 保证幂等——加新 bucket 只需在模板里 + 一行 `mc mb`，`helm upgrade` 即可，不影响存量
+- **large profile**（`minio.enabled=false`）整段不渲染——客户使用外部 S3 / OSS 时由运维按 `values-large.yaml` 注释里的 `aws s3api create-bucket` 步骤手动创建
 
 ---
 
@@ -730,6 +736,7 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 | Phase 4 `list_prefix` 分页 | 给 `StorageClient.list_prefix` 加 `continuation_token` 参数和返回值，向后兼容 | Phase 4 |
 | Phase 4 audit bucket 孤儿对账 | 本期跳过（audit 写 ClickHouse `worm_uri` 不写 lifecycle，跨存储扫描成本高）；§6.4 已说 audit 不接 GC | Phase 4 |
 | 配额 `used_bytes` 并发安全 | Postgres 行级原子更新（`UPDATE ... SET used_bytes = used_bytes + :delta`），不引入 Redis 或显式行锁 | Phase 3 `quota.py` |
+| Phase 6 Helm bucket bootstrap | small/medium profile 走 `minio-init.yaml` post-install/post-upgrade Job 自动创建 4 bucket（含 audit Object Lock）；large profile 不渲染 Job，由运维按 `values-large.yaml` 注释手动 `aws s3api create-bucket` | Phase 6 |
 | `storage.quota.write` scope 注册时机 | Phase 3 实现配额 API 时一并注册到 `CONVENTIONS.md §4.x` 和 identity `_ALLOWED_SCOPES`，不提前占位 | Phase 3 验收标准 |
 | `foundation-audit-worm` 只读窗口起点 | Phase 2 上线日为起点计 6 个月，写进 `docs/design/storage-migration-v1.md`；过渡期残留写入由 feature flag 兜底，忽略不计 | Phase 2 migration 文档 |
 | audit key 层级 | 保留 hour 段（`tenants/{tid}/events/YYYY/MM/DD/HH/{event_id}.json`），与现有 worm.py 5 层一致，老数据迁移只做前缀替换 | Phase 2 `ObjectKey.for_audit_event` |
@@ -787,3 +794,4 @@ bucket 名从 `settings.worm_bucket`（默认 `foundation-audit-worm`）改为�
 | 2026-06-11 | 1.0.0 | 定稿：5 项决策落定（隔离/节奏/并发/scope/只读窗口）；修正 minio-init 现状描述与 `global.storage`/`global.s3` 引用；id 字段 VARCHAR(30) 对齐项目惯例；明确 `soft_delete` 需新增 `s3_location` 参数（否则 GC 无效）；附录 A 改为容忍行号漂移的措辞 |
 | 2026-06-11 | 1.1.0 | Phase 2 调研期修订：audit key 保留 hour 段（5 层）；security-ops 范围澄清（不写 S3，只校验请求体 + 补 `original_location`）；audit feature flag 改名 `storage.worm_via_storage_client`；Helm `global.s3` 是孤儿节，Phase 2 同步改造 services-renderer 真正注入 ENV；audit WORM 不写 `original_location` |
 | 2026-06-12 | 1.2.0 | Phase 3/4 调研期修订：(1) Phase 3 ID 前缀改 `sqt_` 对齐 lifecycle 既有 `bin_/crt_/dsj_` 惯例；(2) Phase 3 自建 `require_scope` Depends（lifecycle 现状零 scope 校验）；(3) Phase 4 同步加 security-ops DELETE 端点 + soft_delete 调用（不然 GC 无对象可清）；(4) `original_location` 改存裸 list `["bucket::key"]` 对齐业务表 `s3_location`；(5) Phase 4 给 `list_prefix` 加分页参数；(6) Phase 4 跳过 audit bucket 孤儿对账 |
+| 2026-06-12 | 1.3.0 | Phase 6 落地：Helm `templates/minio-init.yaml` 以 post-install/post-upgrade Hook 自动创建 4 bucket（含 audit Object Lock COMPLIANCE retention），small/medium 走内嵌 MinIO，large profile 不渲染 Job；values.yaml 新增 `global.storage.initImage` 和 `global.storage.audit.retentionYears`；values-large.yaml 加 `aws s3api create-bucket` 步骤说明 |

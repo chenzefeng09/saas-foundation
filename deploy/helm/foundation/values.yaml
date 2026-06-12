@@ -140,6 +140,14 @@ global:
       kbRaw: foundation-kb-raw
       kbDerived: foundation-kb-derived
     presignedUrlTtlSeconds: 3600
+    # mc image for the minio-init bootstrap Job (storage-v1 §2.3).
+    # Override in production if you mirror images internally.
+    initImage: minio/mc:RELEASE.2025-09-07T16-15-50Z
+    audit:
+      # COMPLIANCE Object Lock retention applied to the audit bucket.
+      # Match your compliance window; 7y is the conservative default
+      # (matches AUDIT_WORM_RETENTION_YEARS in the audit service).
+      retentionYears: 7
   otelCollector:
     endpoint: http://foundation-otel-collector:4317
   opa:
