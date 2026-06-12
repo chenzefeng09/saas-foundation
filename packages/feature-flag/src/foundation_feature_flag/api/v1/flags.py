@@ -199,13 +199,21 @@ async def set_flag(flag: str, body: SetFlagRequest, request: Request) -> FlagVie
     else:
         strategies.append({"name": "default", "constraints": [], "parameters": {}})
 
-    # Sync to Unleash admin
-    gateway.admin_upsert_flag(
+    # Sync to Unleash admin — must succeed before we record DB state as synced.
+    unleash_ok = gateway.admin_upsert_flag(
         flag_key=flag,
         description=body.description,
         enabled=body.enabled,
         strategies=strategies,
     )
+    # In dev/test mode (unleash_enabled=False) admin_upsert_flag returns False by
+    # design — only enforce the sync gate when Unleash is actually enabled.
+    if gateway.is_enabled() and not unleash_ok:
+        log.error("flags.set.unleash_sync_failed", flag=flag)
+        raise HTTPException(
+            status_code=502,
+            detail=f"flag '{flag}' could not be synced to Unleash (admin API write failed)",
+        )
 
     now = datetime.now(UTC)
 

@@ -208,6 +208,49 @@ class TenantStorageQuota(Base):
 
 
 # ---------------------------------------------------------------------------
+# Large-attachment entitlement (two-layer BOOLEAN admission — not a quota)
+# ---------------------------------------------------------------------------
+class TenantLargeAttachmentSetting(Base):
+    """Tenant-wide switch: may ANY user in this tenant use large attachments."""
+
+    __tablename__ = "tenant_large_attachment_setting"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_large_attach_setting_tenant"),
+        Index("idx_large_attach_setting_tenant", "tenant_id"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "tla_<ULID>"
+    tenant_id: Mapped[str] = mapped_column(
+        String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    large_attachment_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UserLargeAttachmentAllow(Base):
+    """Per-user allowlist row — which users are permitted once tenant is on."""
+
+    __tablename__ = "user_large_attachment_allow"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", name="uq_large_attach_allow_tenant_user"),
+        Index("idx_large_attach_allow_tenant", "tenant_id"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "ula_<ULID>"
+    tenant_id: Mapped[str] = mapped_column(
+        String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
 # Outbox
 # ---------------------------------------------------------------------------
 class Outbox(Base):

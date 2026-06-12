@@ -43,6 +43,8 @@ class LLMUsageRecord(Base):
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    prompt_cache_hit_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    prompt_cache_miss_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     request_id: Mapped[str | None] = mapped_column(String(64))

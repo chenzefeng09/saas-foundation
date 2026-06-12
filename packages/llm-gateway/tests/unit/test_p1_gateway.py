@@ -331,7 +331,10 @@ class TestChatCompletionsNonStreaming:
             "id": "chatcmpl-123",
             "object": "chat.completion",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "usage": {
+                "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                "prompt_cache_hit_tokens": 8, "prompt_cache_miss_tokens": 2,
+            },
         }
 
         class _FakeHTTPClient:
@@ -373,7 +376,12 @@ class TestChatCompletionsNonStreaming:
         assert result["usage"]["total_tokens"] == 15
 
         # usage record added to session (check by id prefix)
-        assert any(getattr(o, "id", "").startswith("llmu_") for o in fake_session.added)
+        usage_records = [o for o in fake_session.added if getattr(o, "id", "").startswith("llmu_")]
+        assert usage_records
+        # DeepSeek prompt-cache hit/miss tokens recorded on the internal usage record
+        rec = usage_records[0]
+        assert rec.prompt_cache_hit_tokens == 8
+        assert rec.prompt_cache_miss_tokens == 2
 
     async def test_upstream_error_raises_502(self, svc, fake_session, tenant_id, request_id, monkeypatch):
         import httpx
@@ -441,6 +449,227 @@ class TestChatCompletionsNonStreaming:
                 t_start=0.0, settings=settings,
             )
         assert exc_info.value.error_code == PROVIDER_UPSTREAM_ERROR
+
+
+# ---------------------------------------------------------------------------
+# Multi-engine cache normalization wiring (_handle_non_streaming + provider)
+# ---------------------------------------------------------------------------
+
+def _settings_mock():
+    from unittest.mock import MagicMock
+    settings = MagicMock()
+    settings.billing_url = "http://billing"
+    settings.crypto_url = "http://crypto"
+    settings.audit_url = "http://audit"
+    settings.external_timeout_seconds = 5.0
+    return settings
+
+
+def _patch_side_effects(monkeypatch):
+    """Silence billing/audit so post-stream tasks don't hit the network."""
+    from foundation_llm_gateway.services import llm_gateway_service as svc_mod
+
+    async def _noop(*a, **kw): pass
+    monkeypatch.setattr(svc_mod, "_record_billing_usage", _noop)
+    monkeypatch.setattr(svc_mod, "_emit_audit_event", _noop)
+
+
+class TestCacheNormalizationWiring:
+    async def test_non_streaming_vllm_nested_cached_tokens(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch
+    ):
+        """vLLM provider: hit comes from prompt_tokens_details.cached_tokens."""
+        import httpx
+        from foundation_llm_gateway.api.v1.llm_gateway import (
+            ChatCompletionMessage, ChatCompletionRequest, _handle_non_streaming,
+        )
+        _patch_side_effects(monkeypatch)
+
+        resp_json = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                "prompt_tokens_details": {"cached_tokens": 60},
+            },
+        }
+
+        class _FakeHTTPClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def post(self, url, **kw): return httpx.Response(200, json=resp_json)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHTTPClient)
+
+        provider = _make_provider(tenant_id)
+        provider.kind = "vllm"
+        provider.capabilities = {}
+        messages_wire = [{"role": "user", "content": "Hello"}]
+        body = ChatCompletionRequest(
+            model="gpt-4o", messages=[ChatCompletionMessage(role="user", content="Hello")],
+        )
+
+        await _handle_non_streaming(
+            body=body, payload={"model": "gpt-4o", "messages": messages_wire, "stream": False},
+            upstream_url="http://fake-llm/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-real"},
+            messages_wire=messages_wire,
+            session=fake_session, svc=svc,
+            tenant_id=tenant_id, provider_id=provider.id,
+            request_id=request_id, user_id=None, run_id=None,
+            t_start=0.0, settings=_settings_mock(), provider=provider,
+        )
+
+        rec = [o for o in fake_session.added if getattr(o, "id", "").startswith("llmu_")][0]
+        assert rec.prompt_cache_hit_tokens == 60
+        assert rec.prompt_cache_miss_tokens == 40
+
+    async def test_non_streaming_deepseek_top_level(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch
+    ):
+        """DeepSeek provider: hit/miss from top-level usage fields."""
+        import httpx
+        from foundation_llm_gateway.api.v1.llm_gateway import (
+            ChatCompletionMessage, ChatCompletionRequest, _handle_non_streaming,
+        )
+        _patch_side_effects(monkeypatch)
+
+        resp_json = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                "prompt_cache_hit_tokens": 88, "prompt_cache_miss_tokens": 12,
+            },
+        }
+
+        class _FakeHTTPClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def post(self, url, **kw): return httpx.Response(200, json=resp_json)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHTTPClient)
+
+        provider = _make_provider(tenant_id)
+        provider.kind = "deepseek"
+        provider.capabilities = {}
+        messages_wire = [{"role": "user", "content": "Hello"}]
+        body = ChatCompletionRequest(
+            model="gpt-4o", messages=[ChatCompletionMessage(role="user", content="Hello")],
+        )
+
+        await _handle_non_streaming(
+            body=body, payload={"model": "gpt-4o", "messages": messages_wire, "stream": False},
+            upstream_url="http://fake-llm/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-real"},
+            messages_wire=messages_wire,
+            session=fake_session, svc=svc,
+            tenant_id=tenant_id, provider_id=provider.id,
+            request_id=request_id, user_id=None, run_id=None,
+            t_start=0.0, settings=_settings_mock(), provider=provider,
+        )
+
+        rec = [o for o in fake_session.added if getattr(o, "id", "").startswith("llmu_")][0]
+        assert rec.prompt_cache_hit_tokens == 88
+        assert rec.prompt_cache_miss_tokens == 12
+
+
+# ---------------------------------------------------------------------------
+# X-Session-Id affinity passthrough
+# ---------------------------------------------------------------------------
+
+class TestSessionAffinityHeader:
+    async def _run_chat_completions(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch,
+        *, capabilities, metadata,
+    ):
+        """Drive chat_completions and capture the upstream request headers."""
+        import httpx
+        from foundation_llm_gateway.api.v1 import llm_gateway as api_mod
+        from foundation_llm_gateway.api.v1.llm_gateway import (
+            ChatCompletionMessage, ChatCompletionRequest, chat_completions,
+        )
+        from foundation_llm_gateway.domain.base import FoundationContext
+        from foundation_llm_gateway.services import llm_gateway_service as svc_mod
+
+        captured = {}
+
+        provider = _make_provider(tenant_id, models=["gpt-4o"])
+        provider.kind = "vllm"
+        provider.capabilities = capabilities
+        key = _make_virtual_key(tenant_id, provider_id=provider.id)
+        fake_session.queue_scalar(key)          # resolve_provider: key lookup
+        fake_session.queue_scalars([provider])  # resolve_provider: providers list
+
+        async def _allow(*a, **kw): return {"allowed": True, "remaining": 9999}
+        monkeypatch.setattr(svc_mod, "_check_billing_quota", _allow)
+        async def _decrypt(stored, *a, **kw): return "sk-real"
+        monkeypatch.setattr(svc_mod, "_decrypt_api_key", _decrypt)
+        _patch_side_effects(monkeypatch)
+        # get_settings() inside the endpoint
+        monkeypatch.setattr(api_mod, "get_settings", _settings_mock)
+
+        resp_json = {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        }
+
+        class _FakeHTTPClient:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def post(self, url, **kw):
+                captured["headers"] = kw.get("headers")
+                return httpx.Response(200, json=resp_json)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHTTPClient)
+
+        request = MagicMock()
+        request.headers = {}
+        ctx = FoundationContext(
+            tenant_id=tenant_id, user_id="usr_01J5DEVXX00000000000000001",
+            actor="USER", request_id=request_id,
+        )
+        body = ChatCompletionRequest(
+            model="gpt-4o",
+            messages=[ChatCompletionMessage(role="user", content="Hi")],
+            metadata=metadata,
+        )
+        await chat_completions(
+            body=body, request=request, ctx=ctx, session=fake_session,
+            svc=svc, request_id=request_id, x_llm_virtual_key=key.virtual_key,
+        )
+        return captured["headers"]
+
+    async def test_injected_when_affinity_external_lb_and_session_id(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch
+    ):
+        headers = await self._run_chat_completions(
+            svc, fake_session, tenant_id, request_id, monkeypatch,
+            capabilities={"affinity_mode": "external_lb"},
+            metadata={"session_id": "sess-abc"},
+        )
+        assert headers.get("X-Session-Id") == "sess-abc"
+
+    async def test_derived_from_run_id_when_no_session_id(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch
+    ):
+        headers = await self._run_chat_completions(
+            svc, fake_session, tenant_id, request_id, monkeypatch,
+            capabilities={"affinity_mode": "external_lb"},
+            metadata={"run_id": "run-xyz"},
+        )
+        assert headers.get("X-Session-Id") == "run-xyz"
+
+    async def test_not_injected_when_affinity_none(
+        self, svc, fake_session, tenant_id, request_id, monkeypatch
+    ):
+        headers = await self._run_chat_completions(
+            svc, fake_session, tenant_id, request_id, monkeypatch,
+            capabilities={},  # affinity_mode defaults to "none"
+            metadata={"session_id": "sess-abc"},
+        )
+        assert "X-Session-Id" not in headers
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +837,87 @@ class TestRegisterProviderCrypto:
         )
         # The legacy value should have been passed to encrypt
         assert captured["plaintext"] == "sk-legacy"
+
+
+# ---------------------------------------------------------------------------
+# Update provider — capabilities shallow merge-patch
+# ---------------------------------------------------------------------------
+
+class TestUpdateProviderCapabilitiesMerge:
+    async def _update(
+        self, svc, fake_session, tenant_id, request_id, *, existing, patch_dict,
+    ):
+        provider = _make_provider(tenant_id)
+        provider.capabilities = existing
+        fake_session.queue_scalar(provider)  # update_provider: select by id+tenant
+        return await svc.update_provider(
+            fake_session, provider_id=provider.id, tenant_id=tenant_id,
+            capabilities=patch_dict, request_id=request_id,
+        )
+
+    async def test_capabilities_extra_only_preserves_model_config(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        """PATCH touching only affinity_mode must not wipe model_type_map/model_settings."""
+        provider = await self._update(
+            svc, fake_session, tenant_id, request_id,
+            existing={
+                "model_type_map": {"chat": ["gpt-4o"]},
+                "model_settings": {"gpt-4o": {"temperature": 0.5}},
+                "affinity_mode": "none",
+            },
+            patch_dict={"affinity_mode": "external_lb"},
+        )
+        assert provider.capabilities["affinity_mode"] == "external_lb"
+        assert provider.capabilities["model_type_map"] == {"chat": ["gpt-4o"]}
+        assert provider.capabilities["model_settings"] == {"gpt-4o": {"temperature": 0.5}}
+
+    async def test_model_type_map_only_preserves_cache_config(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        """PATCH touching only model_type_map must not wipe cache_format/affinity_mode."""
+        provider = await self._update(
+            svc, fake_session, tenant_id, request_id,
+            existing={
+                "model_type_map": {"chat": ["gpt-4o"]},
+                "cache_format": "anthropic",
+                "affinity_mode": "external_lb",
+            },
+            patch_dict={"model_type_map": {"chat": ["gpt-4o", "gpt-4o-mini"]}},
+        )
+        assert provider.capabilities["model_type_map"] == {"chat": ["gpt-4o", "gpt-4o-mini"]}
+        assert provider.capabilities["cache_format"] == "anthropic"
+        assert provider.capabilities["affinity_mode"] == "external_lb"
+
+    async def test_none_value_deletes_key(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        """A None value deletes that capability key; other keys remain."""
+        provider = await self._update(
+            svc, fake_session, tenant_id, request_id,
+            existing={
+                "model_type_map": {"chat": ["gpt-4o"]},
+                "cache_metric_unreliable": True,
+                "affinity_mode": "external_lb",
+            },
+            patch_dict={"cache_metric_unreliable": None},
+        )
+        assert "cache_metric_unreliable" not in provider.capabilities
+        assert provider.capabilities["model_type_map"] == {"chat": ["gpt-4o"]}
+        assert provider.capabilities["affinity_mode"] == "external_lb"
+
+    async def test_merge_creates_new_dict_for_orm_tracking(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        """Merge must reassign a NEW dict (not mutate in place) so JSONB is flagged dirty."""
+        existing = {"affinity_mode": "none"}
+        provider = await self._update(
+            svc, fake_session, tenant_id, request_id,
+            existing=existing,
+            patch_dict={"affinity_mode": "external_lb"},
+        )
+        assert provider.capabilities is not existing
+        assert existing == {"affinity_mode": "none"}  # original untouched
 
 
 # ---------------------------------------------------------------------------

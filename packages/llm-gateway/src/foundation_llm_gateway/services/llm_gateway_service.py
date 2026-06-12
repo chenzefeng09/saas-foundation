@@ -164,6 +164,7 @@ async def _emit_audit_event(
     model: str, prompt_tokens: int, completion_tokens: int,
     finish_reason: str | None, latency_ms: float,
     audit_url: str, timeout: float,
+    prompt_cache_hit_tokens: int = 0, prompt_cache_miss_tokens: int = 0,
 ) -> None:
     """Fire-and-forget audit event. Stores hashes of content, not plaintext (PII protection)."""
     try:
@@ -189,6 +190,8 @@ async def _emit_audit_event(
                 "model": model,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "prompt_cache_hit_tokens": prompt_cache_hit_tokens,
+                "prompt_cache_miss_tokens": prompt_cache_miss_tokens,
                 "finish_reason": finish_reason,
                 "latency_ms": round(latency_ms, 1),
                 # Prompt/response content stored as hash only (PII protection)
@@ -239,6 +242,8 @@ class ProviderKind(str, Enum):
     ALIYUN = "aliyun"
     BAIDU = "baidu"
     TENCENT = "tencent"
+    SGLANG = "sglang"
+    LLAMACPP = "llamacpp"
 
 
 REQUIRED_CAPABILITIES = {
@@ -303,7 +308,17 @@ class LLMGatewayService:
         capabilities: dict[str, Any] | None = None,
         request_id: str,
     ) -> LLMProvider:
-        """Update mutable fields of an existing provider."""
+        """Update mutable fields of an existing provider.
+
+        ``capabilities`` is treated as a SHALLOW merge-patch (not a wholesale
+        replace): each top-level key in the incoming dict is merged into the
+        provider's existing ``capabilities``. A value of ``None`` DELETES that
+        key (the convention for removing a capability, e.g.
+        ``{"cache_metric_unreliable": None}``); any other value sets/overwrites
+        it. Top-level keys not present in the incoming dict are left untouched
+        — so a patch touching only ``affinity_mode`` preserves
+        ``model_type_map``/``model_settings`` and vice versa.
+        """
         provider = await session.scalar(
             select(LLMProvider).where(
                 LLMProvider.id == provider_id,
@@ -322,7 +337,16 @@ class LLMGatewayService:
         if default_model is not None:
             provider.default_model = default_model
         if capabilities is not None:
-            provider.capabilities = capabilities
+            # Shallow merge-patch into a NEW dict so SQLAlchemy flags the JSONB
+            # column dirty (in-place mutation may go undetected without
+            # MutableDict). None value => delete the key.
+            merged = dict(provider.capabilities or {})
+            for key, value in capabilities.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            provider.capabilities = merged
         self._emit(session, tenant_id, "foundation.llm_gateway.provider.updated",
                    {"provider": provider.name, "provider_id": provider_id}, request_id)
         await session.flush()
@@ -552,6 +576,7 @@ class LLMGatewayService:
         provider_id: str, model: str, prompt_tokens: int,
         completion_tokens: int, total_tokens: int,
         request_id: str, cost_usd: float = 0.0, latency_ms: float = 0.0,
+        prompt_cache_hit_tokens: int = 0, prompt_cache_miss_tokens: int = 0,
     ) -> LLMUsageRecord:
         record = LLMUsageRecord(
             id=f"llmu_{ulid.new()!s}",
@@ -561,6 +586,8 @@ class LLMGatewayService:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens=prompt_cache_miss_tokens,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
             request_id=request_id,

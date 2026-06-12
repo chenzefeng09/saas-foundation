@@ -38,7 +38,7 @@ class _ExecuteResult:
 @dataclass
 class FakeAsyncSession:
     pk_store: dict[type, dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
-    added: list[Any] = field(default_factory=list); flush_calls: int = 0
+    added: list[Any] = field(default_factory=list); deleted: list[Any] = field(default_factory=list); flush_calls: int = 0
     _scalar_queue: list[Any] = field(default_factory=list)
     _scalars_queue: list[list[Any]] = field(default_factory=list)
     _execute_queue: list[list[Any]] = field(default_factory=list)
@@ -58,6 +58,9 @@ class FakeAsyncSession:
     def add(self, obj: Any) -> None:
         self.added.append(obj)
         if (pk := getattr(obj, "id", None)) is not None: self.pk_store[type(obj)][pk] = obj
+    async def delete(self, obj: Any) -> None:
+        self.deleted.append(obj)
+        if (pk := getattr(obj, "id", None)) is not None: self.pk_store[type(obj)].pop(pk, None)
     async def flush(self) -> None: self.flush_calls += 1
     async def refresh(self, obj: Any, attribute_names=None) -> None: pass
 

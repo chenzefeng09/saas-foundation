@@ -33,6 +33,7 @@ from foundation_llm_gateway.errors import (
     QUOTA_EXCEEDED, VALIDATION_FAILED, VIRTUAL_KEY_MISMATCH, VIRTUAL_KEY_REQUIRED, FoundationError,
 )
 from foundation_llm_gateway.observability import get_logger
+from foundation_llm_gateway.services.cache_usage import normalize_usage
 from foundation_llm_gateway.services.llm_gateway_service import (
     LLMGatewayService, MODEL_PRICING, ProviderKind,
     _check_billing_quota, _decrypt_api_key, _emit_audit_event,
@@ -79,6 +80,14 @@ class RegisterProviderRequest(BaseModel):
     models: list[str] = []
     model_type_map: dict[str, list[str]] = Field(default_factory=dict)  # {"llm": ["gpt-4o"], "text_embedding": ["text-embedding-3-small"]}
     model_settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Free-form capability overrides merged into the provider's capabilities
+    # JSONB. Used to configure multi-engine cache normalization + affinity:
+    #   cache_format            — override the kind-derived cache shape
+    #                             ("deepseek" | "openai_nested" | "llamacpp")
+    #   affinity_mode           — "none" (default) | "external_lb" | ... ; when
+    #                             not "none" the gateway forwards X-Session-Id
+    #   cache_metric_unreliable — bool; surfaced for caller-side warnings
+    capabilities_extra: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/providers", tags=["llm-gateway"])
@@ -116,6 +125,9 @@ async def register_provider(
     except ValueError:
         kind = ProviderKind.OPENAI_COMPATIBLE
     capabilities = {"model_type_map": body.model_type_map, "model_settings": body.model_settings}
+    # Merge operator-supplied capability overrides (cache_format, affinity_mode,
+    # cache_metric_unreliable, ...). Explicit keys take precedence over defaults.
+    capabilities.update(body.capabilities_extra)
     provider = await svc.register_provider(
         session, tenant_id=ctx.tenant_id,
         name=body.name, kind=kind,
@@ -138,6 +150,7 @@ class UpdateProviderRequest(BaseModel):
     default_model: str | None = None
     model_type_map: dict[str, list[str]] | None = None
     model_settings: dict[str, dict[str, Any]] | None = None
+    capabilities_extra: dict[str, Any] | None = None
 
 
 @router.patch("/providers/{pid}", tags=["llm-gateway"])
@@ -150,12 +163,22 @@ async def update_provider(
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
     capabilities = None
-    if body.model_type_map is not None or body.model_settings is not None:
+    if (
+        body.model_type_map is not None
+        or body.model_settings is not None
+        or body.capabilities_extra is not None
+    ):
         capabilities = {}
         if body.model_type_map is not None:
             capabilities["model_type_map"] = body.model_type_map
         if body.model_settings is not None:
             capabilities["model_settings"] = body.model_settings
+        # Operator overrides (cache_format / affinity_mode / cache_metric_unreliable).
+        # This partial dict is a merge-patch: the service merges these top-level
+        # keys into the provider's existing capabilities. A null value here
+        # (capabilities_extra: {"key": null}) flows through and deletes that key.
+        if body.capabilities_extra is not None:
+            capabilities.update(body.capabilities_extra)
     provider = await svc.update_provider(
         session, provider_id=pid, tenant_id=ctx.tenant_id,
         enabled=body.enabled, name=body.name,
@@ -382,6 +405,8 @@ async def chat_completions(
     tenant_id = await _get_virtual_key_and_tenant(request, ctx, x_llm_virtual_key)
     run_id = (body.metadata or {}).get("run_id")
     user_id = (body.metadata or {}).get("user_id") or ctx.user_id
+    # Affinity routing key: prefer an explicit session_id, else reuse run_id.
+    session_id = (body.metadata or {}).get("session_id") or run_id or None
 
     # -- Step 2: Provider resolution.  Enterprise mode is fail-closed: the
     # gateway never falls back to an arbitrary tenant provider when a virtual
@@ -448,6 +473,13 @@ async def chat_completions(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    # Session affinity (gateway side of affinity routing): when the provider is
+    # fronted by an affinity-aware LB, forward the session key so the LB can
+    # pin the request to the worker holding the warm KV cache. Default "none"
+    # means no header is sent.
+    affinity_mode = (provider.capabilities or {}).get("affinity_mode", "none")
+    if affinity_mode != "none" and session_id:
+        headers["X-Session-Id"] = session_id
 
     t_start = time.monotonic()
 
@@ -458,7 +490,7 @@ async def chat_completions(
             session=session, svc=svc, tenant_id=tenant_id,
             provider_id=provider.id, request_id=request_id,
             user_id=user_id, run_id=run_id, t_start=t_start,
-            settings=settings,
+            settings=settings, provider=provider,
         )
     else:
         return await _handle_non_streaming(
@@ -467,7 +499,7 @@ async def chat_completions(
             session=session, svc=svc, tenant_id=tenant_id,
             provider_id=provider.id, request_id=request_id,
             user_id=user_id, run_id=run_id, t_start=t_start,
-            settings=settings,
+            settings=settings, provider=provider,
         )
 
 
@@ -477,6 +509,7 @@ async def _handle_non_streaming(
     session: AsyncSession, svc: LLMGatewayService, tenant_id: str,
     provider_id: str, request_id: str, user_id: str | None,
     run_id: str | None, t_start: float, settings: Any,
+    provider: Any = None,
 ) -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=120.0) as c:
@@ -491,10 +524,20 @@ async def _handle_non_streaming(
     latency_ms = (time.monotonic() - t_start) * 1000
     data = resp.json()
 
-    # Extract usage
+    # Extract usage — normalize prompt-cache stats across engines (fail-open).
     usage = data.get("usage") or {}
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
+    if provider is not None:
+        norm = normalize_usage(provider.kind, usage, data, provider.capabilities)
+        prompt_tokens = norm.prompt_tokens
+        completion_tokens = norm.completion_tokens
+        prompt_cache_hit_tokens = norm.prompt_cache_hit_tokens
+        prompt_cache_miss_tokens = norm.prompt_cache_miss_tokens
+    else:
+        # Legacy path (provider not supplied): top-level DeepSeek-style fields.
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        prompt_cache_hit_tokens = usage.get("prompt_cache_hit_tokens", 0) or 0
+        prompt_cache_miss_tokens = usage.get("prompt_cache_miss_tokens", 0) or 0
     if prompt_tokens == 0 and completion_tokens == 0:
         resp_text = ""
         choices = data.get("choices") or []
@@ -513,6 +556,8 @@ async def _handle_non_streaming(
         session, tenant_id=tenant_id, provider_id=provider_id,
         model=body.model, prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens, total_tokens=total_tokens,
+        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
         request_id=request_id, cost_usd=cost_usd, latency_ms=latency_ms,
     )
     asyncio.create_task(_record_billing_usage(
@@ -522,6 +567,8 @@ async def _handle_non_streaming(
         tenant_id=tenant_id, user_id=user_id, run_id=run_id,
         model=body.model, prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
         finish_reason=finish_reason, latency_ms=latency_ms,
         audit_url=settings.audit_url, timeout=settings.external_timeout_seconds,
     ))
@@ -535,15 +582,23 @@ async def _handle_streaming(
     session: AsyncSession, svc: LLMGatewayService, tenant_id: str,
     provider_id: str, request_id: str, user_id: str | None,
     run_id: str | None, t_start: float, settings: Any,
+    provider: Any = None,
 ) -> StreamingResponse:
     """Stream SSE from provider to client, collect usage, record after stream ends."""
 
     async def _generate():
         prompt_tokens = 0
         completion_tokens = 0
+        prompt_cache_hit_tokens = 0
+        prompt_cache_miss_tokens = 0
         finish_reason = None
         accumulated_text = ""
         error_occurred = False
+        # Last non-empty usage payload + its carrying chunk, captured from the
+        # trailing usage frame (choices empty, usage populated) for engine-aware
+        # normalization after the stream completes.
+        last_usage: dict | None = None
+        last_usage_chunk: dict | None = None
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as c:
@@ -577,6 +632,16 @@ async def _handle_streaming(
                                     prompt_tokens = usage["prompt_tokens"]
                                 if usage.get("completion_tokens"):
                                     completion_tokens = usage["completion_tokens"]
+                                # DeepSeek-style prompt cache stats (fail-open)
+                                if usage.get("prompt_cache_hit_tokens"):
+                                    prompt_cache_hit_tokens = usage["prompt_cache_hit_tokens"]
+                                if usage.get("prompt_cache_miss_tokens"):
+                                    prompt_cache_miss_tokens = usage["prompt_cache_miss_tokens"]
+                                # Capture the full trailing usage frame for
+                                # engine-aware normalization after the stream.
+                                if usage:
+                                    last_usage = usage
+                                    last_usage_chunk = chunk
                                 # Accumulate content for estimator fallback
                                 choices = chunk.get("choices") or []
                                 if choices:
@@ -600,6 +665,16 @@ async def _handle_streaming(
             return
 
         latency_ms = (time.monotonic() - t_start) * 1000
+
+        # Engine-aware normalization of the trailing usage frame (fail-open).
+        if provider is not None and last_usage is not None:
+            norm = normalize_usage(
+                provider.kind, last_usage, last_usage_chunk, provider.capabilities
+            )
+            prompt_tokens = norm.prompt_tokens or prompt_tokens
+            completion_tokens = norm.completion_tokens or completion_tokens
+            prompt_cache_hit_tokens = norm.prompt_cache_hit_tokens
+            prompt_cache_miss_tokens = norm.prompt_cache_miss_tokens
 
         # Usage fallback: if provider didn't send usage in stream, estimate
         if prompt_tokens == 0 and completion_tokens == 0:
@@ -630,6 +705,8 @@ async def _handle_streaming(
                         rec_session, tenant_id=tenant_id, provider_id=provider_id,
                         model=body.model, prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens, total_tokens=total_tokens,
+                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
                         request_id=request_id, cost_usd=cost_usd, latency_ms=latency_ms,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -644,6 +721,8 @@ async def _handle_streaming(
             tenant_id=tenant_id, user_id=user_id, run_id=run_id,
             model=body.model, prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens=prompt_cache_miss_tokens,
             finish_reason=finish_reason, latency_ms=latency_ms,
             audit_url=settings.audit_url, timeout=settings.external_timeout_seconds,
         ))
@@ -724,20 +803,32 @@ async def chat(
     if body.max_tokens:
         payload["max_tokens"] = body.max_tokens
 
+    # Legacy /chat has no metadata field, so there is no session key to forward;
+    # affinity header injection is a no-op here but kept structurally consistent.
+    upstream_headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    session_id = None
+    affinity_mode = (provider.capabilities or {}).get("affinity_mode", "none")
+    if affinity_mode != "none" and session_id:
+        upstream_headers["X-Session-Id"] = session_id
+
     t_start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
             resp = await c.post(f"{provider.base_url}/v1/chat/completions",
-                                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                                headers=upstream_headers,
                                 json=payload)
             data = resp.json()
     except Exception as exc:
         return {"error": str(exc), "model": body.model, "choices": []}
 
     latency_ms = (time.monotonic() - t_start) * 1000
+    # Engine-aware prompt-cache normalization (fail-open).
     usage = data.get("usage") or {}
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
+    norm = normalize_usage(provider.kind, usage, data, provider.capabilities)
+    prompt_tokens = norm.prompt_tokens
+    completion_tokens = norm.completion_tokens
+    prompt_cache_hit_tokens = norm.prompt_cache_hit_tokens
+    prompt_cache_miss_tokens = norm.prompt_cache_miss_tokens
     if prompt_tokens == 0:
         prompt_tokens, completion_tokens = _estimate_tokens(messages_wire, "")
     total_tokens = prompt_tokens + completion_tokens
@@ -751,6 +842,8 @@ async def chat(
         session, tenant_id=tenant_id, provider_id=provider.id,
         model=body.model, prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens, total_tokens=total_tokens,
+        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
         request_id=request_id, cost_usd=cost_usd, latency_ms=latency_ms,
     )
     asyncio.create_task(_record_billing_usage(
@@ -760,6 +853,8 @@ async def chat(
         tenant_id=tenant_id, user_id=ctx.user_id, run_id=None,
         model=body.model, prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
         finish_reason=finish_reason, latency_ms=latency_ms,
         audit_url=settings.audit_url, timeout=settings.external_timeout_seconds,
     ))

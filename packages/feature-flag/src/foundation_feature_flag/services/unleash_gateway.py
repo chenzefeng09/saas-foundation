@@ -232,6 +232,10 @@ class UnleashGateway:
     # Admin REST API — Unleash flag management (uses admin_token)
     # ------------------------------------------------------------------
 
+    def is_enabled(self) -> bool:
+        """Whether Unleash integration is enabled (False in dev/test mode)."""
+        return bool(self._settings.unleash_enabled)
+
     def _admin_headers(self) -> dict[str, str]:
         return {
             "Authorization": self._settings.unleash_admin_token,
@@ -280,12 +284,14 @@ class UnleashGateway:
 
         Returns True on success.
 
-        Note: ``name`` and ``strategies`` are accepted for backward compatibility
-        but are not applied here — flag creation uses ``flag_key`` as the name, and
-        strategy configuration is owned by the init-flags provisioning script.
-        Only the environment on/off state is driven via ``enabled``.
+        Note: ``name`` is accepted for backward compatibility but is not applied
+        here — flag creation uses ``flag_key`` as the name. When ``strategies`` is
+        provided it is synced to the ``development`` environment: existing
+        strategies (including the v6 auto-inserted 100% flexibleRollout default)
+        are deleted, then the provided strategies are added. The environment
+        on/off state is driven via ``enabled``.
         """
-        _ = (name, strategies)  # accepted for compat; not applied here
+        _ = name  # accepted for compat; not applied here
         if not self._settings.unleash_enabled:
             return False
         base = self._admin_base()
@@ -320,9 +326,54 @@ class UnleashGateway:
                     # Flag already exists. Metadata updates are not on the critical
                     # path for kill-switch / enable sync, and the global PUT was
                     # removed in v5+ — so we skip metadata mutation and only drive
-                    # the environment on/off state below.
+                    # the strategy sync + environment on/off state below.
                     get_resp.raise_for_status()
                     log.info("unleash_gateway.admin_exists", flag=flag_key)
+
+                # Sync strategies for the environment. v6 auto-inserts a 100%
+                # flexibleRollout default when the env is enabled, so we list and
+                # delete every existing strategy before adding the provided ones —
+                # otherwise partial rollout / tenant_whitelist silently become 100%.
+                if strategies:
+                    strat_base = (
+                        f"{base}/api/admin/projects/{project}/features/{flag_key}"
+                        f"/environments/{env}/strategies"
+                    )
+                    list_resp = client.get(
+                        f"{base}/api/admin/projects/{project}/features/{flag_key}"
+                        f"/environments/{env}",
+                        headers=headers,
+                    )
+                    if list_resp.status_code != 200:
+                        log.warning(
+                            "unleash_gateway.strategy_list_failed",
+                            flag=flag_key,
+                            status=list_resp.status_code,
+                        )
+                        return False
+                    list_body = list_resp.json()
+                    if isinstance(list_body, list):
+                        existing_strategies = list_body
+                    elif isinstance(list_body, dict):
+                        existing_strategies = list_body.get("strategies", []) or []
+                    else:
+                        existing_strategies = []
+
+                    for existing in existing_strategies:
+                        sid = existing.get("id") if isinstance(existing, dict) else None
+                        if not sid:
+                            continue
+                        del_resp = client.delete(
+                            f"{strat_base}/{sid}", headers=headers
+                        )
+                        del_resp.raise_for_status()
+
+                    for strategy in strategies:
+                        add_resp = client.post(
+                            strat_base, headers=headers, json=strategy
+                        )
+                        add_resp.raise_for_status()
+                    log.info("unleash_gateway.strategies_synced", flag=flag_key)
 
                 # Set enabled state via the environment-scoped on/off endpoint.
                 if enabled is not None:

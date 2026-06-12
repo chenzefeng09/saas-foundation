@@ -277,3 +277,44 @@ class TestSetFlagPersistence:
         assert resp.status_code == 403
         assert resp.json()["code"] == "FOUNDATION.FEATURE_FLAG.AUTHZ.ACCESS_DENIED"
         assert "billing.saas_mode" not in store
+
+    def test_set_flag_502_when_unleash_sync_fails(
+        self,
+        svc: FeatureFlagService,
+        store: dict[str, Flag],
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """When Unleash is enabled but admin_upsert_flag fails, PUT must return
+        502 and must NOT write to the DB (the sync gate runs before the DB
+        write)."""
+
+        @asynccontextmanager
+        async def fake_session_scope():
+            yield FakeSession(store)
+
+        monkeypatch.setattr(flags_module, "session_scope", fake_session_scope)
+
+        # Gateway with Unleash enabled but a failing admin sync.
+        gw = MagicMock(spec=UnleashGateway)
+        gw.is_enabled.return_value = True
+        gw.admin_upsert_flag.return_value = False
+        gw.is_killed.return_value = False
+        gw._presets = {}
+
+        app = FastAPI()
+        app.add_middleware(TenantContextMiddleware)
+        install_exception_handlers(app)
+        app.state.unleash_gateway = gw
+        app.state.feature_flag_service = svc
+        app.include_router(flags_router)
+        client = TestClient(app)
+
+        resp = client.put(
+            "/flags/billing.saas_mode",
+            json={"enabled": True, "rollout_percentage": 100},
+            headers=ADMIN_HEADERS,
+        )
+
+        assert resp.status_code == 502
+        # The DB write must NOT have happened — the gate raises before persistence.
+        assert "billing.saas_mode" not in store

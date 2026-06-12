@@ -558,14 +558,33 @@ class TestFallbackBehavior:
 
 
 class _Recorder:
-    """Fake httpx.Client capturing GET/POST calls and returning canned responses.
+    """Fake httpx.Client capturing GET/POST/PUT/DELETE calls and returning canned
+    responses.
 
-    ``get_status`` controls what the existence-probe GET returns (404 → create,
-    200 → already exists). All POST/PUT calls are recorded for path assertions.
+    ``get_status`` controls what the existence-probe GET (``.../features/{flag}``)
+    returns (404 → create, 200 → already exists). All POST/PUT/DELETE calls are
+    recorded for path assertions.
+
+    Strategy-sync support:
+      - The env-list GET (``.../environments/{env}`` with no trailing
+        ``/strategies``) always returns status 200 with a ``{"strategies": [...]}``
+        payload (``env_strategies``, default empty). The existence-probe GET is
+        distinguished by URL substring so it still returns ``get_status``.
+      - ``fail_on_substring`` makes any call whose URL contains that substring
+        return a response whose ``raise_for_status`` raises (simulating a non-2xx
+        mid-sequence failure).
     """
 
-    def __init__(self, *, get_status: int = 404):
+    def __init__(
+        self,
+        *,
+        get_status: int = 404,
+        env_strategies: list[dict] | None = None,
+        fail_on_substring: str | None = None,
+    ):
         self.get_status = get_status
+        self.env_strategies = env_strategies or []
+        self.fail_on_substring = fail_on_substring
         self.calls: list[tuple[str, str]] = []  # (method, url)
 
     def __enter__(self):
@@ -574,24 +593,48 @@ class _Recorder:
     def __exit__(self, *exc):
         return False
 
-    def _resp(self, status: int):
+    def _resp(self, status: int, *, url: str = "", json_body: dict | None = None):
         r = MagicMock()
         r.status_code = status
-        r.raise_for_status = MagicMock()
-        r.json = MagicMock(return_value={})
+        if self.fail_on_substring is not None and self.fail_on_substring in url:
+            import httpx as _httpx
+
+            r.raise_for_status = MagicMock(
+                side_effect=_httpx.HTTPStatusError(
+                    "simulated failure", request=MagicMock(), response=MagicMock()
+                )
+            )
+        else:
+            r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value=json_body if json_body is not None else {})
         return r
+
+    @staticmethod
+    def _is_env_list(url: str) -> bool:
+        """True for ``.../environments/{env}`` (no trailing ``/strategies``)."""
+        return "/environments/" in url and not url.rstrip("/").endswith("/strategies") \
+            and "/on" not in url.rsplit("/environments/", 1)[-1] \
+            and "/off" not in url.rsplit("/environments/", 1)[-1] \
+            and "/strategies/" not in url
 
     def get(self, url, headers=None, **kwargs):
         self.calls.append(("GET", url))
-        return self._resp(self.get_status)
+        if self._is_env_list(url):
+            # env-list GET → strategies payload, always 200
+            return self._resp(200, url=url, json_body={"strategies": self.env_strategies})
+        return self._resp(self.get_status, url=url)
 
     def post(self, url, headers=None, **kwargs):
         self.calls.append(("POST", url))
-        return self._resp(200)
+        return self._resp(200, url=url)
 
     def put(self, url, headers=None, **kwargs):
         self.calls.append(("PUT", url))
-        return self._resp(200)
+        return self._resp(200, url=url)
+
+    def delete(self, url, headers=None, **kwargs):
+        self.calls.append(("DELETE", url))
+        return self._resp(200, url=url)
 
     # convenience accessors -------------------------------------------------
     def posts(self) -> list[str]:
@@ -599,6 +642,9 @@ class _Recorder:
 
     def puts(self) -> list[str]:
         return [u for m, u in self.calls if m == "PUT"]
+
+    def deletes(self) -> list[str]:
+        return [u for m, u in self.calls if m == "DELETE"]
 
 
 class TestAdminApiPaths:
@@ -689,3 +735,134 @@ class TestAdminApiPaths:
         gets = [u for m, u in rec.calls if m == "GET"]
         assert "http://localhost:4242/api/admin/projects/default/features" in gets
         assert "http://localhost:4242/api/admin/features" not in gets
+
+    # -- strategy sync (new flag full provisioning) -------------------------
+
+    def test_new_flag_full_provision_sequence(self):
+        """Create path with strategy sync: probe 404 → create → list env →
+        delete the v6 auto-inserted strategy → add provided strategy → env on.
+
+        Relative ordering of the sequence is asserted via indices in rec.calls.
+        """
+        gw = self._gateway()
+        rec = _Recorder(
+            get_status=404,  # flag does not exist → create
+            env_strategies=[{"id": "auto-100"}],  # pre-existing default to delete
+        )
+        with patch(
+            "foundation_feature_flag.services.unleash_gateway.httpx.Client",
+            return_value=rec,
+        ):
+            ok = gw.admin_upsert_flag(
+                flag_key="billing.saas_mode",
+                enabled=True,
+                strategies=[
+                    {"name": "flexibleRollout", "parameters": {"rollout": "50"}}
+                ],
+            )
+        assert ok is True
+
+        # Locate each expected call within the recorded sequence.
+        def idx(method: str, predicate) -> int:
+            for i, (m, u) in enumerate(rec.calls):
+                if m == method and predicate(u):
+                    return i
+            raise AssertionError(f"call not found: {method} matching {predicate}")
+
+        i_create = idx(
+            "POST",
+            lambda u: u == "http://localhost:4242/api/admin/projects/default/features",
+        )
+        i_list = idx(
+            "GET",
+            lambda u: u
+            == (
+                "http://localhost:4242/api/admin/projects/default/features/"
+                "billing.saas_mode/environments/development"
+            ),
+        )
+        i_delete = idx(
+            "DELETE",
+            lambda u: u
+            == (
+                "http://localhost:4242/api/admin/projects/default/features/"
+                "billing.saas_mode/environments/development/strategies/auto-100"
+            ),
+        )
+        i_add = idx(
+            "POST",
+            lambda u: u
+            == (
+                "http://localhost:4242/api/admin/projects/default/features/"
+                "billing.saas_mode/environments/development/strategies"
+            ),
+        )
+        i_on = idx(
+            "POST",
+            lambda u: u
+            == (
+                "http://localhost:4242/api/admin/projects/default/features/"
+                "billing.saas_mode/environments/development/on"
+            ),
+        )
+
+        # Order matters: create → list → delete → add → on
+        assert i_create < i_list < i_delete < i_add < i_on
+
+    def test_strategy_add_failure_returns_false(self):
+        """If the strategy-add POST fails (raise_for_status raises), the whole
+        upsert returns False."""
+        gw = self._gateway()
+        # Fail the strategy-add POST. The add POST targets the env strategies
+        # collection (ending in ``/strategies``); the env-list GET is served a
+        # 200 payload by the recorder before raise_for_status is consulted, so
+        # only the add POST trips the failure substring.
+        rec = _Recorder(
+            get_status=404,
+            env_strategies=[],
+            fail_on_substring="/environments/development/strategies",
+        )
+        with patch(
+            "foundation_feature_flag.services.unleash_gateway.httpx.Client",
+            return_value=rec,
+        ):
+            ok = gw.admin_upsert_flag(
+                flag_key="billing.saas_mode",
+                enabled=True,
+                strategies=[
+                    {"name": "flexibleRollout", "parameters": {"rollout": "50"}}
+                ],
+            )
+        assert ok is False
+
+    def test_no_strategies_skips_strategy_sync(self):
+        """strategies=None (kill-switch path) must NOT touch env-list / strategy
+        endpoints — only probe + create + env on."""
+        gw = self._gateway()
+        rec = _Recorder(get_status=404, env_strategies=[{"id": "auto-100"}])
+        with patch(
+            "foundation_feature_flag.services.unleash_gateway.httpx.Client",
+            return_value=rec,
+        ):
+            ok = gw.admin_upsert_flag(flag_key="billing.saas_mode", enabled=True)
+        assert ok is True
+
+        # No env-list GET
+        assert not any(
+            u.endswith("/environments/development") for _, u in rec.calls
+        )
+        # No strategy POST or DELETE
+        assert not any("/strategies" in u for u in rec.posts())
+        assert rec.deletes() == []
+        # Still does probe + create + env on
+        assert "http://localhost:4242/api/admin/features/billing.saas_mode" in [
+            u for m, u in rec.calls if m == "GET"
+        ]
+        assert (
+            "http://localhost:4242/api/admin/projects/default/features"
+            in rec.posts()
+        )
+        assert (
+            "http://localhost:4242/api/admin/projects/default/features/"
+            "billing.saas_mode/environments/development/on" in rec.posts()
+        )

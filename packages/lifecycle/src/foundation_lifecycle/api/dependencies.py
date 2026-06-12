@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
 from foundation_lifecycle.domain.db import admin_session_scope, session_scope
+from foundation_lifecycle.services.large_attachment_service import LargeAttachmentService
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
 from foundation_lifecycle.services.legal_hold_service import LegalHoldService
 from foundation_lifecycle.services.storage_quota_service import StorageQuotaService
@@ -42,6 +43,8 @@ def legal_hold_service() -> LegalHoldService: return LegalHoldService()
 def storage_quota_service() -> StorageQuotaService: return StorageQuotaService()
 
 def storage_report_service() -> StorageReportService: return StorageReportService()
+
+def large_attachment_service() -> LargeAttachmentService: return LargeAttachmentService()
 
 
 # ---------------------------------------------------------------------------
