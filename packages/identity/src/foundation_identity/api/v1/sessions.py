@@ -218,7 +218,6 @@ async def create_session(
     body: CreateSessionRequest,
     request: Request,
     oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
-    db: AsyncSession = Depends(db_session),
     mfa: MfaService = Depends(mfa_service),
     cache: RedisCacheAdapter = Depends(redis_cache),
     risk: RiskEvaluator = Depends(risk_evaluator),
@@ -304,21 +303,30 @@ async def create_session(
     # the bare password is NOT enough.  Stash the (already-minted) token bundle
     # behind a challenge and hand back 202 — the client receives no usable
     # token until mfa-verify clears the second factor.
-    if outcome.decision == "STEP_UP" or await _user_requires_mfa(
-        db, tenant_id=tenant_id, user_id=user_id
-    ):
-        return await _begin_mfa_login(
-            mfa,
-            cache,
-            db=db,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            tokens=tokens,
-            device_id=body.device_id,
-            ip=ip,
-            user_agent=ua,
-            risk_score=outcome.score,
+    #
+    # Login is a tenant-front endpoint (no FoundationContext on the request), so
+    # the DB-touching MFA helpers run under an explicit admin scope keyed by the
+    # already-resolved tenant — mirroring every other DB access in this file.
+    # The main EMAIL_PASSWORD → Keycloak path stays free of any DB context.
+    async with admin_session_scope(
+        tenant_id=tenant_id, user_id="PLATFORM"
+    ) as db:
+        requires_mfa = outcome.decision == "STEP_UP" or await _user_requires_mfa(
+            db, tenant_id=tenant_id, user_id=user_id
         )
+        if requires_mfa:
+            return await _begin_mfa_login(
+                mfa,
+                cache,
+                db=db,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                tokens=tokens,
+                device_id=body.device_id,
+                ip=ip,
+                user_agent=ua,
+                risk_score=outcome.score,
+            )
 
     issued_at = datetime.now(UTC)
     expires_at = issued_at + timedelta(seconds=expires_in)
