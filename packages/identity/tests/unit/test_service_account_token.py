@@ -138,3 +138,12 @@ def test_storage_quota_write_scope_registered() -> None:
     from foundation_identity.api.v1.sessions import _ALLOWED_SCOPES
 
     assert "storage.quota.write" in _ALLOWED_SCOPES
+
+
+@pytest.mark.unit
+def test_storage_admin_scope_registered() -> None:
+    """Phase 7: ``storage.admin`` gates the cross-tenant quota + orphan
+    report endpoints (BFF forwards it via X-Foundation-Scopes)."""
+    from foundation_identity.api.v1.sessions import _ALLOWED_SCOPES
+
+    assert "storage.admin" in _ALLOWED_SCOPES

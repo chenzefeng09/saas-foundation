@@ -237,6 +237,7 @@ service 的完整身份。
 | `search.read` / `search.write` | 搜索读/写 | 业务服务 |
 | `billing.usage.write` | 上报用量 | 计量埋点 worker |
 | `storage.quota.write` | 写入/更新租户存储配额上限 | 平台管理员 API |
+| `storage.admin` | 跨租户读取/调整存储配额、查看孤儿对账报告 | 平台运营后台 (BFF 透传) |
 
 约束：
 - 每个 scope **不携带**租户语义；租户由 JWT `tenant_id` claim 强制
