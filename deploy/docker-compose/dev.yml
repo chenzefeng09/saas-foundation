@@ -689,6 +689,7 @@ services:
 
   # ===========================================================================
   # OTel Collector — 收口所有 trace/log/metric，转发到 Jaeger（本地）
+  # Phase 7: 暴露 :8889 给 Prometheus 抓取 metrics（prometheus exporter）
   # ===========================================================================
   otel-collector:
     image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION:-0.108.0}
@@ -700,6 +701,8 @@ services:
     ports:
       - "${PORT_OTEL_GRPC:-4317}:4317"
       - "${PORT_OTEL_HTTP:-4318}:4318"
+      # Phase 7: Prometheus exporter endpoint (collector → prometheus)
+      - "${PORT_OTEL_PROM:-8889}:8889"
     networks: [foundation]
     depends_on:
       - jaeger
@@ -716,6 +719,27 @@ services:
     ports:
       - "${PORT_JAEGER_UI:-16686}:16686"
     networks: [foundation]
+
+  # ===========================================================================
+  # Prometheus — Phase 7: 本地 metric 后端，抓 otel-collector:8889
+  # 生产用 Thanos + remote-write；本地仅给存储管理后台 dashboard 用
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.55.0}
+    container_name: foundation-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PORT_PROMETHEUS:-9090}:9090"
+    networks: [foundation]
+    depends_on:
+      - otel-collector
 
   # ===========================================================================
   # vault-init — 启用 Vault transit secrets engine（一次性 job）

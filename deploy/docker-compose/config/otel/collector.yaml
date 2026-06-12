@@ -48,9 +48,17 @@ exporters:
     tls:
       insecure: true
 
-  # Log/Metric → Prometheus / Loki 后续接入
+  # Log/Metric debug
   debug:
     verbosity: basic
+
+  # Phase 7: Metric → Prometheus（本地 Prometheus 容器在 9090 抓 :8889）
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # 防止 lifecycle 多次 reconcile push gauge 后 Prometheus 持有陈旧 series
+    metric_expiration: 5m
+    resource_to_telemetry_conversion:
+      enabled: true
 
   # ClickHouse exporter（生产用；本地注释掉避免冷启动失败）
   # clickhouse:
@@ -74,7 +82,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [debug]
+      exporters: [debug, prometheus]
 
   telemetry:
     logs:
