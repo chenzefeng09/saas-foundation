@@ -19,13 +19,23 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from foundation_storage.errors import QUOTA_EXCEEDED, QuotaExceededError
 from foundation_storage.keys import BucketPurpose
-from foundation_storage.observability import get_logger
+from foundation_storage.observability import get_logger, get_meter
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
 
 log = get_logger(__name__)
+_meter = get_meter(__name__)
+# Phase 7: surface upload accept/reject ratios as a Prometheus-scrapable
+# counter.  ``increment_used`` is intentionally NOT instrumented — the
+# ``storage.quota.used_bytes`` gauge that lifecycle publishes during the
+# daily reconcile already covers the current-consumption view.
+_upload_counter = _meter.create_counter(
+    "storage.quota.upload_total",
+    unit="1",
+    description="Quota upload attempts, partitioned by result (accepted|rejected)",
+)
 
 
 @runtime_checkable
@@ -146,10 +156,24 @@ class PostgresQuotaChecker:
                 tenant_id=tenant_id,
                 bucket_purpose=bucket_purpose.value,
             )
+            _upload_counter.add(
+                1,
+                {
+                    "bucket_purpose": bucket_purpose.value,
+                    "result": "accepted",
+                },
+            )
             return
         limit_bytes = int(row[0])
         used_bytes = int(row[1])
         if used_bytes + estimated_bytes > limit_bytes:
+            _upload_counter.add(
+                1,
+                {
+                    "bucket_purpose": bucket_purpose.value,
+                    "result": "rejected",
+                },
+            )
             raise QuotaExceededError(
                 QUOTA_EXCEEDED,
                 detail=(
@@ -164,6 +188,13 @@ class PostgresQuotaChecker:
                     "used_bytes": str(used_bytes),
                 },
             )
+        _upload_counter.add(
+            1,
+            {
+                "bucket_purpose": bucket_purpose.value,
+                "result": "accepted",
+            },
+        )
 
     async def increment_used(
         self,

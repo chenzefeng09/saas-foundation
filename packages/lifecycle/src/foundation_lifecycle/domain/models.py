@@ -163,6 +163,29 @@ class DestructionJob(Base):
 
 
 # ---------------------------------------------------------------------------
+# OrphanReconcileReport — one row per S3↔DB orphan reconcile sweep (Phase 7)
+# Cross-tenant (no RLS) — populated by the scheduler with the 3 counters
+# from OrphanReconcileReport plus run metadata.
+# ---------------------------------------------------------------------------
+class OrphanReconcileReport(Base):
+    __tablename__ = "orphan_reconcile_report"
+    __table_args__ = (
+        Index("idx_orphan_report_started_at", "started_at"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "orr_<ULID>"
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    grace_period_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    direction_a_orphans: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    direction_a_deleted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    direction_b_missing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+# ---------------------------------------------------------------------------
 # TenantStorageQuota — per-tenant, per-bucket-purpose storage allowance
 # ---------------------------------------------------------------------------
 class TenantStorageQuota(Base):

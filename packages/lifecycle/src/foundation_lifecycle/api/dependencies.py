@@ -7,10 +7,11 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
-from foundation_lifecycle.domain.db import session_scope
+from foundation_lifecycle.domain.db import admin_session_scope, session_scope
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
 from foundation_lifecycle.services.legal_hold_service import LegalHoldService
 from foundation_lifecycle.services.storage_quota_service import StorageQuotaService
+from foundation_lifecycle.services.storage_report_service import StorageReportService
 
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
@@ -23,11 +24,24 @@ def current_request_id(request: Request) -> str:
 async def db_session() -> AsyncIterator[AsyncSession]:
     async with session_scope() as session: yield session
 
+
+async def admin_db_session() -> AsyncIterator[AsyncSession]:
+    """Cross-tenant app_admin session for Phase 7 platform-admin endpoints.
+
+    Combine with ``Depends(require_scope("storage.admin"))`` — the scope check
+    fences who can reach this handler and the admin session activates the
+    ``admin_all`` RLS policies for the ADMIN actor.
+    """
+    async with admin_session_scope() as session:
+        yield session
+
 def lifecycle_service() -> LifecycleService: return LifecycleService()
 
 def legal_hold_service() -> LegalHoldService: return LegalHoldService()
 
 def storage_quota_service() -> StorageQuotaService: return StorageQuotaService()
+
+def storage_report_service() -> StorageReportService: return StorageReportService()
 
 
 # ---------------------------------------------------------------------------

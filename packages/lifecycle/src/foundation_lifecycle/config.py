@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/lifecycle/v1"
 
     db_dsn: PostgresDsn = Field(default=PostgresDsn("postgresql+asyncpg://app_user:app_user_change_me@127.0.0.1:6432/foundation"))
+    # app_admin role bypasses RLS (admin_all policy in 0001_lifecycle_init); the
+    # admin_session_scope helper opens a session with actor=ADMIN against this
+    # DSN so cross-tenant Phase 7 endpoints can read the whole quota table.
+    db_dsn_admin: PostgresDsn = Field(default=PostgresDsn("postgresql+asyncpg://app_admin:app_admin_change_me@127.0.0.1:6432/foundation"))
     db_dsn_migrator: PostgresDsn = Field(default=PostgresDsn("postgresql+asyncpg://app_migrator:app_migrator_change_me@127.0.0.1:5432/foundation"))
     db_pool_size: int = 10; db_max_overflow: int = 10
 

@@ -94,13 +94,25 @@ async def reconcile_orphans(
     *,
     dry_run: bool,
     grace_period_days: int,
+    run_id: str | None = None,
 ) -> OrphanReconcileReport:
     """Run a single orphan reconcile pass.
 
     Returns counts; emits structured logs at WARNING for each orphan
     found (Direction A) and each missing object (Direction B) so ops can
     alert on either without consuming this dataclass.
+
+    ``run_id`` is optional and only used as a structured-log correlation
+    key — the caller (lifecycle.main) generates it upfront so it can be
+    tied to the orphan_reconcile_report row inserted afterwards.
     """
+    if run_id is not None:
+        log.info(
+            "storage.orphan.reconcile_start",
+            run_id=run_id,
+            dry_run=dry_run,
+            grace_period_days=grace_period_days,
+        )
     from foundation_lifecycle.domain.models import TenantStorageQuota
 
     now = datetime.now(UTC)

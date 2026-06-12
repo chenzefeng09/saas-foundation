@@ -100,6 +100,8 @@ _ALLOWED_SCOPES: frozenset[str] = frozenset(
         "search.write",
         "billing.usage.write",
         "storage.quota.write",
+        # Phase 7: cross-tenant storage quota + orphan-report admin endpoints.
+        "storage.admin",
     }
 )
 

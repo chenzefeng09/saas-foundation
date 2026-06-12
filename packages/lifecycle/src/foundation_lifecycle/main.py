@@ -45,12 +45,25 @@ async def _run_reconcile_job(drift_alert_pct: float) -> None:
 async def _run_orphan_reconcile_job(
     *, dry_run: bool, grace_period_days: int
 ) -> None:
-    """APScheduler entry — daily S3 ↔ DB orphan sweep (storage-v1 §6.3)."""
+    """APScheduler entry — daily S3 ↔ DB orphan sweep (storage-v1 §6.3).
+
+    Phase 7: persist a summary row to ``lifecycle.orphan_reconcile_report``
+    after a successful sweep so the admin UI has a history to render.
+    Failures stay log-only — we don't pollute the table with half-runs.
+    """
+    from datetime import UTC, datetime
+
+    import ulid
+
+    from foundation_lifecycle.domain.db import admin_session_scope
+    from foundation_lifecycle.domain.models import OrphanReconcileReport
     from foundation_lifecycle.services.storage_orphan_reconcile import (
         reconcile_orphans,
     )
     from foundation_storage import StorageClient, get_settings as get_storage_settings
 
+    report_id = f"orr_{ulid.new()!s}"
+    started_at = datetime.now(UTC)
     storage_client = StorageClient.as_system(get_storage_settings())
     try:
         async with session_scope() as session:
@@ -59,16 +72,43 @@ async def _run_orphan_reconcile_job(
                 storage_client,
                 dry_run=dry_run,
                 grace_period_days=grace_period_days,
+                run_id=report_id,
             )
+        completed_at = datetime.now(UTC)
+        duration_ms = int(
+            (completed_at - started_at).total_seconds() * 1000
+        )
         log.info(
             "storage.orphan.reconcile_complete",
+            run_id=report_id,
             direction_a_orphans=report.direction_a_orphans,
             direction_a_deleted=report.direction_a_deleted,
             direction_b_missing=report.direction_b_missing,
+            duration_ms=duration_ms,
             dry_run=dry_run,
         )
+        # Persist via the admin engine so the cross-tenant insert doesn't
+        # depend on a request-scoped tenant id (no RLS on the table).
+        async with admin_session_scope() as admin_session:
+            admin_session.add(
+                OrphanReconcileReport(
+                    id=report_id,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                    dry_run=dry_run,
+                    grace_period_days=grace_period_days,
+                    direction_a_orphans=report.direction_a_orphans,
+                    direction_a_deleted=report.direction_a_deleted,
+                    direction_b_missing=report.direction_b_missing,
+                )
+            )
     except Exception as exc:
-        log.error("storage.orphan.reconcile_error", error=str(exc))
+        log.error(
+            "storage.orphan.reconcile_error",
+            run_id=report_id,
+            error=str(exc),
+        )
 
 
 @asynccontextmanager
