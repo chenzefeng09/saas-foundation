@@ -4,12 +4,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 POETRY_VERSION=1.8.4 POETRY_NO_
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev libffi-dev && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn "poetry==${POETRY_VERSION}"
 
+# Build context is monorepo `packages/` dir so sister path-deps resolve.
+# Copy the path-dep packages FIRST (before audit pyproject) so poetry sees them.
+COPY storage /storage
+COPY feature-flag /feature-flag
+
 WORKDIR /app
-COPY pyproject.toml poetry.lock* ./
+COPY audit/pyproject.toml audit/poetry.lock* ./
 RUN poetry install --only main --no-root --no-directory
-COPY src ./src
-COPY migrations ./migrations
-COPY alembic.ini ./
+COPY audit/src ./src
+COPY audit/migrations ./migrations
+COPY audit/alembic.ini ./
 # Re-run with --sync to ensure the root package (and console scripts) are installed
 RUN poetry install --only main --sync
 
@@ -22,6 +27,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/migrations /app/migrations
 COPY --from=builder /app/alembic.ini /app/alembic.ini
+COPY --from=builder /storage /storage
+COPY --from=builder /feature-flag /feature-flag
 
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH="/app/src" PYTHONUNBUFFERED=1
 

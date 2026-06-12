@@ -371,6 +371,23 @@ services:
         # Put venvs in /tmp so we don't write into the read-only source mounts
         export POETRY_VIRTUALENVS_PATH=/tmp/poetry-venvs
         export POETRY_VIRTUALENVS_IN_PROJECT=false
+        # Stage path-dep packages to /tmp/<name> so packages whose pyproject
+        # references `path = "../<name>"` resolve to a writable copy. Must run
+        # BEFORE any package that imports them; storage/feature-flag/lifecycle
+        # are the leaf path-deps under storage-v1.
+        stage_path_dep() {
+          name="$$1"; src="$$2"
+          rm -rf /tmp/$${name}
+          cp -r "$${src}" /tmp/$${name}
+        }
+        # /mnt/storage isn't currently mounted (it's a leaf pure-library
+        # package and was never migration-able). It IS now mounted below.
+        # /mnt/feature-flag and /mnt/lifecycle are already mounted for their
+        # own migrations; copy them up front so sister packages find them.
+        stage_path_dep storage      /mnt/storage
+        stage_path_dep feature-flag /mnt/feature-flag
+        stage_path_dep lifecycle    /mnt/lifecycle
+
         run_migration() {
           svc="$$1"; pkg_dir="$$2"
           echo "=== Running $${svc} migrations ==="
@@ -425,6 +442,7 @@ services:
       - ../../packages/security-ops:/mnt/security-ops:ro
       - ../../packages/lifecycle:/mnt/lifecycle:ro
       - ../../packages/data-protection:/mnt/data-protection:ro
+      - ../../packages/storage:/mnt/storage:ro
 
   # ===========================================================================
   # foundation-identity — 身份服务   (port 8001)
@@ -846,8 +864,8 @@ services:
   # ===========================================================================
   audit:
     build:
-      context: ../../packages/audit
-      dockerfile: Dockerfile
+      context: ../../packages
+      dockerfile: audit/Dockerfile
     container_name: foundation-audit
     restart: unless-stopped
     depends_on:
@@ -880,6 +898,15 @@ services:
       AUDIT_TSA_ENABLED: "false"
       AUDIT_OTEL_ENABLED: "true"
       AUDIT_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      # Storage v1 (Phase 5): foundation-storage path-dep ENV
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_REGION: cn-default
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      STORAGE_BUCKET_AUDIT: foundation-audit
+      STORAGE_BUCKET_WORKSPACE: foundation-workspace
+      STORAGE_BUCKET_KB_RAW: foundation-kb-raw
+      STORAGE_BUCKET_KB_DERIVED: foundation-kb-derived
     command:
       - "foundation_audit.main:app"
       - "--host"
@@ -1199,8 +1226,8 @@ services:
   # ===========================================================================
   audit-worker:
     build:
-      context: ../../packages/audit
-      dockerfile: Dockerfile
+      context: ../../packages
+      dockerfile: audit/Dockerfile
     container_name: foundation-audit-worker
     restart: unless-stopped
     entrypoint: ["/app/.venv/bin/python", "-c", "from foundation_audit.worker.batch_processor import run; run()"]
@@ -1237,6 +1264,15 @@ services:
       AUDIT_TSA_ENABLED: "false"
       AUDIT_OTEL_ENABLED: "true"
       AUDIT_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      # Storage v1 (Phase 5): foundation-storage path-dep ENV
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_REGION: cn-default
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      STORAGE_BUCKET_AUDIT: foundation-audit
+      STORAGE_BUCKET_WORKSPACE: foundation-workspace
+      STORAGE_BUCKET_KB_RAW: foundation-kb-raw
+      STORAGE_BUCKET_KB_DERIVED: foundation-kb-derived
     networks: [foundation]
 
   # ===========================================================================
@@ -1769,8 +1805,8 @@ services:
   # ===========================================================================
   security-ops:
     build:
-      context: ../../packages/security-ops
-      dockerfile: Dockerfile
+      context: ../../packages
+      dockerfile: security-ops/Dockerfile
     container_name: foundation-security-ops
     restart: unless-stopped
     depends_on:
@@ -1786,6 +1822,15 @@ services:
       SECURITY_OPS_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       SECURITY_OPS_OTEL_ENABLED: "true"
       SECURITY_OPS_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      # Storage v1 (Phase 5): foundation-storage path-dep ENV
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_REGION: cn-default
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      STORAGE_BUCKET_AUDIT: foundation-audit
+      STORAGE_BUCKET_WORKSPACE: foundation-workspace
+      STORAGE_BUCKET_KB_RAW: foundation-kb-raw
+      STORAGE_BUCKET_KB_DERIVED: foundation-kb-derived
     ports:
       - "${PORT_SECURITY_OPS:-18019}:8019"
     networks: [foundation]
@@ -1802,8 +1847,8 @@ services:
   # ===========================================================================
   lifecycle:
     build:
-      context: ../../packages/lifecycle
-      dockerfile: Dockerfile
+      context: ../../packages
+      dockerfile: lifecycle/Dockerfile
     container_name: foundation-lifecycle
     restart: unless-stopped
     depends_on:
@@ -1822,6 +1867,15 @@ services:
       LIFECYCLE_CRYPTO_URL: http://crypto:8004/api/crypto/v1
       LIFECYCLE_OTEL_ENABLED: "true"
       LIFECYCLE_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      # Storage v1 (Phase 5): foundation-storage path-dep ENV
+      STORAGE_ENDPOINT: http://minio:9000
+      STORAGE_REGION: cn-default
+      STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-foundation}
+      STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_change_me_min_12_chars}
+      STORAGE_BUCKET_AUDIT: foundation-audit
+      STORAGE_BUCKET_WORKSPACE: foundation-workspace
+      STORAGE_BUCKET_KB_RAW: foundation-kb-raw
+      STORAGE_BUCKET_KB_DERIVED: foundation-kb-derived
     ports:
       - "${PORT_LIFECYCLE:-18006}:8006"
     networks: [foundation]

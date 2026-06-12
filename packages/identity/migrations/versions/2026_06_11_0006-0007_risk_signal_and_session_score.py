@@ -4,7 +4,7 @@ Risk signals capture per-login-attempt anomaly detections (NEW_DEVICE,
 IP_SUBNET_JUMP, CONSECUTIVE_FAILURES, …) for both allowed and refused logins.
 Session.risk_score persists the aggregated score for retrospective audit.
 
-Revision ID: 0007_risk_signal_and_session_score
+Revision ID: 0007_risk_session_score
 Revises: 0006_recovery_code
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007_risk_signal_and_session_score"
+revision = "0007_risk_session_score"
 down_revision = "0006_recovery_code"
 branch_labels = None
 depends_on = None
