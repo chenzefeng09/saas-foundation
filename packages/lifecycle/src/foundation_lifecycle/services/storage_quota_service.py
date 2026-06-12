@@ -98,6 +98,58 @@ class StorageQuotaService:
         )
         return existing
 
+    # ------------------------------------------------------------------ #
+    # Phase 7 admin methods — cross-tenant, MUST be called with a session
+    # opened via ``admin_session_scope`` (RLS admin_all policy required).
+    # No tenant_id parameter here because the caller has already passed
+    # ``require_scope("storage.admin")``.
+    # ------------------------------------------------------------------ #
+    async def list_quotas_admin(
+        self,
+        session: AsyncSession,
+    ) -> list[TenantStorageQuota]:
+        """Return every (tenant, bucket_purpose) quota row, ordered for the
+        admin UI (tenant_id then bucket_purpose)."""
+        stmt = select(TenantStorageQuota).order_by(
+            TenantStorageQuota.tenant_id,
+            TenantStorageQuota.bucket_purpose,
+        )
+        rows = list((await session.scalars(stmt)).all())
+        return rows
+
+    async def patch_quota_admin(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        bucket_purpose: str,
+        limit_bytes: int | None = None,
+        soft_warn_pct: int | None = None,
+        actor: str,
+    ) -> TenantStorageQuota | None:
+        """Cross-tenant patch — does NOT auto-create.  Returns ``None`` if
+        the row is absent so the API layer can 404.  ``used_bytes`` stays
+        untouched — reconcile owns that field."""
+        stmt = select(TenantStorageQuota).where(
+            TenantStorageQuota.tenant_id == tenant_id,
+            TenantStorageQuota.bucket_purpose == bucket_purpose,
+        )
+        existing: TenantStorageQuota | None = await session.scalar(stmt)
+        if existing is None:
+            return None
+        if limit_bytes is not None:
+            existing.limit_bytes = limit_bytes
+        if soft_warn_pct is not None:
+            existing.soft_warn_pct = soft_warn_pct
+        await session.flush()
+        log.info(
+            "storage.quota.admin_updated",
+            tenant_id=tenant_id,
+            bucket_purpose=bucket_purpose,
+            actor=actor,
+        )
+        return existing
+
     @staticmethod
     def serialize(row: TenantStorageQuota) -> dict[str, Any]:
         """Render a quota row as a plain dict (DTO style — no Response Model)."""
@@ -110,3 +162,17 @@ class StorageQuotaService:
             "soft_warn_pct": row.soft_warn_pct,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
+
+    @staticmethod
+    def serialize_with_pct(row: TenantStorageQuota) -> dict[str, Any]:
+        """``serialize`` plus a derived ``used_pct`` (used / limit * 100,
+        2dp).  ``limit_bytes == 0`` → ``used_pct`` is None so the UI can
+        render a not-applicable state instead of triggering /0."""
+        base = StorageQuotaService.serialize(row)
+        if row.limit_bytes > 0:
+            base["used_pct"] = round(
+                row.used_bytes * 100.0 / row.limit_bytes, 2
+            )
+        else:
+            base["used_pct"] = None
+        return base

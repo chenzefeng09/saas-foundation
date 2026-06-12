@@ -11,6 +11,7 @@ from foundation_lifecycle.domain.db import admin_session_scope, session_scope
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
 from foundation_lifecycle.services.legal_hold_service import LegalHoldService
 from foundation_lifecycle.services.storage_quota_service import StorageQuotaService
+from foundation_lifecycle.services.storage_report_service import StorageReportService
 
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
@@ -39,6 +40,8 @@ def lifecycle_service() -> LifecycleService: return LifecycleService()
 def legal_hold_service() -> LegalHoldService: return LegalHoldService()
 
 def storage_quota_service() -> StorageQuotaService: return StorageQuotaService()
+
+def storage_report_service() -> StorageReportService: return StorageReportService()
 
 
 # ---------------------------------------------------------------------------
