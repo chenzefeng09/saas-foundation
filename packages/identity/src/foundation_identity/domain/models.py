@@ -78,6 +78,8 @@ class User(_TenantBound, Base):
     keycloak_user_id: Mapped[str | None] = mapped_column(String(64), unique=False)
     external_id: Mapped[str | None] = mapped_column(String(255))  # SCIM externalId
     roles: Mapped[list[str] | None] = mapped_column(ARRAY(String))
+    # "L1".."L5"; nullable for legacy rows, read side defaults to L2
+    clearance: Mapped[str | None] = mapped_column(String(2), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -103,7 +105,7 @@ class Session(_TenantBound, Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # sess_<ULID>
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # sess_<ULID>
     user_id: Mapped[str] = mapped_column(
         String(30),
         ForeignKey("identity.user.id", ondelete="CASCADE"),
@@ -148,7 +150,7 @@ class MfaMethod(_TenantBound, Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # mfa_<ULID>
     user_id: Mapped[str] = mapped_column(
         String(30),
         ForeignKey("identity.user.id", ondelete="CASCADE"),
@@ -188,7 +190,7 @@ class RecoveryCode(_TenantBound, Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # rec_<ULID>
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # rec_<ULID>
     user_id: Mapped[str] = mapped_column(
         String(30),
         ForeignKey("identity.user.id", ondelete="CASCADE"),
@@ -219,7 +221,7 @@ class RiskSignal(_TenantBound, Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # rsk_<ULID>
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # rsk_<ULID>
     user_id: Mapped[str | None] = mapped_column(
         String(30),
         ForeignKey("identity.user.id", ondelete="CASCADE"),
@@ -243,7 +245,7 @@ class SsoProvider(_TenantBound, Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # sso_<ULID>
     # Override the _TenantBound tenant_id: platform-scoped providers carry NULL.
     # Redeclaring the mixin column on the subclass is the supported way to relax
     # nullability for one model without touching the shared mixin.
@@ -372,7 +374,7 @@ class Outbox(Base):
         {"schema": "identity"},
     )
 
-    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # evt_<ULID>
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)  # evt_<ULID>
     tenant_id: Mapped[str | None] = mapped_column(String(30))  # nullable for system events
     event_type: Mapped[str] = mapped_column(
         String(200),

@@ -8,7 +8,11 @@ from foundation_compliance.api.dependencies import (
     compliance_service, current_context, current_request_id, db_session,
 )
 from foundation_compliance.domain.base import FoundationContext
-from foundation_compliance.services.compliance_service import ComplianceService
+from foundation_compliance.domain.enums import DsarRequestType, LegalBasis
+from foundation_compliance.services.compliance_service import (
+    ComplianceMode,
+    ComplianceService,
+)
 
 router = APIRouter()
 
@@ -19,7 +23,7 @@ class RecordProcessingRequest(BaseModel):
     service: str
     data_category: str
     purpose: str
-    legal_basis: str
+    legal_basis: LegalBasis
     data_subjects: list[str]
     recipients: list[str]
     retention_days: int = 365
@@ -38,7 +42,7 @@ async def record_processing(
     record = await svc.record_processing(
         session, tenant_id=ctx.tenant_id,
         service=body.service, data_category=body.data_category,
-        purpose=body.purpose, legal_basis=body.legal_basis,
+        purpose=body.purpose, legal_basis=body.legal_basis.value,
         data_subjects=body.data_subjects, recipients=body.recipients,
         retention_days=body.retention_days, cross_border=body.cross_border,
         destination_countries=body.destination_countries,
@@ -112,7 +116,7 @@ async def complete_dpia(
 
 class RequestDSARRequest(BaseModel):
     user_id: str
-    request_type: str
+    request_type: DsarRequestType
     details: str
 
 
@@ -126,7 +130,7 @@ async def request_dsar(
 ) -> dict[str, Any]:
     dsar = await svc.request_dsar(
         session, tenant_id=ctx.tenant_id,
-        user_id=body.user_id, request_type=body.request_type,
+        user_id=body.user_id, request_type=body.request_type.value,
         details=body.details, request_id=request_id,
     )
     return {"id": dsar.id, "user_id": dsar.user_id, "request_type": dsar.request_type, "status": dsar.status}
@@ -150,7 +154,7 @@ async def get_dsar_status(
 
 class GenerateReportRequest(BaseModel):
     report_type: str
-    compliance_modes: list[str]
+    compliance_modes: list[ComplianceMode]
 
 
 @router.post("/reports", status_code=201, tags=["compliance"])
