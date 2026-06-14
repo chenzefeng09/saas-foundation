@@ -250,6 +250,30 @@ class TeamService:
         stmt = stmt.order_by(UserTeamMembership.user_id)
         return list((await session.scalars(stmt)).all())
 
+    async def list_teams_for_user(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        user_id: str,
+        include_left: bool = False,
+    ) -> list[Team]:
+        """Reverse lookup: teams a user is a member of (active by default)."""
+        stmt = (
+            select(Team)
+            .join(UserTeamMembership, UserTeamMembership.team_id == Team.id)
+            .where(
+                UserTeamMembership.tenant_id == tenant_id,
+                UserTeamMembership.user_id == user_id,
+                Team.tenant_id == tenant_id,
+                Team.deleted_at.is_(None),
+            )
+        )
+        if not include_left:
+            stmt = stmt.where(UserTeamMembership.left_at.is_(None))
+        stmt = stmt.order_by(Team.id)
+        return list((await session.scalars(stmt)).all())
+
     async def add_member(
         self,
         session: AsyncSession,

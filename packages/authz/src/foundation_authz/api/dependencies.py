@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from foundation_authz.adapters.audit_publisher import AuditPublisher, get_audit_
 from foundation_authz.adapters.opa_client import OpaClient, get_opa_client
 from foundation_authz.domain.base import FoundationContext, foundation_context
 from foundation_authz.domain.db import session_scope
+from foundation_authz.errors import PERMISSION_DENIED, FoundationError
 from foundation_authz.services.binding_service import BindingService
 from foundation_authz.services.check_service import CheckService
 from foundation_authz.services.permission_registry import PermissionRegistry
@@ -51,3 +52,38 @@ def binding_service(a: AuditPublisher = Depends(audit)) -> BindingService:
 
 def permission_registry() -> PermissionRegistry:
     return PermissionRegistry()
+
+
+def require_permission(action: str) -> Callable[..., object]:
+    """Build a FastAPI dependency that self-authorizes ``action`` for the caller.
+
+    Runs the SAME in-process RBAC decision as ``CheckService.check`` (no HTTP
+    self-call): loads the caller's effective roles for ``ctx.tenant_id`` /
+    ``ctx.user_id`` and asserts the action is granted (exact or wildcard).  On
+    miss it raises PERMISSION_DENIED (403).  A super_admin's ``*`` wildcard
+    naturally satisfies any ``authz.*`` management action.
+
+    Resource-agnostic: management actions (role/binding manage) are tenant-wide,
+    so we issue the check with ``resource_id=None`` and a synthetic resource_type.
+    """
+
+    async def _dep(
+        ctx: FoundationContext = Depends(current_context),
+        session: AsyncSession = Depends(db_session),
+        svc: CheckService = Depends(check_service),
+    ) -> None:
+        if ctx.user_id is None:
+            raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+        perms = await svc.effective_permissions(
+            session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+        )
+        from foundation_authz.services.check_service import covers
+
+        if not any(covers(held, action) for held in perms):
+            raise FoundationError(
+                PERMISSION_DENIED,
+                detail=f"Missing required permission: {action}",
+                extra={"required_permission": action},
+            )
+
+    return _dep

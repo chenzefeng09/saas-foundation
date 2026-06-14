@@ -510,6 +510,11 @@ async def test_policy_required_no_rbac_match_denies_even_if_opa_allows(
         (["billing.invoice.read"], "billing.invoice.read", False),  # exact handled elsewhere
         ([], "billing.invoice.read", False),
         (["billing.invoice.*", "iam.user.*"], "iam.user.create", True),
+        # Fix #2: a bare single-segment action ("billing", no ".") is not a leaf
+        # of any dotted namespace, so ``billing.*`` must NOT match it.  Keeps the
+        # live-check semantics consistent with ``covers`` (grant side).
+        (["billing.*"], "billing", False),
+        (["*"], "billing", True),  # "*" still matches the bare token
     ],
 )
 def test_wildcard_match_table(

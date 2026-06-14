@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 from datetime import UTC, datetime
 
@@ -55,6 +56,33 @@ _TENANT_ADMIN_PERMISSIONS = [
     "document.*",
     "mcp_server.*",
     "app.*",
+    # Self-service RBAC management within the tenant.  Granted as specific tokens
+    # (NOT "authz.*") so a tenant_admin can manage roles/bindings but cannot
+    # delegate authz management itself — see is_grantable() non-delegation rule.
+    "authz.role.manage",
+    "authz.binding.manage",
+    # Organisation-structure management within the tenant.  foundation-org has no
+    # per-user authorization of its own, so the BFF guard is the authoritative
+    # enforcement point: it sends action="org.read"/"org.manage" to authz /check,
+    # which resolves the permission by id (==token) — hence specific tokens here.
+    "org.read",
+    "org.manage",
+    # Read-only subscription / quota visibility within the tenant.  Granted as a
+    # specific token (NOT "quota.*" and NOT "quota.manage"): a tenant_admin may
+    # inspect their own subscription / quota / usage, but plan changes and the
+    # plan catalogue stay super_admin-only (contract-bound).  foundation-billing
+    # has no per-user authorization, so the BFF guard is authoritative: it sends
+    # action="quota.read" to authz /check, resolved by id (==token).
+    "quota.read",
+    # Tenant-scoped default-model preferences (tenant-defaults).  Granted as
+    # specific tokens (NOT "model.*"): a tenant_admin may read/write their own
+    # tenant's default models, but the shared LLM provider directory (providers
+    # CRUD) and the probe diagnostic stay super_admin-only.  llm-gateway scopes
+    # the tenant-defaults write to the caller's own tenant, so the BFF guard is
+    # authoritative for cross-tenant confinement: it sends action="model.read"/
+    # "model.admin" to authz /check, resolved by id (==token).
+    "model.read",
+    "model.admin",
 ]
 
 _MEMBER_PERMISSIONS = [
@@ -131,6 +159,7 @@ async def _bootstrap(
     *,
     tenant_id: str,
     admin_user_id: str | None,
+    service_account_ids: list[str] | None,
     db_url: str,
     dry_run: bool,
 ) -> None:
@@ -246,6 +275,66 @@ async def _bootstrap(
                             f"(binding_id={binding_id})"
                         )
 
+            # Optionally bind service accounts → member.  Machine principals
+            # (e.g. cron-runner's scheduled-App-run identity) get the standard
+            # member permission set; downstream RBAC guards require the id to
+            # match ``usr_[0-9A-Z]{26}`` and reject anything else with 403
+            # before even consulting authz, so warn on mismatch.
+            for svc_user_id in service_account_ids or []:
+                if not re.match(r"^usr_[0-9A-Z]{26}$", svc_user_id):
+                    print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
+                        f"  [warn] service account id '{svc_user_id}' does not "
+                        "match usr_[0-9A-Z]{26}; downstream guards will 403 it"
+                    )
+                member_id = role_ids.get("member")
+                if not member_id:
+                    print("  [skip] cannot bind service account: member role not found")  # nosemgrep: forbid-print-in-production-code  # CLI user output
+                    continue
+                existing_binding = await conn.execute(
+                    text(
+                        "SELECT id FROM authz.role_binding "
+                        "WHERE tenant_id = :tid "
+                        "  AND principal_kind = 'USER' "
+                        "  AND principal_id = :uid "
+                        "  AND role_id = :rid "
+                        "  AND revoked_at IS NULL"
+                    ),
+                    {"tid": tenant_id, "uid": svc_user_id, "rid": member_id},
+                )
+                if existing_binding.fetchone():
+                    print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
+                        f"  [skip] binding {svc_user_id} → member already exists"
+                    )
+                elif dry_run:
+                    print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
+                        f"  [dry-run] would INSERT binding "
+                        f"{svc_user_id} → member (role_id={member_id})"
+                    )
+                else:
+                    binding_id = _new_binding_id()
+                    await conn.execute(
+                        text(
+                            "INSERT INTO authz.role_binding "
+                            "(id, tenant_id, principal_kind, principal_id, role_id, "
+                            " scope_kind, scope_id, granted_at, granted_by, grant_reason) "
+                            "VALUES "
+                            "(:id, :tenant_id, 'USER', :principal_id, :role_id, "
+                            " 'TENANT', :scope_id, now(), 'BOOTSTRAP', "
+                            " 'service account: scheduled App runs')"
+                        ),
+                        {
+                            "id": binding_id,
+                            "tenant_id": tenant_id,
+                            "principal_id": svc_user_id,
+                            "role_id": member_id,
+                            "scope_id": tenant_id,
+                        },
+                    )
+                    print(  # nosemgrep: forbid-print-in-production-code  # CLI user output
+                        f"  [created] binding {svc_user_id} → member "
+                        f"(binding_id={binding_id})"
+                    )
+
     await engine.dispose()
 
 
@@ -268,6 +357,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional user id (usr_<ULID>) to bind to super_admin.  "
             "Idempotent if the binding already exists."
+        ),
+    )
+    p.add_argument(
+        "--service-account-id",
+        action="append",
+        default=None,
+        dest="service_account_ids",
+        help=(
+            "Optional machine-principal user id (usr_<26 chars>) to bind to "
+            "the member role (repeatable).  Used for service accounts like "
+            "cron-runner's scheduled-App-run identity.  Idempotent."
         ),
     )
     p.add_argument(
@@ -299,6 +399,7 @@ def main() -> None:
         _bootstrap(
             tenant_id=args.tenant_id,
             admin_user_id=args.admin_user_id,
+            service_account_ids=args.service_account_ids,
             db_url=db_url,
             dry_run=args.dry_run,
         )

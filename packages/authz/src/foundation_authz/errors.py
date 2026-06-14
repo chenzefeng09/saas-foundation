@@ -83,6 +83,12 @@ PAM_ELEVATION_REQUIRED: Final = _ec(
     "Permission requires a JIT elevation grant; no active elevation found.",
     "此操作需要临时提权。",
 )
+PERMISSION_ESCALATION: Final = _ec(
+    "POLICY", "PERMISSION_ESCALATION", 403,
+    "Permission escalation denied",
+    "Caller may not grant permissions exceeding their own effective permission set.",
+    "不能授予超出自身权限范围的权限。",
+)
 
 
 # --- INPUT (400 / 422) ---

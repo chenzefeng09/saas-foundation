@@ -7,8 +7,10 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_authz.api.dependencies import (
+    check_service,
     current_context,
     db_session,
+    require_permission,
     role_service,
 )
 from foundation_authz.domain.base import FoundationContext
@@ -19,6 +21,7 @@ from foundation_authz.schemas.role import (
     RoleRead,
     UpdateRoleRequest,
 )
+from foundation_authz.services.check_service import CheckService
 from foundation_authz.services.role_service import RoleService
 
 router = APIRouter(prefix="/roles", tags=["roles"])
@@ -46,20 +49,26 @@ async def list_roles(
     response_model=RoleRead,
     status_code=status.HTTP_201_CREATED,
     operation_id="createRole",
+    dependencies=[Depends(require_permission("authz.role.manage"))],
 )
 async def create_role(
     body: CreateRoleRequest,
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: RoleService = Depends(role_service),
+    check_svc: CheckService = Depends(check_service),
 ) -> RoleRead:
     if ctx.user_id is None:
         raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+    actor_perms = await check_svc.effective_permissions(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
     role = await svc.create(
         session,
         tenant_id=ctx.tenant_id,
         request_id=ctx.request_id,
         actor_id=ctx.user_id,
+        actor_perms=actor_perms,
         name=body.name,
         display_name=body.display_name,
         description=body.description,
@@ -80,22 +89,32 @@ async def get_role(
     )
 
 
-@router.patch("/{role_id}", response_model=RoleRead, operation_id="updateRole")
+@router.patch(
+    "/{role_id}",
+    response_model=RoleRead,
+    operation_id="updateRole",
+    dependencies=[Depends(require_permission("authz.role.manage"))],
+)
 async def update_role(
     role_id: str = Path(pattern=r"^rol_[0-9A-Z]{26}$"),
     body: UpdateRoleRequest = Body(...),
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: RoleService = Depends(role_service),
+    check_svc: CheckService = Depends(check_service),
 ) -> RoleRead:
     if ctx.user_id is None:
         raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+    actor_perms = await check_svc.effective_permissions(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
     return RoleRead.model_validate(
         await svc.update(
             session,
             tenant_id=ctx.tenant_id,
             request_id=ctx.request_id,
             actor_id=ctx.user_id,
+            actor_perms=actor_perms,
             role_id=role_id,
             patch=body.model_dump(exclude_unset=True),
         )
@@ -107,6 +126,7 @@ async def update_role(
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="deleteRole",
     response_class=Response,
+    dependencies=[Depends(require_permission("authz.role.manage"))],
 )
 async def delete_role(
     role_id: str = Path(pattern=r"^rol_[0-9A-Z]{26}$"),

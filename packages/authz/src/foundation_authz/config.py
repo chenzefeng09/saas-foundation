@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     otel_enabled: bool = True
     otel_exporter_endpoint: str = "http://127.0.0.1:4317"
     otel_exporter_protocol: Literal["grpc", "http"] = "grpc"
+
+    # ------------------------------------------------------------ Platform admin
+    # Pre-shared secret carried in X-Internal-Admin-Token by platform-internal
+    # callers (the BFF admin path).  When present and matching, the request is
+    # allowed to assert actor=ADMIN — which the admin_all RLS policies honour to
+    # bypass tenant isolation.  Empty string (the default) disables the feature:
+    # any X-Actor=ADMIN from an external caller is silently downgraded to USER.
+    # External/client requests MUST NOT know this secret.  Env: AUTHZ_INTERNAL_ADMIN_TOKEN.
+    internal_admin_token: SecretStr = SecretStr("")
 
     # ------------------------------------------------------------ Multi-tenancy
     require_tenant_context: bool = True

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,6 +25,26 @@ from tests._factories import make_org_unit, make_team, make_team_membership
 @pytest.fixture
 def svc(audit_publisher: AsyncMock) -> TeamService:
     return TeamService(audit=audit_publisher)
+
+
+def _capture_statement(fake_session: Any) -> list[Any]:
+    """Record the SQL statement passed to ``session.scalars`` for inspection."""
+    captured: list[Any] = []
+    original = fake_session.scalars
+
+    async def _spy(stmt: Any) -> Any:
+        captured.append(stmt)
+        return await original(stmt)
+
+    fake_session.scalars = _spy
+    return captured
+
+
+def _compiled_where(captured: list[Any]) -> str:
+    assert captured, "expected a statement to be issued"
+    return str(
+        captured[0].compile(compile_kwargs={"literal_binds": True})
+    )
 
 
 class TestGet:
@@ -254,6 +275,54 @@ class TestMembers:
                 team_id="tm_unknown", user_id="usr_unknown",
             )
         assert exc.value.error_code is MEMBER_NOT_IN_TEAM
+
+
+class TestListTeamsForUser:
+    async def test_returns_all_teams_user_belongs_to(
+        self, svc: TeamService, fake_session, tenant_id: str,
+    ) -> None:
+        first = make_team(team_id="tm_01J00000000000000000000A1", tenant_id=tenant_id)
+        second = make_team(team_id="tm_01J00000000000000000000A2", tenant_id=tenant_id)
+        fake_session.queue_scalars([first, second])
+
+        rows = await svc.list_teams_for_user(
+            fake_session, tenant_id=tenant_id, user_id="usr_alice",
+        )
+
+        assert rows == [first, second]
+
+    async def test_query_filters_active_membership_and_tenant_and_not_deleted(
+        self, svc: TeamService, fake_session, tenant_id: str,
+    ) -> None:
+        captured = _capture_statement(fake_session)
+
+        await svc.list_teams_for_user(
+            fake_session, tenant_id=tenant_id, user_id="usr_alice",
+        )
+
+        sql = _compiled_where(captured)
+        # active membership only (left_at filter applied by default)
+        assert "left_at IS NULL" in sql
+        # soft-deleted teams excluded
+        assert "deleted_at IS NULL" in sql
+        # tenant isolation on both sides of the join (caller's tenant only)
+        assert sql.count(f"tenant_id = '{tenant_id}'") == 2
+        # reverse lookup keyed on the requested user
+        assert "user_id = 'usr_alice'" in sql
+
+    async def test_include_left_drops_active_filter(
+        self, svc: TeamService, fake_session, tenant_id: str,
+    ) -> None:
+        captured = _capture_statement(fake_session)
+
+        await svc.list_teams_for_user(
+            fake_session, tenant_id=tenant_id, user_id="usr_alice", include_left=True,
+        )
+
+        sql = _compiled_where(captured)
+        assert "left_at IS NULL" not in sql
+        # deleted-team exclusion still holds regardless of include_left
+        assert "deleted_at IS NULL" in sql
 
 
 class TestDelete:

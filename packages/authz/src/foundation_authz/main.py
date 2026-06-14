@@ -38,6 +38,9 @@ def create_app() -> FastAPI:
         redoc_url=f"{settings.api_prefix}/redoc",
         lifespan=_lifespan,
     )
+    # Expose settings to middleware (X-Internal-Admin-Token verification) and any
+    # other request-scoped consumer via ``request.app.state.settings``.
+    app.state.settings = settings
     app.add_middleware(TenantContextMiddleware)
     app.add_middleware(RequestIdMiddleware)
     install_exception_handlers(app)

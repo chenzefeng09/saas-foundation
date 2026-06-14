@@ -8,8 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_authz.api.dependencies import (
     binding_service,
+    check_service,
     current_context,
     db_session,
+    require_permission,
 )
 from foundation_authz.domain.base import FoundationContext
 from foundation_authz.errors import PERMISSION_DENIED, FoundationError
@@ -19,6 +21,7 @@ from foundation_authz.schemas.binding import (
 )
 from foundation_authz.schemas.common import CursorPage
 from foundation_authz.services.binding_service import BindingService
+from foundation_authz.services.check_service import CheckService
 
 router = APIRouter(prefix="/bindings", tags=["bindings"])
 
@@ -54,20 +57,27 @@ async def list_bindings(
     response_model=RoleBindingRead,
     status_code=status.HTTP_201_CREATED,
     operation_id="createBinding",
+    dependencies=[Depends(require_permission("authz.binding.manage"))],
 )
 async def create_binding(
     body: CreateBindingRequest,
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: BindingService = Depends(binding_service),
+    check_svc: CheckService = Depends(check_service),
 ) -> RoleBindingRead:
     if ctx.user_id is None:
         raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+    actor_perms = await check_svc.effective_permissions(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
     b = await svc.create(
         session,
         tenant_id=ctx.tenant_id,
         request_id=ctx.request_id,
         actor_id=ctx.user_id,
+        actor_perms=actor_perms,
+        check_svc=check_svc,
         principal_kind=body.principal_kind,
         principal_id=body.principal_id,
         role_id=body.role_id,
@@ -84,6 +94,7 @@ async def create_binding(
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="deleteBinding",
     response_class=Response,
+    dependencies=[Depends(require_permission("authz.binding.manage"))],
 )
 async def revoke_binding(
     binding_id: str = Path(pattern=r"^rbd_[0-9A-Z]{26}$"),
