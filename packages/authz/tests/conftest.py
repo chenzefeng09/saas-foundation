@@ -134,6 +134,17 @@ class FakeAsyncSession:
 
     async def flush(self) -> None:
         self.flush_calls += 1
+        # Emulate Postgres server-default timestamps so that ORM rows added in a
+        # request can be serialized by response models (RoleRead/RoleBindingRead)
+        # which require non-null created_at/updated_at.  Real DB fills these on
+        # flush; the fake must too for route-level (httpx) tests.
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        for obj in self.added:
+            for attr in ("created_at", "updated_at", "granted_at"):
+                if hasattr(obj, attr) and getattr(obj, attr, None) is None:
+                    setattr(obj, attr, now)
 
 
 # ---------------------------------------------------------------------------

@@ -54,3 +54,14 @@ class ListAccessibleIdsResponse(BaseModel):
     # grants the requested action, meaning they can access ALL resources of that
     # type within the tenant.  Callers should treat this as "no ACL filter needed".
     all_in_tenant: bool = False
+
+
+class EffectivePermissionsResponse(BaseModel):
+    """The caller's flattened, inheritance-expanded permission tokens.
+
+    ``permissions`` is sorted for a stable, deterministic payload so callers
+    (BFF / SPA) can diff / cache it cheaply.  An unauthenticated context
+    (no user_id) yields an empty list rather than an error.
+    """
+
+    permissions: list[str]

@@ -17,7 +17,7 @@ import base64
 import hashlib
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -401,6 +401,27 @@ class LLMGatewayService:
         if key_row is None:
             raise FoundationError(VIRTUAL_KEY_MISMATCH, detail="Virtual key not found or disabled")
 
+        # Step 1b: expiry check (security boundary for run-scoped ephemeral keys).
+        # ``expires_at IS NULL`` means a perpetual long-lived tenant key, so
+        # existing keys are completely unaffected. Only ephemeral keys carry an
+        # expiry; once it is in the past the key is dead and we reject it the
+        # same way as a disabled key (VIRTUAL_KEY_MISMATCH → 403). This bounds
+        # the blast radius of a leaked sandbox key to ~one run's lifetime.
+        expires_at = getattr(key_row, "expires_at", None)
+        if expires_at is not None:
+            # Stored timestamps are timezone-aware (DateTime(timezone=True));
+            # compare in UTC. Tolerate a naive value defensively.
+            now = datetime.now(UTC)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if now >= expires_at:
+                log.warning("virtual_key.expired",
+                            key_id=getattr(key_row, "id", None),
+                            run_id=getattr(key_row, "run_id", None),
+                            expires_at=expires_at.isoformat())
+                raise FoundationError(VIRTUAL_KEY_MISMATCH,
+                    detail="Virtual key has expired")
+
         # Step 2: tenant cross-check (security boundary)
         if key_row.tenant_id != tenant_id:
             log.warning("virtual_key.tenant_mismatch",
@@ -568,6 +589,70 @@ class LLMGatewayService:
         session.add(key)
         await session.flush()
         return key
+
+    async def mint_ephemeral_key(
+        self, session: AsyncSession, *, tenant_id: str,
+        provider_id: str, run_id: str, ttl_seconds: int,
+        rate_limit_rpm: int = 60, request_id: str = "",
+    ) -> LLMTenantKey:
+        """Mint a short-lived, run-scoped virtual key.
+
+        Same storage/shape as ``create_tenant_key`` (so the resolver path is
+        identical) but stamped with ``expires_at = now + ttl_seconds``,
+        ``run_id`` and ``ephemeral=True``. Once ``expires_at`` is in the past
+        the resolver rejects the key (see ``resolve_provider``), so a key
+        leaked out of a sandbox stops billing the tenant shortly after the run
+        ends — no background cleanup required.
+
+        ``ttl_seconds`` is clamped to a sane window (matching the scheduler's
+        token-TTL convention) so a bad caller can neither mint a 0-second key
+        nor an effectively-perpetual one.
+        """
+        ttl = min(max(int(ttl_seconds), 60), 86_400)
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl)
+        key = LLMTenantKey(
+            id=f"llmk_{ulid.new()!s}",
+            tenant_id=tenant_id,
+            provider_id=provider_id,
+            name=f"run:{run_id}",
+            virtual_key=f"sk-foundation-eph-{ulid.new()!s}",
+            rate_limit_rpm=rate_limit_rpm,
+            enabled=True,
+            expires_at=expires_at,
+            run_id=run_id,
+            ephemeral=True,
+        )
+        session.add(key)
+        await session.flush()
+        log.info("ephemeral_key.minted", key_id=key.id, run_id=run_id,
+                 ttl_seconds=ttl, expires_at=expires_at.isoformat(),
+                 request_id=request_id)
+        return key
+
+    async def disable_ephemeral_keys_for_run(
+        self, session: AsyncSession, *, tenant_id: str, run_id: str,
+    ) -> int:
+        """Best-effort revoke: disable any ephemeral keys minted for ``run_id``.
+
+        Defense-in-depth complement to TTL expiry — when the scheduler observes
+        a run finishing it can proactively kill the run's key instead of waiting
+        for the TTL. Returns the number of keys disabled. TTL expiry remains the
+        authoritative safety net if this is never called.
+        """
+        rows = list((await session.scalars(
+            select(LLMTenantKey).where(
+                LLMTenantKey.tenant_id == tenant_id,
+                LLMTenantKey.run_id == run_id,
+                LLMTenantKey.ephemeral.is_(True),
+                LLMTenantKey.enabled.is_(True),
+            )
+        )).all())
+        for row in rows:
+            row.enabled = False
+        if rows:
+            await session.flush()
+            log.info("ephemeral_key.revoked", run_id=run_id, count=len(rows))
+        return len(rows)
 
     # ------------------------------------------------------------------ Usage
 

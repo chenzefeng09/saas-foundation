@@ -99,7 +99,8 @@ class _FakeProvider:
 
 
 class _FakeVirtualKey:
-    def __init__(self, tenant_id, provider_id="llmp_TEST", virtual_key="sk-foundation-TESTKEY"):
+    def __init__(self, tenant_id, provider_id="llmp_TEST", virtual_key="sk-foundation-TESTKEY",
+                 expires_at=None, run_id=None, ephemeral=False):
         self.id = "llmk_TEST"
         self.tenant_id = tenant_id
         self.provider_id = provider_id
@@ -107,14 +108,20 @@ class _FakeVirtualKey:
         self.virtual_key = virtual_key
         self.rate_limit_rpm = 60
         self.enabled = True
+        # Run-scoped ephemeral-key fields (NULL expiry == perpetual key).
+        self.expires_at = expires_at
+        self.run_id = run_id
+        self.ephemeral = ephemeral
 
 
 def _make_provider(tenant_id, models=None, api_key="sk-fake", base_url="http://fake-llm"):
     return _FakeProvider(tenant_id, models=models, api_key=api_key, base_url=base_url)
 
 
-def _make_virtual_key(tenant_id, provider_id="llmp_TEST", virtual_key="sk-foundation-TESTKEY"):
-    return _FakeVirtualKey(tenant_id, provider_id=provider_id, virtual_key=virtual_key)
+def _make_virtual_key(tenant_id, provider_id="llmp_TEST", virtual_key="sk-foundation-TESTKEY",
+                      expires_at=None, run_id=None, ephemeral=False):
+    return _FakeVirtualKey(tenant_id, provider_id=provider_id, virtual_key=virtual_key,
+                           expires_at=expires_at, run_id=run_id, ephemeral=ephemeral)
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +303,158 @@ class TestResolveProvider:
             model="unknown-model", tenant_id=tenant_id
         )
         assert prov.id == provider.id  # fallback to bound provider
+
+    async def test_resolve_perpetual_key_with_null_expiry_still_works(
+        self, svc, fake_session, tenant_id
+    ):
+        """NULL expiry == long-lived tenant key → never expires (back-compat)."""
+        provider = _make_provider(tenant_id, models=["gpt-4o"])
+        key = _make_virtual_key(tenant_id, expires_at=None)  # perpetual
+        fake_session.queue_scalar(key)
+        fake_session.queue_scalars([provider])
+
+        vkey, prov = await svc.resolve_provider(
+            fake_session, virtual_key="sk-foundation-TESTKEY",
+            model="gpt-4o", tenant_id=tenant_id
+        )
+        assert vkey.id == "llmk_TEST"
+        assert prov.id == "llmp_TEST"
+
+    async def test_resolve_ephemeral_key_not_yet_expired_works(
+        self, svc, fake_session, tenant_id
+    ):
+        """An ephemeral key with a future expiry resolves normally."""
+        from datetime import UTC, datetime, timedelta
+        provider = _make_provider(tenant_id, models=["gpt-4o"])
+        key = _make_virtual_key(
+            tenant_id, run_id="run_FUTURE", ephemeral=True,
+            expires_at=datetime.now(UTC) + timedelta(seconds=300),
+        )
+        fake_session.queue_scalar(key)
+        fake_session.queue_scalars([provider])
+
+        vkey, prov = await svc.resolve_provider(
+            fake_session, virtual_key="sk-foundation-TESTKEY",
+            model="gpt-4o", tenant_id=tenant_id
+        )
+        assert vkey.id == "llmk_TEST"
+        assert prov.id == "llmp_TEST"
+
+    async def test_resolve_expired_ephemeral_key_rejected_403(
+        self, svc, fake_session, tenant_id
+    ):
+        """An ephemeral key past its expires_at is rejected (403, dead key)."""
+        from datetime import UTC, datetime, timedelta
+        key = _make_virtual_key(
+            tenant_id, run_id="run_PAST", ephemeral=True,
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),  # already past
+        )
+        fake_session.queue_scalar(key)
+
+        with pytest.raises(FoundationError) as exc_info:
+            await svc.resolve_provider(
+                fake_session, virtual_key="sk-foundation-TESTKEY",
+                model="gpt-4o", tenant_id=tenant_id
+            )
+        assert exc_info.value.error_code == VIRTUAL_KEY_MISMATCH
+        assert exc_info.value.error_code.http_status == 403
+
+    async def test_resolve_expired_naive_timestamp_treated_as_utc(
+        self, svc, fake_session, tenant_id
+    ):
+        """A naive (tz-less) expiry in the past is still rejected (defensive)."""
+        from datetime import UTC, datetime, timedelta
+        # A past timestamp with the tzinfo stripped → naive value in the past.
+        naive_past = (datetime.now(UTC) - timedelta(seconds=1)).replace(tzinfo=None)
+        key = _make_virtual_key(
+            tenant_id, run_id="run_NAIVE", ephemeral=True,
+            expires_at=naive_past,
+        )
+        fake_session.queue_scalar(key)
+
+        with pytest.raises(FoundationError) as exc_info:
+            await svc.resolve_provider(
+                fake_session, virtual_key="sk-foundation-TESTKEY",
+                model="gpt-4o", tenant_id=tenant_id
+            )
+        assert exc_info.value.error_code == VIRTUAL_KEY_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral run-scoped key minting + revoke
+# ---------------------------------------------------------------------------
+
+class TestEphemeralKeys:
+    async def test_mint_sets_expiry_run_id_and_ephemeral_flag(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        from datetime import UTC, datetime
+        before = datetime.now(UTC)
+        key = await svc.mint_ephemeral_key(
+            fake_session, tenant_id=tenant_id,
+            provider_id="llmp_TEST", run_id="run_ABC",
+            ttl_seconds=600, request_id=request_id,
+        )
+        assert key.ephemeral is True
+        assert key.run_id == "run_ABC"
+        assert key.enabled is True
+        assert key.virtual_key.startswith("sk-foundation-eph-")
+        assert key.expires_at is not None and key.expires_at > before
+        # Added to the session and flushed.
+        assert key in fake_session.added
+        assert fake_session.flush_calls >= 1
+
+    async def test_mint_clamps_ttl_to_minimum(
+        self, svc, fake_session, tenant_id
+    ):
+        """A sub-minimum TTL is clamped up to 60s so the key isn't born dead."""
+        from datetime import UTC, datetime, timedelta
+        key = await svc.mint_ephemeral_key(
+            fake_session, tenant_id=tenant_id,
+            provider_id="llmp_TEST", run_id="run_TINY", ttl_seconds=1,
+        )
+        # >= now + 60s (allow a small scheduling slack below the clamp).
+        assert key.expires_at >= datetime.now(UTC) + timedelta(seconds=55)
+
+    async def test_minted_key_then_resolves_until_it_expires(
+        self, svc, fake_session, tenant_id
+    ):
+        """End-to-end: a freshly minted key passes the resolver expiry gate."""
+        provider = _make_provider(tenant_id, models=["gpt-4o"])
+        key = await svc.mint_ephemeral_key(
+            fake_session, tenant_id=tenant_id,
+            provider_id=provider.id, run_id="run_E2E", ttl_seconds=600,
+        )
+        fake_session.queue_scalar(key)        # resolver: key lookup
+        fake_session.queue_scalars([provider])  # resolver: providers list
+        vkey, prov = await svc.resolve_provider(
+            fake_session, virtual_key=key.virtual_key,
+            model="gpt-4o", tenant_id=tenant_id,
+        )
+        assert vkey.run_id == "run_E2E"
+        assert prov.id == provider.id
+
+    async def test_disable_ephemeral_keys_for_run(
+        self, svc, fake_session, tenant_id
+    ):
+        """Best-effort revoke disables matching enabled ephemeral keys."""
+        k1 = _make_virtual_key(tenant_id, run_id="run_X", ephemeral=True)
+        k2 = _make_virtual_key(tenant_id, run_id="run_X", ephemeral=True)
+        fake_session.queue_scalars([k1, k2])
+        count = await svc.disable_ephemeral_keys_for_run(
+            fake_session, tenant_id=tenant_id, run_id="run_X",
+        )
+        assert count == 2
+        assert k1.enabled is False and k2.enabled is False
+
+    async def test_disable_returns_zero_when_no_keys(
+        self, svc, fake_session, tenant_id
+    ):
+        fake_session.queue_scalars([])
+        count = await svc.disable_ephemeral_keys_for_run(
+            fake_session, tenant_id=tenant_id, run_id="run_NONE",
+        )
+        assert count == 0
 
 
 # ---------------------------------------------------------------------------

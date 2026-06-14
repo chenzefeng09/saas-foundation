@@ -1063,14 +1063,19 @@ services:
         run_bootstrap() {
           TENANT_ID="$$1"
           ADMIN_USER_ID="$$2"
+          SVC_USER_ID="$$3"
           echo "--- tenant $${TENANT_ID} ---"
           python /mnt/authz/scripts/bootstrap_tenant_roles.py \
             --tenant-id "$${TENANT_ID}" \
             $${ADMIN_USER_ID:+--admin-user-id "$${ADMIN_USER_ID}"} \
+            $${SVC_USER_ID:+--service-account-id "$${SVC_USER_ID}"} \
             --db-url "$${AUTHZ_DB_DSN_ADMIN}"
         }
-        # Dev Tenant A: admin@foundation.local 绑 super_admin
-        run_bootstrap tnt_01J5DEVXX00000000000000001 usr_01KT7TZ70AM2RK8P0C01KMBPRR
+        # Dev Tenant A: admin@foundation.local 绑 super_admin;
+        # cron-runner 服务账号(agent-platform 定时任务)绑 member —— id 必须
+        # 匹配下游守卫的 usr_[0-9A-Z]{26} 格式,详见 agent-platform
+        # contracts/worker-wire-contract.md §6。
+        run_bootstrap tnt_01J5DEVXX00000000000000001 usr_01KT7TZ70AM2RK8P0C01KMBPRR usr_01SVCCRON00000000000000000
         # Dev Tenant B: 只建角色，无需 admin 绑定
         run_bootstrap tnt_01J5DEVXX00000000000000002 ""
         echo "=== authz-init: all done ==="
@@ -1891,6 +1896,7 @@ services:
       # admin_session_scope (Phase 7): app_admin 角色绕 RLS, 用于跨租户 admin endpoint
       LIFECYCLE_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
       LIFECYCLE_CRYPTO_URL: http://crypto:8004/api/crypto/v1
+      LIFECYCLE_ORG_URL: http://org:8003/api/org/v1
       LIFECYCLE_OTEL_ENABLED: "true"
       LIFECYCLE_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
       # Storage v1 (Phase 5): foundation-storage path-dep ENV

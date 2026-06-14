@@ -9,6 +9,7 @@ from foundation_org.api.dependencies import (
     current_context,
     db_session,
     membership_service,
+    team_service,
 )
 from foundation_org.domain.base import FoundationContext
 from foundation_org.errors import PERMISSION_DENIED, FoundationError
@@ -20,7 +21,9 @@ from foundation_org.schemas.membership import (
     UpsertUserMembershipRequest,
     UserMembershipRead,
 )
+from foundation_org.schemas.team import TeamRead
 from foundation_org.services.membership_service import MembershipService
+from foundation_org.services.team_service import TeamService
 
 router = APIRouter(prefix="/users", tags=["memberships"])
 
@@ -119,6 +122,23 @@ async def list_secondary(
         session, tenant_id=ctx.tenant_id, user_id=user_id
     )
     return [SecondaryAssignmentRead.model_validate(r) for r in rows]
+
+
+@router.get(
+    "/{user_id}/teams",
+    response_model=list[TeamRead],
+    operation_id="listUserTeams",
+)
+async def list_user_teams(
+    user_id: str = Path(pattern=USER_ID_PATTERN),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: TeamService = Depends(team_service),
+) -> list[TeamRead]:
+    rows = await svc.list_teams_for_user(
+        session, tenant_id=ctx.tenant_id, user_id=user_id
+    )
+    return [TeamRead.model_validate(r) for r in rows]
 
 
 @router.post(

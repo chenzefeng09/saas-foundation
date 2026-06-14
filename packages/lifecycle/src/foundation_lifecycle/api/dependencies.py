@@ -6,6 +6,8 @@ from collections.abc import AsyncIterator, Callable
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from foundation_lifecycle.adapters.org_client import OrgClient
+from foundation_lifecycle.config import get_settings
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
 from foundation_lifecycle.domain.db import admin_session_scope, session_scope
 from foundation_lifecycle.services.large_attachment_service import LargeAttachmentService
@@ -45,6 +47,14 @@ def storage_quota_service() -> StorageQuotaService: return StorageQuotaService()
 def storage_report_service() -> StorageReportService: return StorageReportService()
 
 def large_attachment_service() -> LargeAttachmentService: return LargeAttachmentService()
+
+def org_client() -> OrgClient:
+    """Org reverse-lookup client for large-attachment subject resolve.
+
+    Built fresh per request from ``settings.org_url``; the resolve route injects
+    it into ``LargeAttachmentService.resolve(..., org_client=...)``.
+    """
+    return OrgClient(get_settings().org_url)
 
 
 # ---------------------------------------------------------------------------

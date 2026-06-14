@@ -12,9 +12,11 @@ from foundation_authz.adapters.audit_publisher import AuditPublisher
 from foundation_authz.domain.models import Role, RoleBinding
 from foundation_authz.errors import (
     BINDING_NOT_FOUND,
+    PERMISSION_ESCALATION,
     ROLE_NOT_FOUND,
     FoundationError,
 )
+from foundation_authz.services.check_service import CheckService, is_grantable
 
 
 def _new_binding_id() -> str:
@@ -57,6 +59,8 @@ class BindingService:
         tenant_id: str,
         request_id: str,
         actor_id: str,
+        actor_perms: set[str],
+        check_svc: CheckService,
         principal_kind: str,
         principal_id: str,
         role_id: str,
@@ -69,6 +73,21 @@ class BindingService:
         role = await session.get(Role, role_id)
         if role is None or role.tenant_id != tenant_id or role.deleted_at is not None:
             raise FoundationError(ROLE_NOT_FOUND, extra={"role_id": role_id})
+
+        # Anti-escalation: binding a principal to a role grants that principal the
+        # role's full permission closure (own + inherited).  The actor must be
+        # entitled to delegate every token in that closure.  This is what blocks
+        # e.g. a tenant_admin from binding itself (or anyone) to a super_admin role
+        # whose permissions=["*"] — only a holder of "*" can delegate "*".
+        closure = await check_svc.role_permission_closure(
+            session, tenant_id=tenant_id, role=role
+        )
+        for perm in closure:
+            if not is_grantable(perm, actor_perms):
+                raise FoundationError(
+                    PERMISSION_ESCALATION,
+                    extra={"permission": perm, "role_id": role_id},
+                )
 
         binding = RoleBinding(
             id=_new_binding_id(),

@@ -250,6 +250,34 @@ class UserLargeAttachmentAllow(Base):
     updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class SubjectLargeAttachmentAllow(Base):
+    """Generalized allowlist row — USER / TEAM / ORG_UNIT subjects.
+
+    Generalizes the per-user ``UserLargeAttachmentAllow`` allowlist to three
+    subject types (aligned with authz BindingSubjectType): USER | TEAM |
+    ORG_UNIT. The old per-user table is retained as a back-compat alias.
+    """
+
+    __tablename__ = "large_attachment_subject_allow"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "subject_type", "subject_id",
+            name="uq_large_attach_subject_allow"),
+        Index("idx_large_attach_subject_allow_tenant", "tenant_id"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "las_<ULID>"
+    tenant_id: Mapped[str] = mapped_column(
+        String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(16), nullable=False)  # USER | TEAM | ORG_UNIT
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)  # user_id / team_id / org_unit_id
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Outbox
 # ---------------------------------------------------------------------------

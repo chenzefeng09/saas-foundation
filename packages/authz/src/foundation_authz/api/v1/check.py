@@ -16,12 +16,43 @@ from foundation_authz.schemas.check import (
     BatchCheckResponse,
     CheckRequest,
     CheckResponse,
+    EffectivePermissionsResponse,
     ListAccessibleIdsRequest,
     ListAccessibleIdsResponse,
 )
 from foundation_authz.services.check_service import CheckService
 
 router = APIRouter(tags=["check"])
+
+
+@router.get(
+    "/my-permissions",
+    response_model=EffectivePermissionsResponse,
+    operation_id="myEffectivePermissions",
+)
+async def my_permissions(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: CheckService = Depends(check_service),
+) -> EffectivePermissionsResponse:
+    """Return the caller's own effective permission set for the current tenant.
+
+    Reads ``ctx.tenant_id`` / ``ctx.user_id`` from the request context and
+    flattens the caller's active, in-tenant role bindings (inheritance + wildcards
+    expanded) via ``CheckService.effective_permissions``.  This is a self-read of
+    one's own grants, so it carries no ``require_permission`` guard — any
+    authenticated principal may inspect what they themselves hold.
+
+    An unauthenticated context (``ctx.user_id is None``) returns an empty list
+    with 200 rather than 401, so the BFF/SPA can treat "no permissions" uniformly
+    without special-casing the anonymous path.
+    """
+    if ctx.user_id is None:
+        return EffectivePermissionsResponse(permissions=[])
+    perms = await svc.effective_permissions(
+        session, tenant_id=ctx.tenant_id, user_id=ctx.user_id
+    )
+    return EffectivePermissionsResponse(permissions=sorted(perms))
 
 
 @router.post("/check", response_model=CheckResponse, operation_id="checkPermission")

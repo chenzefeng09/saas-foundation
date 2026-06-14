@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Crypto service (for key destruction via KEK)
     crypto_url: str = "http://127.0.0.1:8004/api/crypto/v1"
 
+    # Org service (for large-attachment subject-allowlist resolve — team /
+    # org-unit reverse-lookups for a user). Tenant-gated only (no scope).
+    org_url: str = "http://127.0.0.1:8003/api/org/v1"
+
     otel_enabled: bool = True
     otel_exporter_endpoint: str = "http://127.0.0.1:4317"
     otel_exporter_protocol: Literal["grpc", "http"] = "grpc"

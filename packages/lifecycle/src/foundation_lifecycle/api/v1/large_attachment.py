@@ -11,16 +11,18 @@ from the request body.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from foundation_lifecycle.adapters.org_client import OrgClient
 from foundation_lifecycle.api.dependencies import (
     current_context,
     db_session,
     large_attachment_service,
+    org_client,
     require_scope,
 )
 from foundation_lifecycle.domain.base import FoundationContext
@@ -39,6 +41,15 @@ class PutTenantSettingRequest(BaseModel):
 
 class PutUserAllowRequest(BaseModel):
     user_id: str
+    allowed: bool
+
+
+class PutSubjectAllowRequest(BaseModel):
+    # Enforce the enum at the pydantic layer → FastAPI returns 422 on garbage
+    # before it reaches the service. The service-level ValueError→400 catch is
+    # kept as defense in depth.
+    subject_type: Literal["USER", "TEAM", "ORG_UNIT"]
+    subject_id: str
     allowed: bool
 
 
@@ -141,6 +152,75 @@ async def delete_user_allow(
     return {"deleted": True, "user_id": user_id}
 
 
+# ── subject layer (admin — generalized USER / TEAM / ORG_UNIT) ───────────────
+@router.get(
+    "/large-attachment/subject-allows",
+    operation_id="listLargeAttachmentSubjectAllows",
+    dependencies=[Depends(require_scope(_ADMIN_SCOPE))],
+)
+async def list_subject_allows(
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LargeAttachmentService = Depends(large_attachment_service),
+) -> dict[str, Any]:
+    rows = await svc.list_subject_allows(session, tenant_id=ctx.tenant_id)
+    return {"items": [svc.serialize_subject_allow(r) for r in rows]}
+
+
+@router.put(
+    "/large-attachment/subject-allows",
+    operation_id="putLargeAttachmentSubjectAllow",
+    dependencies=[Depends(require_scope(_ADMIN_SCOPE))],
+)
+async def put_subject_allow(
+    body: PutSubjectAllowRequest,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LargeAttachmentService = Depends(large_attachment_service),
+) -> dict[str, Any]:
+    try:
+        row = await svc.upsert_subject_allow(
+            session,
+            tenant_id=ctx.tenant_id,
+            subject_type=body.subject_type,
+            subject_id=body.subject_id,
+            allowed=body.allowed,
+            actor=ctx.user_id or "",
+        )
+    except ValueError as exc:
+        # Defense in depth — the pydantic Literal already 422s on a bad enum,
+        # but the service also guards, so translate its ValueError to a 400.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return svc.serialize_subject_allow(row)
+
+
+@router.delete(
+    "/large-attachment/subject-allows/{subject_type}/{subject_id}",
+    operation_id="deleteLargeAttachmentSubjectAllow",
+    dependencies=[Depends(require_scope(_ADMIN_SCOPE))],
+)
+async def delete_subject_allow(
+    subject_type: str,
+    subject_id: str,
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LargeAttachmentService = Depends(large_attachment_service),
+) -> dict[str, Any]:
+    deleted = await svc.delete_subject_allow(
+        session,
+        tenant_id=ctx.tenant_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="subject allow not found")
+    return {
+        "deleted": True,
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+    }
+
+
 # ── resolution (callable by services / BFF on behalf of a user) ──────────────
 @router.get(
     "/large-attachment/resolve",
@@ -151,7 +231,8 @@ async def resolve(
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: LargeAttachmentService = Depends(large_attachment_service),
-) -> dict[str, bool]:
+    org: OrgClient = Depends(org_client),
+) -> dict[str, Any]:
     return await svc.resolve(
-        session, tenant_id=ctx.tenant_id, user_id=user_id
+        session, tenant_id=ctx.tenant_id, user_id=user_id, org_client=org
     )

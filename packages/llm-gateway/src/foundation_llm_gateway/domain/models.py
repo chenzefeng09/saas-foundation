@@ -31,6 +31,15 @@ class LLMTenantKey(Base):
     virtual_key: Mapped[str] = mapped_column(String(200), nullable=False)
     rate_limit_rpm: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Run-scoped ephemeral keys (security: bounded blast radius on leak).
+    #   expires_at — NULL = perpetual (long-lived tenant key, unchanged behavior);
+    #                non-NULL = the resolver rejects the key once now() > expires_at.
+    #   run_id     — the run this key was minted for (audit / best-effort revoke).
+    #   ephemeral  — True for short-lived per-run keys minted via
+    #                POST /tenant-keys/ephemeral; False for operator-created keys.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ephemeral: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class LLMUsageRecord(Base):
