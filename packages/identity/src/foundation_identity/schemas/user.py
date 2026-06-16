@@ -53,3 +53,33 @@ class FreezeUserRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(min_length=5, max_length=500)
+
+
+class ProfileSelfUpdate(BaseModel):
+    """Self-service profile patch — the caller may only edit their own ``display_name``.
+
+    Deliberately narrow: this endpoint exists solely to set the caller's display
+    name, so it exposes none of the privileged fields (``status`` / ``roles``)
+    that ``UpdateUserRequest`` carries.  ``extra="forbid"`` rejects any attempt
+    to smuggle those fields through.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, max_length=200)
+
+
+class ChangeOwnPasswordRequest(BaseModel):
+    """Self-service change-password body — the caller changes ONLY their own password.
+
+    The target user is always the authenticated caller (resolved from the bearer
+    token), never a path/body parameter, so this carries only the two passwords.
+    The new-password length floor is enforced server-side in the service layer
+    against the configured policy, not here, so the same hard floor applies to
+    every caller regardless of client.  ``extra="forbid"`` blocks smuggling.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)

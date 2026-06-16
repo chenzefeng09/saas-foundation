@@ -35,7 +35,8 @@ class KeycloakAdminAdapter:
       * create_user / get_user / update_user / delete_user
       * disable_user / enable_user
       * logout_all_sessions
-      * trigger_required_action (password reset)
+      * trigger_required_action (password reset email)
+      * reset_password (set a password directly) / has_local_password
       * upsert_identity_provider (SSO config)
     """
 
@@ -224,6 +225,49 @@ class KeycloakAdminAdapter:
             f"/users/{kc_user_id}/credentials/{credential_id}",
             expected=(204,),
         )
+
+    async def reset_password(
+        self, kc_user_id: str, new_password: str, *, temporary: bool = False
+    ) -> None:
+        """Set a user's password directly via the Admin API.
+
+        Unlike :meth:`trigger_required_action` (which emails the user an
+        UPDATE_PASSWORD link), this overwrites the ``password`` credential in
+        place with the supplied value.  Used by the self-service "change my
+        password" flow once the caller's *current* password has already been
+        verified out-of-band (via the OIDC password grant).
+
+        ``temporary=False`` means Keycloak will NOT force a reset-on-next-login;
+        the new password is immediately usable.
+
+        Never log ``new_password``.
+        """
+        await self._request(
+            "PUT",
+            f"/users/{kc_user_id}/reset-password",
+            json={
+                "type": "password",
+                "value": new_password,
+                "temporary": temporary,
+            },
+            expected=(204,),
+        )
+
+    async def has_local_password(self, kc_user_id: str) -> bool:
+        """Whether the user owns a local Keycloak ``password`` credential.
+
+        SSO/federated-only and passwordless (WebAuthn-only) users have NO
+        ``password`` credential, so there is nothing for the self-service
+        change-password flow to overwrite — callers use this to reject those
+        accounts with a clear 4xx rather than 500ing on the reset.
+
+        A non-empty ``federationLink`` on the user record is a second, stronger
+        signal that the account is owned by an external IdP; that check lives in
+        the service layer via :meth:`get_user`, while this one inspects the
+        credential list directly.
+        """
+        creds = await self.list_credentials(kc_user_id)
+        return any(c.get("type") == "password" for c in creds)
 
     # ------------------------------------------------------------------ idp
     async def upsert_identity_provider(self, alias: str, config: dict[str, Any]) -> None:

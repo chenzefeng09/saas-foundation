@@ -176,6 +176,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MeResponse' }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+    patch:
+      tags: [sessions]
+      summary: 自助更新当前用户档案（仅 display_name）
+      description: |
+        允许已认证的调用方**仅**修改自己的 `display_name`。
+        身份解析方式与 `getMe` 相同：从 bearer token 反解出 `user_id` / `tenant_id`，
+        目标用户**永远是调用方本人**，不接受路径参数，因此无法借此修改他人档案。
+        持久化后会同步到 Keycloak（firstName）并发出 `foundation.identity.user.updated` 审计事件，
+        返回体为带有最新名字的 `MeResponse`，便于 BFF/前端立即拿到权威值而无需等待 token 刷新。
+      operationId: updateMyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileSelfUpdate' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeResponse' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /sessions/service-account-token:
     post:
@@ -599,6 +622,15 @@ components:
         roles:
           type: array
           items: { type: string }
+
+    ProfileSelfUpdate:
+      type: object
+      additionalProperties: false
+      description: |
+        自助档案更新请求：调用方只能修改自己的 `display_name`。
+        刻意收窄，不暴露 `status` / `roles` 等特权字段。
+      properties:
+        display_name: { type: string, maxLength: 200, nullable: true }
 
     Session:
       type: object

@@ -135,6 +135,12 @@ INVALID_FORMAT: Final = _ec(
     "Request payload is malformed.",
     "请求参数格式错误。",
 )
+CURRENT_PASSWORD_INCORRECT: Final = _ec(
+    "INPUT", "CURRENT_PASSWORD_INCORRECT", 400,
+    "Current password incorrect",
+    "The current password provided does not match.",
+    "当前密码不正确，请重试。",
+)
 VALIDATION_FAILED: Final = _ec(
     "INPUT", "VALIDATION_FAILED", 422,
     "Validation failed",
@@ -192,6 +198,13 @@ POLICY_NOT_ALLOWED_TO_RELAX: Final = _ec(
     "Policy cannot be relaxed below baseline",
     "Tenant admins can only tighten policies, not relax below the compliance-mode floor.",
     "安全策略只能加严，不能放宽到合规基线之下。",
+)
+PASSWORD_CHANGE_NOT_ALLOWED: Final = _ec(
+    "STATE", "PASSWORD_CHANGE_NOT_ALLOWED", 409,
+    "Password change not allowed for this account",
+    "This account authenticates via SSO / a federated identity provider and "
+    "has no local password to change.",
+    "该账号通过单点登录（SSO）登录，无法在此修改密码。",
 )
 
 # --- RATE_LIMIT (429) ---

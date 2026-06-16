@@ -22,8 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
+from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
+from foundation_identity.config import get_settings
 from foundation_identity.domain.models import User
 from foundation_identity.errors import (
+    CURRENT_PASSWORD_INCORRECT,
+    INVALID_CREDENTIALS,
+    PASSWORD_CHANGE_NOT_ALLOWED,
+    PASSWORD_TOO_WEAK,
     USER_ALREADY_EXISTS,
     USER_NOT_FOUND,
     FoundationError,
@@ -271,6 +277,101 @@ class UserService:
             request_id=request_id,
             payload={"user_id": user.id, "triggered_by": actor_id, "source": "admin_reset"},
         )
+
+    # ------------------------------------------------------------------ self-service password change
+    async def change_own_password(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        request_id: str,
+        user_id: str,
+        email: str,
+        current_password: str,
+        new_password: str,
+        oidc: KeycloakOIDCAdapter,
+    ) -> None:
+        """Self-service password change for the authenticated caller.
+
+        Flow (the caller is ALWAYS resolved from the bearer token by the route;
+        ``user_id`` is never a path param):
+
+          1. Load the caller's row → resolve ``keycloak_user_id``.
+          2. Reject SSO/federated/passwordless accounts (no local password to
+             change) with ``PASSWORD_CHANGE_NOT_ALLOWED`` (409).  Detected via a
+             non-empty ``federationLink`` on the KC user record OR the absence of
+             a local ``password`` credential.
+          3. Validate the new password against the hard length floor →
+             ``PASSWORD_TOO_WEAK`` (422).
+          4. Verify the *current* password via the OIDC password grant.  A bad
+             password raises ``INVALID_CREDENTIALS`` from the adapter, which we
+             remap to ``CURRENT_PASSWORD_INCORRECT`` (400) so the SPA can show a
+             precise message (and the BFF does not mask it as a 401 session
+             expiry).
+          5. Set the new password directly via the Admin reset-password call
+             (``temporary=False`` → immediately usable, no forced re-reset).
+          6. Emit ``foundation.identity.password.changed``.
+
+        Neither ``current_password`` nor ``new_password`` is ever logged.
+        """
+        user = await self.get_user(session, tenant_id=tenant_id, user_id=user_id)
+        kc_user_id = user.keycloak_user_id
+        if not kc_user_id:
+            # No backing Keycloak identity → nothing to change (treat like an
+            # SSO/federated account: not a local-password user).
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="User has no local Keycloak credential to change",
+            )
+
+        # --- (2) federated / passwordless detection -------------------------
+        kc_user = await self._kc.get_user(kc_user_id)
+        if kc_user.get("federationLink"):
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="Account is linked to a federated identity provider",
+            )
+        if not await self._kc.has_local_password(kc_user_id):
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="Account has no local password credential",
+            )
+
+        # --- (3) new-password policy (hard length floor) --------------------
+        min_len = get_settings().password_min_length_floor
+        if not new_password or len(new_password) < min_len:
+            raise FoundationError(
+                PASSWORD_TOO_WEAK,
+                detail=f"New password must be at least {min_len} characters",
+            )
+
+        # --- (4) verify the CURRENT password --------------------------------
+        try:
+            await oidc.password_grant(username=email, password=current_password)
+        except FoundationError as exc:
+            if exc.error_code is INVALID_CREDENTIALS:
+                raise FoundationError(
+                    CURRENT_PASSWORD_INCORRECT,
+                    detail="Current password is incorrect",
+                ) from exc
+            raise
+
+        # --- (5) set the NEW password ---------------------------------------
+        await self._kc.reset_password(kc_user_id, new_password, temporary=False)
+
+        # --- (6) audit ------------------------------------------------------
+        await self._emit(
+            session,
+            event_type="foundation.identity.password.changed",
+            tenant_id=tenant_id,
+            request_id=request_id,
+            payload={
+                "user_id": user.id,
+                "triggered_by": user.id,
+                "source": "self_service",
+            },
+        )
+        await session.flush()
 
     # ------------------------------------------------------------------ helpers
     async def _emit(
