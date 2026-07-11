@@ -4,9 +4,15 @@ from __future__ import annotations
 
 __version__ = "1.0.0a1"
 
+from foundation_storage.access_control import (
+    AccessDecision,
+    DLPStorageAccessChecker,
+    StorageAccessChecker,
+)
 from foundation_storage.client import StorageClient
 from foundation_storage.config import StorageSettings, get_settings
 from foundation_storage.errors import (
+    AccessControlError,
     KeyValidationError,
     ObjectLockedError,
     ObjectNotFoundError,
@@ -22,7 +28,10 @@ from foundation_storage.quota import (
 )
 
 __all__ = [
+    "AccessControlError",
+    "AccessDecision",
     "BucketPurpose",
+    "DLPStorageAccessChecker",
     "KeyValidationError",
     "NoopQuotaChecker",
     "ObjectKey",
@@ -33,6 +42,7 @@ __all__ = [
     "QuotaChecker",
     "QuotaExceededError",
     "StorageClient",
+    "StorageAccessChecker",
     "StorageError",
     "StorageSettings",
     "__version__",

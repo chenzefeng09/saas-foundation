@@ -37,6 +37,11 @@ class StorageSettings(BaseSettings):
     presigned_url_ttl_seconds: int = 3600
     multipart_threshold_bytes: int = 52428800  # 50 MiB
 
+    # Tenant-scoped reads are fail-closed unless an actor and DLP checker are wired.
+    access_control_enabled: bool = True
+    dlp_url: str = "http://127.0.0.1:8007/api/dlp/v1"
+    dlp_timeout_seconds: float = 2.0
+
     # Quota.  Phase 1: only an interface; real DB-backed checker arrives in Phase 3.
     quota_check_enabled: bool = True
     quota_db_dsn: str | None = None

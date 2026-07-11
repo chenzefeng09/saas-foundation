@@ -19,6 +19,8 @@ class TestStorageSettings:
         assert s.bucket_kb_derived == "foundation-kb-derived"
         assert s.presigned_url_ttl_seconds == 3600
         assert s.multipart_threshold_bytes == 52428800
+        assert s.access_control_enabled is True
+        assert s.dlp_url.endswith("/api/dlp/v1")
         assert s.quota_check_enabled is True
         assert s.quota_db_dsn is None
 

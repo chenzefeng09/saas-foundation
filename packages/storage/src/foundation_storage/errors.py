@@ -52,6 +52,10 @@ class ObjectLockedError(StorageError):
     """Delete denied because the object is under WORM retention."""
 
 
+class AccessControlError(StorageError):
+    """A mandatory DLP storage decision denied or could not be obtained."""
+
+
 def _ec(
     category: str,
     name: str,
@@ -108,6 +112,22 @@ STORAGE_UNAVAILABLE: Final = _ec(
     "Storage backend unavailable",
     "Storage backend returned an unexpected error.",
     "存储服务暂不可用。",
+)
+ACCESS_DENIED: Final = _ec(
+    "ACCESS",
+    "DENIED",
+    403,
+    "Storage access denied",
+    "The caller is not authorized to access this object.",
+    "您无权访问该文件。",
+)
+ACCESS_CONTROL_UNAVAILABLE: Final = _ec(
+    "ACCESS",
+    "CONTROL_UNAVAILABLE",
+    503,
+    "Storage access control unavailable",
+    "The mandatory DLP access decision could not be obtained.",
+    "文件安全检查暂不可用; 请稍后重试。",
 )
 
 
