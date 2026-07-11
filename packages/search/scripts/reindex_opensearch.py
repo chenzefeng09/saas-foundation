@@ -40,8 +40,8 @@ import argparse
 import asyncio
 import json
 import logging
-import sys
 import os
+import sys
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -116,6 +116,8 @@ INDEX_MAPPING = {
             "acl_team_ids":   {"type": "keyword"},
             "owner_id":       {"type": "keyword"},
             "visibility":     {"type": "keyword"},
+            "sensitivity":    {"type": "keyword"},
+            "sensitivity_rank": {"type": "integer"},
             "indexed_at":     {"type": "date"},
         }
     },
@@ -302,6 +304,7 @@ async def stream_pg_rows(
                     title, content, tags,
                     acl_user_ids, acl_team_ids,
                     owner_id, visibility,
+                    sensitivity, sensitivity_rank,
                     metadata,
                     indexed_at
                 FROM search.search_index
@@ -373,8 +376,9 @@ def build_os_doc(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     row = apply_conservative_defaults(row)
 
     tenant_id = row["tenant_id"]
+    resource_type = row["resource_type"]
     resource_id = row["resource_id"]
-    doc_id = f"{tenant_id}:{resource_id}"
+    doc_id = f"{tenant_id}:{resource_type}:{resource_id}"
 
     # indexed_at: 转 ISO 字符串 (asyncpg 返回 datetime)
     indexed_at = row.get("indexed_at")
@@ -385,7 +389,7 @@ def build_os_doc(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
     doc = {
         "tenant_id": tenant_id,
-        "resource_type": row["resource_type"],
+        "resource_type": resource_type,
         "resource_id": resource_id,
         "title": row["title"],
         "content": row["content"],
@@ -394,6 +398,8 @@ def build_os_doc(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "acl_team_ids": row["acl_team_ids"],
         "owner_id": row["owner_id"],
         "visibility": row["visibility"],
+        "sensitivity": row.get("sensitivity") or "L3",
+        "sensitivity_rank": int(row.get("sensitivity_rank") or 3),
         "indexed_at": indexed_at_str,
     }
     return doc_id, doc

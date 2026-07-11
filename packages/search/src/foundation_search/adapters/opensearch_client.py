@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -115,24 +116,28 @@ class OpenSearchClient:
         self,
         *,
         tenant_id: str,
+        resource_type: str,
         resource_id: str,
         doc: dict[str, Any],
     ) -> None:
-        """Upsert a document.  _id = {tenant_id}:{resource_id}."""
-        doc_id = f"{tenant_id}:{resource_id}"
-        await self._request("PUT", f"/{self._write_index}/_doc/{doc_id}", body=doc)
+        """Upsert a document using the complete resource identity as ``_id``."""
+        doc_id = f"{tenant_id}:{resource_type}:{resource_id}"
+        encoded_doc_id = quote(doc_id, safe="")
+        await self._request("PUT", f"/{self._write_index}/_doc/{encoded_doc_id}", body=doc)
         log.info("opensearch.indexed", doc_id=doc_id, tenant_id=tenant_id)
 
     async def delete_doc(
         self,
         *,
         tenant_id: str,
+        resource_type: str,
         resource_id: str,
     ) -> None:
         """Soft-delete from OS (hard-delete on OS; PG soft-delete is SoT)."""
-        doc_id = f"{tenant_id}:{resource_id}"
+        doc_id = f"{tenant_id}:{resource_type}:{resource_id}"
+        encoded_doc_id = quote(doc_id, safe="")
         try:
-            await self._request("DELETE", f"/{self._write_index}/_doc/{doc_id}")
+            await self._request("DELETE", f"/{self._write_index}/_doc/{encoded_doc_id}")
             log.info("opensearch.deleted", doc_id=doc_id, tenant_id=tenant_id)
         except FoundationError as e:
             # 404 on delete is idempotent — don't raise

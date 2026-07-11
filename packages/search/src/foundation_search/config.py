@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, PostgresDsn
+from pydantic import PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     env: Literal["dev", "staging", "production"] = "dev"
 
     # HTTP server
-    http_host: str = "0.0.0.0"
+    http_host: str = "0.0.0.0"  # noqa: S104
     http_port: int = 8009
     api_prefix: str = "/api/search/v1"
 
@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Authz service — for ACL ID resolution (list-accessible-ids)
     authz_url: str = "http://127.0.0.1:8002/api/authz/v1"
 
+    # Authoritative MAC attributes. Search never trusts request-provided labels.
+    identity_url: str = "http://127.0.0.1:8001/api/identity/v1"
+    dlp_url: str = "http://127.0.0.1:8007/api/dlp/v1"
+
     # Observability
     otel_enabled: bool = True
     otel_exporter_endpoint: str = "http://127.0.0.1:4317"
@@ -45,4 +49,3 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
-
