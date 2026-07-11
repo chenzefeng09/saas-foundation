@@ -67,15 +67,21 @@ async def internal_authz(
     user_id = _extract_user_id(claims)
     tenant_id = _extract_tenant_id(claims)
 
+    # Canonical names are consumed by every service middleware.  Keep the
+    # X-Foundation-* aliases during the ingress migration window, but configure
+    # the gateway to forward/replace the canonical names so client-supplied
+    # identity headers can never become policy inputs.
+    response.headers["X-User-Id"] = user_id
+    response.headers["X-Tenant-Id"] = tenant_id
     response.headers["X-Foundation-User-Id"] = user_id
     response.headers["X-Foundation-Tenant-Id"] = tenant_id
     # An optional ``actor`` claim lets the ingress propagate the privilege
     # tier; default to ``USER`` so downstream middleware can rely on the header
     # always being present.
     actor = claims.get("actor")
-    response.headers["X-Foundation-Actor"] = (
-        actor if isinstance(actor, str) and actor else "USER"
-    )
+    canonical_actor = actor if isinstance(actor, str) and actor else "USER"
+    response.headers["X-Actor"] = canonical_actor
+    response.headers["X-Foundation-Actor"] = canonical_actor
 
     return {"status": "ok"}
 

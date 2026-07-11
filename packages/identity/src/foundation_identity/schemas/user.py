@@ -5,12 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 USER_ID_PATTERN = r"^usr_[0-9A-Z]{26}$"
 TENANT_ID_PATTERN = r"^tnt_[0-9A-Z]{26}$"
 
 UserStatus = Literal["ACTIVE", "INVITED", "SUSPENDED", "LOCKED", "DEACTIVATED", "FROZEN"]
+ClearanceLevel = Literal["L1", "L2", "L3", "L4", "L5"]
+
+
+def _default_clearance() -> ClearanceLevel:
+    """Default for optional create/patch inputs without making ``null`` valid."""
+    return "L3"
 
 
 class UserRead(BaseModel):
@@ -22,12 +28,19 @@ class UserRead(BaseModel):
     display_name: str | None = None
     status: UserStatus
     roles: list[str] = Field(default_factory=list)
+    clearance: ClearanceLevel
     last_login_at: datetime | None = None
     mfa_enabled: bool = False
     external_id: str | None = None
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+
+    @field_validator("clearance", mode="before")
+    @classmethod
+    def legacy_null_clearance_defaults_to_l3(cls, value: object) -> object:
+        """Project pre-migration NULL rows as the effective employee default."""
+        return "L3" if value is None else value
 
 
 class InviteUserRequest(BaseModel):
@@ -36,6 +49,7 @@ class InviteUserRequest(BaseModel):
     email: EmailStr
     display_name: str | None = Field(default=None, max_length=200)
     roles: list[str] = Field(default_factory=list)
+    clearance: ClearanceLevel = Field(default_factory=_default_clearance)
     send_invite_email: bool = True
 
 
@@ -47,6 +61,10 @@ class UpdateUserRequest(BaseModel):
     display_name: str | None = None
     status: UserStatus | None = None
     roles: list[str] | None = None
+    # A default factory makes the field optional for merge-patch while keeping
+    # explicit JSON null invalid.  The route uses exclude_unset=True, so omission
+    # never resets an existing user to L3.
+    clearance: ClearanceLevel = Field(default_factory=_default_clearance)
 
 
 class FreezeUserRequest(BaseModel):

@@ -132,6 +132,18 @@ async def test_update_my_profile_rejects_extra_fields(
 
 
 @pytest.mark.integration
+async def test_update_my_profile_rejects_clearance_self_service(
+    client: AsyncClient,
+) -> None:
+    resp = await client.patch(
+        "/api/identity/v1/sessions/me",
+        headers={"Authorization": "Bearer stub-access-token"},
+        json={"display_name": "X", "clearance": "L5"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.integration
 async def test_update_my_profile_requires_bearer(
     client: AsyncClient,
 ) -> None:

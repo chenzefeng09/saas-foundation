@@ -29,6 +29,7 @@ async def test_invite_user_happy_path(
     DB layer is patched to avoid requiring a real Postgres in this skeleton test.
     """
     payload = make_invite_payload()
+    management_headers = {**tenant_headers, "X-Actor": "SERVICE"}
 
     with patch("foundation_identity.api.dependencies.db_session") as db_dep:
         # Yield a stub session that captures `add` + supports `scalar`/`flush`.
@@ -37,14 +38,14 @@ async def test_invite_user_happy_path(
         stub_session.flush = AsyncMock()
         stub_session.add = lambda obj: None
 
-        async def _iter():  # noqa: ANN202
+        async def _iter():
             yield stub_session
 
         db_dep.return_value = _iter()
 
         resp = await client.post(
             "/api/identity/v1/users",
-            headers=tenant_headers,
+            headers=management_headers,
             json=payload,
         )
 
@@ -52,6 +53,7 @@ async def test_invite_user_happy_path(
     body = resp.json()
     assert body["email"] == payload["email"]
     assert body["status"] == "INVITED"
+    assert body["clearance"] == "L3"
     assert body["tenant_id"] == tenant_headers["X-Tenant-Id"]
     assert body["id"].startswith("usr_")
 
@@ -60,12 +62,14 @@ async def test_invite_user_happy_path(
     create_call = mock_keycloak.create_user.call_args
     assert create_call.kwargs["email"] == payload["email"]
     assert create_call.kwargs["attributes"]["tenant_id"] == [tenant_headers["X-Tenant-Id"]]
+    assert create_call.kwargs["attributes"]["clearance"] == ["L3"]
 
     # Audit emitted
     mock_audit.publish.assert_called_once()
     audit_call = mock_audit.publish.call_args
     assert audit_call.kwargs["event_type"] == "foundation.identity.user.invited"
     assert audit_call.kwargs["tenant_id"] == tenant_headers["X-Tenant-Id"]
+    assert audit_call.kwargs["payload"]["clearance"] == "L3"
 
 
 @pytest.mark.integration
@@ -73,9 +77,10 @@ async def test_invite_user_invalid_email_returns_422(
     client: AsyncClient,
     tenant_headers: dict[str, str],
 ) -> None:
+    management_headers = {**tenant_headers, "X-Actor": "SERVICE"}
     resp = await client.post(
         "/api/identity/v1/users",
-        headers=tenant_headers,
+        headers=management_headers,
         json={"email": "not-an-email"},
     )
     assert resp.status_code == 422
@@ -83,3 +88,63 @@ async def test_invite_user_invalid_email_returns_422(
     assert body["code"] == "FOUNDATION.IDENTITY.INPUT.VALIDATION_FAILED"
     assert resp.headers["content-type"].startswith("application/problem+json")
     assert any("email" in err["field"] for err in body["errors"])
+
+
+@pytest.mark.integration
+async def test_invite_user_persists_and_syncs_explicit_clearance(
+    client: AsyncClient,
+    tenant_headers: dict[str, str],
+    mock_keycloak: AsyncMock,
+    mock_audit: AsyncMock,
+) -> None:
+    payload = make_invite_payload(email="core@example.com", clearance="L4")
+    management_headers = {**tenant_headers, "X-Actor": "SERVICE"}
+
+    resp = await client.post(
+        "/api/identity/v1/users",
+        headers=management_headers,
+        json=payload,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["clearance"] == "L4"
+    assert mock_keycloak.create_user.call_args.kwargs["attributes"] == {
+        "tenant_id": [tenant_headers["X-Tenant-Id"]],
+        "clearance": ["L4"],
+    }
+    assert mock_audit.publish.call_args.kwargs["payload"]["clearance"] == "L4"
+
+
+@pytest.mark.integration
+async def test_regular_user_cannot_invite_any_account(
+    client: AsyncClient,
+    tenant_headers: dict[str, str],
+    mock_keycloak: AsyncMock,
+) -> None:
+    resp = await client.post(
+        "/api/identity/v1/users",
+        headers=tenant_headers,
+        json=make_invite_payload(email="new-account@example.com"),
+    )
+
+    assert resp.status_code == 403, resp.text
+    mock_keycloak.create_user.assert_not_called()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("clearance", ["L0", "L6", "3", "l3", None])
+async def test_invite_user_rejects_invalid_clearance(
+    client: AsyncClient,
+    tenant_headers: dict[str, str],
+    mock_keycloak: AsyncMock,
+    clearance: object,
+) -> None:
+    management_headers = {**tenant_headers, "X-Actor": "SERVICE"}
+    resp = await client.post(
+        "/api/identity/v1/users",
+        headers=management_headers,
+        json=make_invite_payload(clearance=clearance),
+    )
+
+    assert resp.status_code == 422, resp.text
+    mock_keycloak.create_user.assert_not_called()

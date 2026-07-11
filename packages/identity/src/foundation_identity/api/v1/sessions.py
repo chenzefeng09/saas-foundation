@@ -52,8 +52,12 @@ from foundation_identity.api.dependencies import (
 from foundation_identity.config import get_settings
 from foundation_identity.domain.base import FoundationContext
 from foundation_identity.domain.db import admin_session_scope
+from foundation_identity.domain.models import (
+    DEFAULT_USER_CLEARANCE,
+    SsoProvider,
+    User,
+)
 from foundation_identity.domain.models import Session as SessionModel
-from foundation_identity.domain.models import SsoProvider, User
 from foundation_identity.errors import (
     ACCOUNT_LOCKED,
     INVALID_CREDENTIALS,
@@ -212,12 +216,13 @@ def _extract_clearance(claims: dict[str, Any]) -> str:
 
     Realm config injects a ``clearance`` claim (user-attribute mapper).  Tokens
     minted before that mapper was added — or users without the attribute set —
-    will not carry it; default to ``L2`` rather than failing.
+    will not carry it; default to the ordinary-employee level ``L3`` rather
+    than failing.
     """
     candidate = claims.get("clearance")
     if isinstance(candidate, str) and candidate in {"L1", "L2", "L3", "L4", "L5"}:
         return candidate
-    return "L2"
+    return DEFAULT_USER_CLEARANCE
 
 
 # --------------------------------------------------------------------------- #
@@ -862,6 +867,7 @@ async def _complete_sso_session(
                 status="ACTIVE",
                 keycloak_user_id=sub if isinstance(sub, str) else None,
                 roles=[default_role] if default_role else None,
+                clearance=DEFAULT_USER_CLEARANCE,
                 mfa_enabled=False,
             )
             session.add(user)
@@ -899,6 +905,7 @@ async def _complete_sso_session(
                     attrs = dict(kc_user.get("attributes") or {})
                     attrs["user_id"] = [user_id]
                     attrs["tenant_id"] = [tenant_id]
+                    attrs["clearance"] = [DEFAULT_USER_CLEARANCE]
                     await kc.update_user(sub, {"attributes": attrs})
                 except FoundationError:
                     log.warning(
@@ -1526,7 +1533,7 @@ async def get_me(
         user_id = row.id
         tenant_id = row.tenant_id
         roles = list(row.roles or [])
-        clearance = row.clearance or "L2"
+        clearance = row.clearance or DEFAULT_USER_CLEARANCE
         db_display_name = row.display_name
 
     # P2-B: keep the session alive (idle clock) or revoke it (idle/absolute timeout).
@@ -1625,7 +1632,7 @@ async def update_my_profile(
         user_id = row.id
         tenant_id = row.tenant_id
         roles = list(row.roles or [])
-        clearance = row.clearance or "L2"
+        clearance = row.clearance or DEFAULT_USER_CLEARANCE
 
     # Caller must be a real foundation user — never act on a None subject.
     if not user_id:

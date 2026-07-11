@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -27,6 +28,9 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from foundation_identity.domain.base import Base
+
+DEFAULT_USER_CLEARANCE = "L3"
+VALID_USER_CLEARANCES = frozenset({"L1", "L2", "L3", "L4", "L5"})
 
 
 # -----------------------------------------------------------------------------
@@ -63,6 +67,10 @@ class User(_TenantBound, Base):
         UniqueConstraint("tenant_id", "email", name="uq_user_tenant_email"),
         Index("ix_user_tenant_status", "tenant_id", "status"),
         Index("ix_user_external_id", "tenant_id", "external_id"),
+        CheckConstraint(
+            "clearance IN ('L1','L2','L3','L4','L5')",
+            name="ck_user_clearance",
+        ),
         {"schema": "identity"},
     )
 
@@ -78,8 +86,14 @@ class User(_TenantBound, Base):
     keycloak_user_id: Mapped[str | None] = mapped_column(String(64), unique=False)
     external_id: Mapped[str | None] = mapped_column(String(255))  # SCIM externalId
     roles: Mapped[list[str] | None] = mapped_column(ARRAY(String))
-    # "L1".."L5"; nullable for legacy rows, read side defaults to L2
-    clearance: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    # "L1".."L5"; ordinary employees default to L3.  API serialization still
+    # treats legacy NULL values as L3 while migration 0011 backfills them.
+    clearance: Mapped[str] = mapped_column(
+        String(2),
+        nullable=False,
+        default=DEFAULT_USER_CLEARANCE,
+        server_default=DEFAULT_USER_CLEARANCE,
+    )
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

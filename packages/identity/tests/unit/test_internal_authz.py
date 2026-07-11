@@ -39,7 +39,10 @@ async def test_authz_valid_token_returns_headers(client: AsyncClient) -> None:
     assert resp.status_code == 200
     assert resp.headers["X-Foundation-User-Id"].startswith("usr_")
     assert resp.headers["X-Foundation-Tenant-Id"].startswith("tnt_")
+    assert resp.headers["X-User-Id"] == resp.headers["X-Foundation-User-Id"]
+    assert resp.headers["X-Tenant-Id"] == resp.headers["X-Foundation-Tenant-Id"]
     # STUB has no `actor`, so the endpoint must default to USER.
+    assert resp.headers["X-Actor"] == "USER"
     assert resp.headers["X-Foundation-Actor"] == "USER"
 
 
@@ -55,6 +58,7 @@ async def test_authz_propagates_actor_claim(
         headers={"Authorization": "Bearer stub-access-token"},
     )
     assert resp.status_code == 200
+    assert resp.headers["X-Actor"] == "ADMIN"
     assert resp.headers["X-Foundation-Actor"] == "ADMIN"
 
 

@@ -319,6 +319,9 @@ paths:
     get:
       tags: [users]
       summary: 取用户详情
+      description: |
+        返回租户内用户的权威身份档案，包含必填的 `clearance`。内部授权服务可在
+        网关完成服务认证并注入租户上下文后调用此接口，不得接受客户端自报等级。
       operationId: getUser
       responses:
         '200':
@@ -331,6 +334,9 @@ paths:
     patch:
       tags: [users]
       summary: 更新用户档案（JSON Merge Patch）
+      description: |
+        管理员更新租户用户档案。`clearance` 仅接受 L1-L5，且调用方不得修改自己的
+        clearance；自助档案接口 `/sessions/me` 不接受该字段。
       operationId: updateUser
       parameters:
         - $ref: './_common.yaml#/components/parameters/IfMatch'
@@ -581,9 +587,14 @@ components:
       type: string
       enum: [ACTIVE, INVITED, SUSPENDED, LOCKED, DEACTIVATED, FROZEN]
 
+    ClearanceLevel:
+      type: string
+      enum: [L1, L2, L3, L4, L5]
+      description: 用户可访问的最高资源敏感级别；普通员工默认 L3。
+
     User:
       type: object
-      required: [id, tenant_id, email, status, mfa_enabled, created_at, updated_at]
+      required: [id, tenant_id, email, status, clearance, mfa_enabled, created_at, updated_at]
       properties:
         id: { $ref: './_common.yaml#/components/schemas/UserId' }
         tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
@@ -593,6 +604,7 @@ components:
         roles:
           type: array
           items: { type: string, pattern: '^[A-Z_]+$' }
+        clearance: { $ref: '#/components/schemas/ClearanceLevel' }
         last_login_at: { type: string, format: date-time, nullable: true }
         mfa_enabled: { type: boolean }
         external_id:
@@ -612,6 +624,10 @@ components:
         roles:
           type: array
           items: { type: string }
+        clearance:
+          allOf:
+            - $ref: '#/components/schemas/ClearanceLevel'
+          default: L3
         send_invite_email: { type: boolean, default: true }
 
     UpdateUserRequest:
@@ -622,6 +638,10 @@ components:
         roles:
           type: array
           items: { type: string }
+        clearance:
+          allOf:
+            - $ref: '#/components/schemas/ClearanceLevel'
+          description: 管理员专用；调用方不得修改自己的访问级别。
 
     ProfileSelfUpdate:
       type: object
@@ -685,7 +705,7 @@ components:
 
     MeResponse:
       type: object
-      required: [user_id, tenant_id, email, display_name, roles]
+      required: [user_id, tenant_id, email, display_name, roles, clearance]
       properties:
         user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
         tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
@@ -694,6 +714,7 @@ components:
         roles:
           type: array
           items: { type: string }
+        clearance: { $ref: '#/components/schemas/ClearanceLevel' }
         mfa_enabled: { type: boolean, default: false }
         locale: { type: string, default: zh-CN }
 

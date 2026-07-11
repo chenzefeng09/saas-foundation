@@ -24,14 +24,20 @@ from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
 from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
 from foundation_identity.config import get_settings
-from foundation_identity.domain.models import User
+from foundation_identity.domain.models import (
+    DEFAULT_USER_CLEARANCE,
+    VALID_USER_CLEARANCES,
+    User,
+)
 from foundation_identity.errors import (
     CURRENT_PASSWORD_INCORRECT,
     INVALID_CREDENTIALS,
     PASSWORD_CHANGE_NOT_ALLOWED,
     PASSWORD_TOO_WEAK,
+    PERMISSION_DENIED,
     USER_ALREADY_EXISTS,
     USER_NOT_FOUND,
+    VALIDATION_FAILED,
     FoundationError,
 )
 from foundation_identity.observability import get_logger
@@ -41,6 +47,15 @@ log = get_logger(__name__)
 
 def _new_user_id() -> str:
     return f"usr_{ulid.new()!s}"
+
+
+def _validate_clearance(value: object) -> str:
+    if not isinstance(value, str) or value not in VALID_USER_CLEARANCES:
+        raise FoundationError(
+            VALIDATION_FAILED,
+            detail="clearance must be one of L1, L2, L3, L4, L5",
+        )
+    return value
 
 
 class UserService:
@@ -93,8 +108,11 @@ class UserService:
         email: str,
         display_name: str | None = None,
         roles: list[str] | None = None,
+        clearance: str = DEFAULT_USER_CLEARANCE,
         send_invite_email: bool = True,
     ) -> User:
+        clearance = _validate_clearance(clearance)
+
         # Uniqueness pre-check (RLS ensures we only see same-tenant rows)
         existing = await session.scalar(
             select(User).where(User.tenant_id == tenant_id, User.email == email)
@@ -104,7 +122,10 @@ class UserService:
 
         kc_user_id = await self._kc.create_user(
             email=email,
-            attributes={"tenant_id": [tenant_id]},
+            attributes={
+                "tenant_id": [tenant_id],
+                "clearance": [clearance],
+            },
             enabled=True,
         )
 
@@ -116,6 +137,7 @@ class UserService:
             status="INVITED",
             keycloak_user_id=kc_user_id,
             roles=roles or [],
+            clearance=clearance,
             mfa_enabled=False,
         )
         session.add(user)
@@ -132,6 +154,7 @@ class UserService:
             payload={
                 "user_id": user.id,
                 "email": email,
+                "clearance": clearance,
                 "invited_by": actor_id,
             },
         )
@@ -152,27 +175,54 @@ class UserService:
     ) -> User:
         user = await self.get_user(session, tenant_id=tenant_id, user_id=user_id)
 
-        for field in ("display_name", "status", "roles"):
+        if "clearance" in patch:
+            patch["clearance"] = _validate_clearance(patch["clearance"])
+            if actor_id == user_id:
+                raise FoundationError(
+                    PERMISSION_DENIED,
+                    detail="Users cannot modify their own clearance",
+                )
+
+        previous_clearance = user.clearance or DEFAULT_USER_CLEARANCE
+        applied_fields: list[str] = []
+        for field in ("display_name", "status", "roles", "clearance"):
             if field in patch and patch[field] is not None:
                 setattr(user, field, patch[field])
+                applied_fields.append(field)
 
-        # Propagate display_name & email to Keycloak when applicable
+        # Propagate display_name and the authoritative clearance to Keycloak.
+        # Keycloak treats ``attributes`` as a complete map on update, so merge
+        # the existing representation instead of erasing unrelated attributes.
         kc_patch: dict[str, Any] = {}
         if "display_name" in patch and patch["display_name"] is not None:
             kc_patch["firstName"] = patch["display_name"]
+        if "clearance" in applied_fields and user.keycloak_user_id:
+            kc_user = await self._kc.get_user(user.keycloak_user_id)
+            raw_attributes = kc_user.get("attributes")
+            attributes = dict(raw_attributes) if isinstance(raw_attributes, dict) else {}
+            attributes["tenant_id"] = [tenant_id]
+            attributes["clearance"] = [user.clearance]
+            kc_patch["attributes"] = attributes
         if kc_patch and user.keycloak_user_id:
             await self._kc.update_user(user.keycloak_user_id, kc_patch)
+
+        audit_payload: dict[str, Any] = {
+            "user_id": user.id,
+            "changed_fields": sorted(applied_fields),
+            "updated_by": actor_id,
+        }
+        if "clearance" in applied_fields:
+            audit_payload["clearance_change"] = {
+                "from": previous_clearance,
+                "to": user.clearance,
+            }
 
         await self._emit(
             session,
             event_type="foundation.identity.user.updated",
             tenant_id=tenant_id,
             request_id=request_id,
-            payload={
-                "user_id": user.id,
-                "changed_fields": sorted(patch.keys()),
-                "updated_by": actor_id,
-            },
+            payload=audit_payload,
         )
         await session.flush()
         return user
@@ -278,7 +328,7 @@ class UserService:
             payload={"user_id": user.id, "triggered_by": actor_id, "source": "admin_reset"},
         )
 
-    # ------------------------------------------------------------------ self-service password change
+    # ------------------------------------------------------ self-service password change
     async def change_own_password(
         self,
         session: AsyncSession,

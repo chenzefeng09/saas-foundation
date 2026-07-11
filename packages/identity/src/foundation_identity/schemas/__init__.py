@@ -25,12 +25,14 @@ from foundation_identity.schemas.sso import (
     SsoProviderRead,
 )
 from foundation_identity.schemas.user import (
+    ClearanceLevel,
     InviteUserRequest,
     UpdateUserRequest,
     UserRead,
 )
 
 __all__ = [
+    "ClearanceLevel",
     "CreateSessionRequest",
     "CreateSsoProviderRequest",
     "CursorPage",
