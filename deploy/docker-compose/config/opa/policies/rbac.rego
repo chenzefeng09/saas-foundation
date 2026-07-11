@@ -9,6 +9,14 @@ import future.keywords.in
 default allow := false
 default deny_reason := "rbac.permission_not_granted"
 
+# The authz service computes this bit from its database-backed effective-role
+# walk.  It is not accepted from the public check request body.
+allow if {
+    input.rbac.matched == true
+}
+
+# Legacy/full-bundle input remains supported for policy tests and direct OPA
+# evaluation tools.
 allow if {
     some grant in input.user.role_grants
     grant.permission == input.action

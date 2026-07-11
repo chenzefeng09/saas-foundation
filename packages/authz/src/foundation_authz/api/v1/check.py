@@ -115,10 +115,16 @@ async def list_accessible_ids(
 
     When the user holds a TENANT- or GLOBAL_SYSTEM-scoped role that grants the
     requested action, `all_in_tenant=True` is returned (ids=[], complete=True),
-    meaning the caller should apply no ACL filter.
+    meaning the caller should apply no RBAC ACL filter.  It does not waive the
+    mandatory clearance-vs-sensitivity check.
 
     When the result is truncated to `max`, `complete=False` signals that the
     caller must fall back to a per-resource permission check.
+
+    This API intentionally returns `clearance_filtered=False`: sensitivity is a
+    per-resource DLP attribute and is not resolved during scope enumeration.
+    Callers must run `/check` (or an equivalent trusted DLP filter) before
+    returning each resource.
     """
     return await svc.list_accessible_ids(
         session,

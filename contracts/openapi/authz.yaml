@@ -55,7 +55,9 @@ paths:
       summary: 权限检查（单条）
       description: |
         SDK 内部走 gRPC；REST 端点用于调试 / 前端 UI 试算。
-        先匹配 RBAC，命中 `policy_required` 标记的资源走 OPA。
+        每次决策都执行 RBAC、Identity 用户 clearance、DLP 资源 sensitivity
+        与 OPA 策略；任一权威属性不可用时失败闭合。请求 context 中的
+        clearance/classification/sensitivity 不作为授权依据。
       operationId: checkPermission
       requestBody:
         required: true
@@ -126,14 +128,21 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ids, complete]
+                required: [ids, complete, all_in_tenant, clearance_filtered]
                 properties:
                   ids:
                     type: array
                     items: { type: string }
                   complete:
                     type: boolean
-                    description: false 表示超 max 截断，需走 OPA 兜底
+                    description: false 表示超 max 截断，需逐资源调用 /check
+                  all_in_tenant:
+                    type: boolean
+                    description: 仅表示 RBAC 为租户范围，不豁免资源等级过滤
+                  clearance_filtered:
+                    type: boolean
+                    enum: [false]
+                    description: 此接口只枚举 RBAC 候选，调用方仍必须执行等级过滤
 
   # --------------------------- Roles ----------------------------------------
   /roles:
@@ -368,7 +377,7 @@ components:
         context:
           type: object
           additionalProperties: true
-          description: ABAC 上下文（ip / time / device / classification）
+          description: ABAC 上下文（ip / time / device）；安全等级由服务端权威解析
 
     CheckResponse:
       type: object
@@ -377,11 +386,14 @@ components:
         allowed: { type: boolean }
         decision_path:
           type: string
-          enum: [RBAC_HIT, OPA_HIT, DEFAULT_DENY]
+          enum: [RBAC_HIT, OPA_HIT, DEFAULT_DENY, KILL_SWITCH_DENY]
         matched_role:
           type: string
           nullable: true
         matched_policy:
+          type: string
+          nullable: true
+        deny_reason:
           type: string
           nullable: true
         latency_ms: { type: number }

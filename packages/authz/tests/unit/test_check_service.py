@@ -2,26 +2,26 @@
 
 Coverage:
   - PERMISSION_UNKNOWN  → 422 raised
-  - RBAC_HIT            (exact action match)
-  - RBAC_HIT            (wildcard match)
-  - RBAC_HIT            (RESOURCE-scoped match)
-  - DEFAULT_DENY        (no binding)
-  - DEFAULT_DENY        (RESOURCE-scoped, wrong resource_id)
-  - DEFAULT_DENY        (binding expired)
-  - DEFAULT_DENY        (role soft-deleted)
-  - OPA_HIT             (policy_required + RBAC + OPA allow → allow)
-  - OPA_HIT             (policy_required + RBAC allow + OPA deny → deny)
-  - OPA_HIT             (policy_required + no RBAC + OPA allow → deny — both must agree)
+  - OPA_HIT             (exact, wildcard, inherited, and resource-scoped RBAC)
+  - OPA_HIT             (no/expired/out-of-scope binding remains denied)
+  - OPA_HIT             (optional policy gates remain enforced)
+  - OPA_HIT             (clearance >= sensitivity is mandatory for every permission)
+  - DEFAULT_DENY        (authoritative attribute failure or invalid provider data)
   - _wildcard_match table
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
 from foundation_authz.adapters.opa_client import OpaDecision
+from foundation_authz.adapters.security_attributes import (
+    SecurityAttributeProvider,
+    SecurityAttributes,
+)
 from foundation_authz.errors import PERMISSION_UNKNOWN, FoundationError
 from foundation_authz.services.check_service import (
     CheckService,
@@ -46,6 +46,15 @@ def _stage_effective_roles(
     session.queue_execute(bindings)
 
 
+def _check_service(opa_mock) -> CheckService:
+    attributes = AsyncMock(spec=SecurityAttributeProvider)
+    attributes.resolve.return_value = SecurityAttributes(
+        user_clearance="L3",
+        resource_sensitivity="L2",
+    )
+    return CheckService(opa=opa_mock, attributes=attributes)
+
+
 # ---------------------------------------------------------------------------
 # PERMISSION_UNKNOWN
 # ---------------------------------------------------------------------------
@@ -56,7 +65,7 @@ async def test_unknown_permission_raises_422(
     tenant_id: str,
     user_id: str,
 ) -> None:
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     # No PermissionDefinition seeded → session.get returns None.
 
     with pytest.raises(FoundationError) as ei:
@@ -75,7 +84,7 @@ async def test_unknown_permission_raises_422(
 
 
 # ---------------------------------------------------------------------------
-# RBAC_HIT
+# RBAC matches (OPA/MAC still mandatory)
 # ---------------------------------------------------------------------------
 
 async def test_rbac_hit_exact_action(
@@ -91,7 +100,7 @@ async def test_rbac_hit_exact_action(
     binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -103,9 +112,9 @@ async def test_rbac_hit_exact_action(
     )
 
     assert resp.allowed is True
-    assert resp.decision_path == "RBAC_HIT"
+    assert resp.decision_path == "OPA_HIT"
     assert resp.matched_role == role.name
-    opa_mock.evaluate.assert_not_awaited()
+    opa_mock.evaluate.assert_awaited_once()
 
 
 async def test_rbac_hit_wildcard_action(
@@ -120,7 +129,7 @@ async def test_rbac_hit_wildcard_action(
     binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -131,7 +140,7 @@ async def test_rbac_hit_wildcard_action(
         context={},
     )
     assert resp.allowed is True
-    assert resp.decision_path == "RBAC_HIT"
+    assert resp.decision_path == "OPA_HIT"
 
 
 async def test_rbac_hit_resource_scope(
@@ -152,7 +161,7 @@ async def test_rbac_hit_resource_scope(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -163,7 +172,7 @@ async def test_rbac_hit_resource_scope(
         context={},
     )
     assert resp.allowed is True
-    assert resp.decision_path == "RBAC_HIT"
+    assert resp.decision_path == "OPA_HIT"
 
 
 async def test_rbac_hit_inherited_parent_permission(
@@ -194,7 +203,7 @@ async def test_rbac_hit_inherited_parent_permission(
     _stage_effective_roles(fake_session, bindings=[(binding, child_role)])
     fake_session.queue_execute([(child_role.id, parent_role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -206,9 +215,9 @@ async def test_rbac_hit_inherited_parent_permission(
     )
 
     assert resp.allowed is True
-    assert resp.decision_path == "RBAC_HIT"
+    assert resp.decision_path == "OPA_HIT"
     assert resp.matched_role == child_role.name
-    opa_mock.evaluate.assert_not_awaited()
+    opa_mock.evaluate.assert_awaited_once()
 
 
 async def test_role_inheritance_cycle_is_ignored_after_permissions_expand(
@@ -240,7 +249,7 @@ async def test_role_inheritance_cycle_is_ignored_after_permissions_expand(
     fake_session.queue_execute([(child_role.id, parent_role)])
     fake_session.queue_execute([(parent_role.id, child_role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -256,7 +265,7 @@ async def test_role_inheritance_cycle_is_ignored_after_permissions_expand(
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_DENY
+# RBAC misses
 # ---------------------------------------------------------------------------
 
 async def test_default_deny_no_binding(
@@ -268,7 +277,7 @@ async def test_default_deny_no_binding(
     fake_session.put(make_permission(permission_id="billing.invoice.read"))
     _stage_effective_roles(fake_session, bindings=[])  # zero rows
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -279,7 +288,7 @@ async def test_default_deny_no_binding(
         context={},
     )
     assert resp.allowed is False
-    assert resp.decision_path == "DEFAULT_DENY"
+    assert resp.decision_path == "OPA_HIT"
     assert resp.deny_reason == "no_matching_binding"
 
 
@@ -301,7 +310,7 @@ async def test_default_deny_resource_scope_mismatch(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -312,7 +321,7 @@ async def test_default_deny_resource_scope_mismatch(
         context={},
     )
     assert resp.allowed is False
-    assert resp.decision_path == "DEFAULT_DENY"
+    assert resp.decision_path == "OPA_HIT"
 
 
 async def test_expired_binding_filtered_out(
@@ -333,7 +342,7 @@ async def test_expired_binding_filtered_out(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -344,7 +353,7 @@ async def test_expired_binding_filtered_out(
         context={},
     )
     assert resp.allowed is False
-    assert resp.decision_path == "DEFAULT_DENY"
+    assert resp.decision_path == "OPA_HIT"
 
 
 async def test_future_expiry_still_active(
@@ -365,7 +374,7 @@ async def test_future_expiry_still_active(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -379,7 +388,7 @@ async def test_future_expiry_still_active(
 
 
 # ---------------------------------------------------------------------------
-# OPA_HIT (policy_required path)
+# OPA policy and mandatory MAC paths
 # ---------------------------------------------------------------------------
 
 async def test_opa_hit_rbac_plus_policy_allow(
@@ -404,7 +413,7 @@ async def test_opa_hit_rbac_plus_policy_allow(
         allow=True, matched_policy="mfa_present"
     )
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -425,6 +434,11 @@ async def test_opa_hit_rbac_plus_policy_allow(
     # Spot-check OPA input contract
     assert opa_input["user"]["id"] == user_id
     assert opa_input["action"] == "billing.invoice.refund"
+    assert opa_input["policy_id"] == "billing.invoice.refund"
+    assert opa_input["user"]["clearance"] == "L3"
+    assert opa_input["resource"]["sensitivity"] == "L2"
+    assert opa_input["resource"]["classification"] == 2
+    assert opa_input["rbac"]["matched"] is True
     assert opa_input["permission_definition"]["requires_mfa"] is True
     assert opa_input["request"] == {"mfa": {"verified_within_sec": 60}}
 
@@ -450,7 +464,7 @@ async def test_policy_required_rbac_hit_but_opa_denies(
         allow=False, deny_reason="four_eyes_missing"
     )
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -481,7 +495,7 @@ async def test_policy_required_no_rbac_match_denies_even_if_opa_allows(
 
     opa_mock.evaluate.return_value = OpaDecision(allow=True)
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -494,6 +508,149 @@ async def test_policy_required_no_rbac_match_denies_even_if_opa_allows(
     # RBAC missing → must deny even if OPA was permissive
     assert resp.allowed is False
     assert resp.decision_path == "OPA_HIT"
+
+
+async def test_unflagged_permission_still_runs_mac_and_opa(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="document.read"))
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    attributes = AsyncMock(spec=SecurityAttributeProvider)
+    attributes.resolve.return_value = SecurityAttributes(
+        user_clearance="L4",
+        resource_sensitivity="L4",
+    )
+    svc = CheckService(opa=opa_mock, attributes=attributes)
+
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="document.read",
+        resource_type="document",
+        resource_id="doc_1",
+        context={"clearance": "L5", "sensitivity": "L1"},
+    )
+
+    assert resp.allowed is True
+    attributes.resolve.assert_awaited_once_with(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resource_type="document",
+        resource_id="doc_1",
+    )
+    opa_input = opa_mock.evaluate.await_args.args[0]
+    assert opa_input["user"]["clearance"] == "L4"
+    assert opa_input["resource"]["sensitivity"] == "L4"
+    # Caller context is preserved only as request metadata and cannot replace
+    # either authoritative top-level attribute.
+    assert opa_input["request"] == {"clearance": "L5", "sensitivity": "L1"}
+
+
+async def test_clearance_below_sensitivity_denies_even_if_opa_allows(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="document.read"))
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    attributes = AsyncMock(spec=SecurityAttributeProvider)
+    attributes.resolve.return_value = SecurityAttributes(
+        user_clearance="L3",
+        resource_sensitivity="L4",
+    )
+    opa_mock.evaluate.return_value = OpaDecision(allow=True)
+    svc = CheckService(opa=opa_mock, attributes=attributes)
+
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="document.read",
+        resource_type="document",
+        resource_id="doc_4",
+        context={},
+    )
+
+    assert resp.allowed is False
+    assert resp.decision_path == "OPA_HIT"
+    assert resp.deny_reason == "clearance_insufficient"
+    opa_mock.evaluate.assert_awaited_once()
+
+
+async def test_attribute_resolution_failure_is_fail_closed(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="document.read"))
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    attributes = AsyncMock(spec=SecurityAttributeProvider)
+    attributes.resolve.side_effect = RuntimeError("identity timeout")
+    svc = CheckService(opa=opa_mock, attributes=attributes)
+
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="document.read",
+        resource_type="document",
+        resource_id="doc_1",
+        context={},
+    )
+
+    assert resp.allowed is False
+    assert resp.decision_path == "DEFAULT_DENY"
+    assert resp.deny_reason == "security_attributes_unavailable"
+    opa_mock.evaluate.assert_not_awaited()
+
+
+async def test_invalid_custom_provider_level_is_fail_closed(
+    fake_session: FakeAsyncSession,
+    opa_mock,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    fake_session.put(make_permission(permission_id="document.read"))
+    role = make_role(tenant_id=tenant_id, permissions=["document.read"])
+    binding = make_binding(tenant_id=tenant_id, principal_id=user_id, role_id=role.id)
+    _stage_effective_roles(fake_session, bindings=[(binding, role)])
+
+    attributes = AsyncMock(spec=SecurityAttributeProvider)
+    attributes.resolve.return_value = SecurityAttributes(
+        user_clearance="L9",  # type: ignore[arg-type]
+        resource_sensitivity="L2",
+    )
+    svc = CheckService(opa=opa_mock, attributes=attributes)
+
+    resp = await svc.check(
+        fake_session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="document.read",
+        resource_type="document",
+        resource_id="doc_1",
+        context={},
+    )
+
+    assert resp.allowed is False
+    assert resp.decision_path == "DEFAULT_DENY"
+    assert resp.deny_reason == "security_attributes_invalid"
+    opa_mock.evaluate.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +691,7 @@ async def test_latency_ms_is_populated(
     fake_session.put(make_permission(permission_id="billing.invoice.read"))
     _stage_effective_roles(fake_session, bindings=[])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.check(
         fake_session,
         tenant_id=tenant_id,
@@ -560,7 +717,7 @@ async def test_list_ids_no_binding_returns_empty_complete(
     """User with no bindings gets empty list + complete=True (not truncated)."""
     _stage_effective_roles(fake_session, bindings=[])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -573,6 +730,7 @@ async def test_list_ids_no_binding_returns_empty_complete(
     assert resp.ids == []
     assert resp.complete is True
     assert resp.all_in_tenant is False
+    assert resp.clearance_filtered is False
 
 
 async def test_list_ids_team_scope_returns_scope_id(
@@ -592,7 +750,7 @@ async def test_list_ids_team_scope_returns_scope_id(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -636,7 +794,7 @@ async def test_list_ids_uses_inherited_parent_permission(
     _stage_effective_roles(fake_session, bindings=[(binding, child_role)])
     fake_session.queue_execute([(child_role.id, parent_role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -667,7 +825,7 @@ async def test_list_ids_tenant_scope_returns_all_in_tenant(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -680,6 +838,7 @@ async def test_list_ids_tenant_scope_returns_all_in_tenant(
     assert resp.ids == []
     assert resp.complete is True
     assert resp.all_in_tenant is True
+    assert resp.clearance_filtered is False
 
 
 async def test_list_ids_global_system_scope_returns_all_in_tenant(
@@ -698,7 +857,7 @@ async def test_list_ids_global_system_scope_returns_all_in_tenant(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -739,7 +898,7 @@ async def test_list_ids_truncated_when_exceeds_max(
 
     _stage_effective_roles(fake_session, bindings=bindings)
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -771,7 +930,7 @@ async def test_list_ids_wildcard_action_matches(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,
@@ -803,7 +962,7 @@ async def test_list_ids_action_mismatch_no_ids(
     )
     _stage_effective_roles(fake_session, bindings=[(binding, role)])
 
-    svc = CheckService(opa=opa_mock)
+    svc = _check_service(opa_mock)
     resp = await svc.list_accessible_ids(
         fake_session,
         tenant_id=tenant_id,

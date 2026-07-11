@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # When OPA is unreachable: fail-closed (deny) or fail-open (allow with audit).
     opa_unavailable_behaviour: Literal["FAIL_CLOSE", "FAIL_OPEN"] = "FAIL_CLOSE"
 
+    # ------------------------------------------------------------ Security attributes
+    # Clearance and sensitivity are authoritative service data, never caller input.
+    identity_url: AnyHttpUrl = Field(
+        default=AnyHttpUrl("http://127.0.0.1:8001/api/identity/v1")
+    )
+    dlp_url: AnyHttpUrl = Field(
+        default=AnyHttpUrl("http://127.0.0.1:18007/api/dlp/v1")
+    )
+    security_attribute_timeout_seconds: float = 0.5
+
     # ------------------------------------------------------------ Audit
     audit_publisher_kind: Literal["outbox_db", "http_direct", "log_only"] = "outbox_db"
 
