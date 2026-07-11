@@ -593,12 +593,15 @@ class TestDeindex:
         count = await svc.deindex(
             fake_session,
             tenant_id=TENANT_A,
+            resource_type="document",
             resource_id="doc_del",
             request_id="r_del",
         )
         assert count == 1
         assert row.deleted_at is not None
-        mock_os.delete_doc.assert_called_once_with(tenant_id=TENANT_A, resource_id="doc_del")
+        mock_os.delete_doc.assert_called_once_with(
+            tenant_id=TENANT_A, resource_type="document", resource_id="doc_del"
+        )
 
     async def test_os_delete_failure_propagates(self, fake_session: FakeAsyncSession) -> None:
         row = SearchIndex(
@@ -618,6 +621,7 @@ class TestDeindex:
             await svc.deindex(
                 fake_session,
                 tenant_id=TENANT_A,
+                resource_type="document",
                 resource_id="doc_fail",
                 request_id="r_fail",
             )
