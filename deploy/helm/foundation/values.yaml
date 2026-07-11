@@ -48,15 +48,20 @@ global:
     #     ext_authz，否则死锁；通过 excludePaths 排除）。
     #   * 网关层 nginx-ingress 版本 ≥ 0.40（支持 auth-* annotation）。
     externalAuthz:
+      # Kept off only for the base/dev profile; medium and large override this
+      # to true so browser-supplied identity headers are never trusted.
       enabled: false
       # 默认在 ingress.yaml 模板内渲染：foundation-identity.<release-namespace>.svc...
       # 留空使用默认；显式覆盖时必须是完整 cluster-internal URL。
       url: ""
-      responseHeaders: "X-Foundation-User-Id,X-Foundation-Tenant-Id,X-Foundation-Actor"
+      # Canonical names consumed by service middleware. ingress-nginx replaces
+      # any client-supplied values with the verified auth-subrequest response.
+      responseHeaders: "X-User-Id,X-Tenant-Id,X-Actor"
       excludePaths:
         - /api/identity/v1/internal/authz
         - /api/identity/v1/sessions
         - /api/identity/v1/sso/login-options
+        - /api/identity/v1/sso/providers/.*/authorize-url
         - /api/identity/v1/healthz
 
   # mTLS（生产强烈建议开）— P3-F 占位
@@ -119,7 +124,7 @@ global:
     role: foundation-services
   s3:
     # DEPRECATED (storage-v1 Phase 2): legacy single-bucket S3 节，保留兼容。
-    # 新代码读 global.storage 下的多 bucket 配置，audit/security-ops 起作用。
+    # 新代码读 global.storage 下的多 bucket 配置，audit/security-ops/lifecycle 起作用。
     # 计划在 Phase 4 完成迁移后下版本删除本节。
     endpoint: http://foundation-minio:9000
     region: cn-default
@@ -127,7 +132,7 @@ global:
     existingSecret: foundation-s3-credentials
   # ─────────────────────────────────────────────────────────────────────────
   # storage-v1 §4: 多 bucket 对象存储。services-renderer 会把这里的字段注入
-  # 到 audit / security-ops 服务的 ENV (STORAGE_*)。large profile 想接外部
+  # 到 audit / security-ops / lifecycle 服务的 ENV (STORAGE_*)。large profile 想接外部
   # S3 / OSS / S3 兼容存储，覆盖 endpoint + buckets.* 即可（见 values-large.yaml）。
   # ─────────────────────────────────────────────────────────────────────────
   storage:

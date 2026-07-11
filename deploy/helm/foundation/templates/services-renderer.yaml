@@ -101,12 +101,28 @@ spec:
             - { name: FOUNDATION_REDIS_HOST, value: {{ $.Values.global.redis.host | quote }} }
             - { name: FOUNDATION_KEYCLOAK_URL, value: {{ $.Values.global.keycloak.url | quote }} }
             - { name: FOUNDATION_VAULT_ADDR, value: {{ $.Values.global.vault.addr | quote }} }
+            {{- if eq $name "authz" }}
+            - name: AUTHZ_IDENTITY_URL
+              value: {{ printf "http://foundation-identity/api/identity/v1" | quote }}
+            - name: AUTHZ_DLP_URL
+              value: {{ printf "http://foundation-dlp/api/dlp/v1" | quote }}
+            {{- end }}
+            {{- if eq $name "dlp" }}
+            - name: DLP_IDENTITY_URL
+              value: {{ printf "http://foundation-identity/api/identity/v1" | quote }}
+            - name: DLP_UNCLASSIFIED_SENSITIVITY
+              value: "L3"
+            {{- end }}
             {{- if eq $name "search" }}
             # ── search-specific: OpenSearch + Authz ──────────────────────────
             - name: SEARCH_OPENSEARCH_URL
               value: {{ printf "http://%s:%v" $.Values.global.opensearch.host $.Values.global.opensearch.port | quote }}
             - name: SEARCH_AUTHZ_URL
               value: {{ printf "http://foundation-authz/api/authz/v1" | quote }}
+            - name: SEARCH_IDENTITY_URL
+              value: {{ printf "http://foundation-identity/api/identity/v1" | quote }}
+            - name: SEARCH_DLP_URL
+              value: {{ printf "http://foundation-dlp/api/dlp/v1" | quote }}
             {{- if $.Values.global.opensearch.existingSecret }}
             # 生产 OpenSearch 开启 security 时从 secret 注入凭据
             - name: SEARCH_OPENSEARCH_USERNAME
@@ -144,9 +160,10 @@ spec:
                   name: {{ $.Values.featureFlagUnleash.existingSecret | default "foundation-unleash-credentials" }}
                   key: {{ $.Values.featureFlagUnleash.adminTokenSecretKey | default "admin-token" }}
             {{- end }}
-            {{- if or (eq $name "audit") (eq $name "security-ops") }}
+            {{- if or (eq $name "audit") (eq $name "security-ops") (eq $name "lifecycle") }}
             # ── storage-v1 §4: 多 bucket S3 配置 ─────────────────────────────
             # audit 直接经 packages/storage.StorageClient 写 audit bucket；
+            # lifecycle 的配额/孤儿对账作业使用显式 system client；
             # security-ops 本期不写 S3，但 _validate_s3_key_format 需要
             # bucket_to_purpose_map() 拿到 bucket 名识别合法前缀。
             - name: STORAGE_ENDPOINT

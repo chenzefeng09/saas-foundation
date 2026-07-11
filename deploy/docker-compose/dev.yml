@@ -507,6 +507,10 @@ services:
         condition: service_healthy
       opa:
         condition: service_started   # static image has no healthcheck tool; OPA starts in <1s
+      identity:
+        condition: service_healthy
+      dlp:
+        condition: service_healthy
       migration-runner:
         condition: service_completed_successfully
     environment:
@@ -516,6 +520,8 @@ services:
       AUTHZ_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
       AUTHZ_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       AUTHZ_OPA_URL: http://opa:8181/v1
+      AUTHZ_IDENTITY_URL: http://identity:8001/api/identity/v1
+      AUTHZ_DLP_URL: http://dlp:8007/api/dlp/v1
       AUTHZ_OTEL_ENABLED: "true"
       AUTHZ_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
     ports:
@@ -1205,7 +1211,7 @@ services:
         -- 连接为 postgres 超级用户，FORCE RLS 对超级用户不生效，无需 SET app.actor
         INSERT INTO identity."user"
           (id, tenant_id, email, display_name, status, keycloak_user_id, roles,
-           mfa_enabled, failed_login_count)
+           clearance, mfa_enabled, failed_login_count)
         VALUES
           -- admin@foundation.local → Tenant A → super_admin
           -- id 必须与 authz-init 里 --admin-user-id 完全一致
@@ -1216,7 +1222,7 @@ services:
            'ACTIVE',
            '9c5b9300-73b6-49b2-911e-ece4675e9c29',
            '{"super_admin"}',
-           false, 0),
+           'L5', false, 0),
           -- alice@tenant-a.local → Tenant A → member
           ('usr_01KT7TZ70AM2RK8P0C0ALICE01',
            'tnt_01J5DEVXX00000000000000001',
@@ -1225,7 +1231,7 @@ services:
            'ACTIVE',
            'f354d276-886d-4d3b-828f-003ff1112919',
            '{"member"}',
-           false, 0),
+           'L4', false, 0),
           -- bob@tenant-a.local → Tenant A → member
           ('usr_01KT7TZ70AM2RK8P0C0BOB0001',
            'tnt_01J5DEVXX00000000000000001',
@@ -1234,7 +1240,7 @@ services:
            'ACTIVE',
            'fa1ec69a-8e64-472b-aafd-aea23118d62e',
            '{"member"}',
-           false, 0),
+           'L3', false, 0),
           -- carol@tenant-b.local → Tenant B → member
           ('usr_01KT7TZ70AM2RK8P0C0CAROL01',
            'tnt_01J5DEVXX00000000000000002',
@@ -1243,8 +1249,9 @@ services:
            'ACTIVE',
            '3b873c91-eb45-4d6b-b63c-8b1a81f5b3ab',
            '{"member"}',
-           false, 0)
-        ON CONFLICT (id) DO NOTHING;
+           'L4', false, 0)
+        ON CONFLICT (id) DO UPDATE
+          SET clearance = EXCLUDED.clearance;
         SQL
         echo "=== identity-init: all done ==="
     networks: [foundation]
@@ -1341,6 +1348,13 @@ services:
           exit 1
         fi
 
+        # Existing indices need the mandatory-access-control fields too. This
+        # mapping update is idempotent; old documents remain fail-closed until
+        # scripts/reindex_opensearch.py backfills their authoritative rank.
+        curl -sf -X PUT "$${OS_URL}/$${INDEX}/_mapping" \
+          -H "Content-Type: application/json" \
+          -d '{"properties":{"sensitivity":{"type":"keyword"},"sensitivity_rank":{"type":"integer"}}}'
+
         echo "=== search-init: creating alias $${ALIAS} → $${INDEX} ==="
         curl -sf -X POST "$${OS_URL}/_aliases" \
           -H "Content-Type: application/json" \
@@ -1376,6 +1390,8 @@ services:
       SEARCH_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       SEARCH_OPENSEARCH_URL: http://opensearch:9200
       SEARCH_AUTHZ_URL: http://authz:8002/api/authz/v1
+      SEARCH_IDENTITY_URL: http://identity:8001/api/identity/v1
+      SEARCH_DLP_URL: http://dlp:8007/api/dlp/v1
       SEARCH_OTEL_ENABLED: "true"
       SEARCH_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
     ports:
@@ -1555,6 +1571,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      identity:
+        condition: service_healthy
       migration-runner:
         condition: service_completed_successfully
       dlp-init:
@@ -1565,6 +1583,8 @@ services:
       DLP_LOG_FORMAT: console
       DLP_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
       DLP_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
+      DLP_IDENTITY_URL: http://identity:8001/api/identity/v1
+      DLP_UNCLASSIFIED_SENSITIVITY: L3
       DLP_OTEL_ENABLED: "true"
       DLP_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
     ports:

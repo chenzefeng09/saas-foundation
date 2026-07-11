@@ -199,7 +199,7 @@ sbom: ## 生成 SBOM (CycloneDX + SPDX)
 .PHONY: opa-test
 opa-test: ## OPA 策略单元测试（用 docker 跑 opa test）
 	docker run --rm -v $$(pwd)/deploy/docker-compose/config/opa:/work \
-	  openpolicyagent/opa:0.68.0-rootless test /work/policies/ -v
+	  openpolicyagent/opa:1.16.2-static test /work/policies/ -v
 
 .PHONY: opa-eval
 opa-eval: ## OPA 本地评估示例（环境变量 INPUT 传 JSON）
@@ -230,11 +230,11 @@ helm-render: ## helm template 渲染（默认 small；make helm-render PROFILE=m
 INTEGRATION_COMPOSE := docker compose -f deploy/docker-compose/dev.yml -f deploy/docker-compose/integration.yml --env-file deploy/docker-compose/.env
 
 .PHONY: integration-up
-integration-up: env ## 起集成测试全栈（基础设施 + 4 foundation 服务）
+integration-up: env ## 起集成测试全栈（基础设施 + 5 foundation 服务）
 	$(INTEGRATION_COMPOSE) up -d --wait postgres pgbouncer keycloak vault opa
 	$(INTEGRATION_COMPOSE) run --rm vault-init
-	$(INTEGRATION_COMPOSE) build identity authz org crypto integration-runner
-	$(INTEGRATION_COMPOSE) up -d identity authz org crypto
+	$(INTEGRATION_COMPOSE) build identity dlp authz org crypto integration-runner
+	$(INTEGRATION_COMPOSE) up -d identity dlp authz org crypto
 	@echo "$(GREEN)Integration stack starting... run 'make integration-ps' to check.$(RESET)"
 
 .PHONY: integration-ps
@@ -254,16 +254,21 @@ integration-all: env ## 一条龙：起栈 → 等就绪 → 跑测试 → 清�
 	@echo "$(BOLD)=== Integration Test Suite ===$(RESET)"
 	$(INTEGRATION_COMPOSE) up -d --wait postgres pgbouncer keycloak vault opa
 	$(INTEGRATION_COMPOSE) run --rm vault-init
-	$(INTEGRATION_COMPOSE) build identity authz org crypto integration-runner
-	$(INTEGRATION_COMPOSE) up -d identity authz org crypto
+	$(INTEGRATION_COMPOSE) build identity dlp authz org crypto integration-runner
+	$(INTEGRATION_COMPOSE) up -d identity dlp authz org crypto
 	@echo "$(YELLOW)Waiting for services (up to 60s)...$(RESET)"
 	@for i in {1..30}; do \
 	  ok=0; \
-	  for port in 8001 8002 8003 8004; do \
-	    curl -sf http://localhost:$$port/healthz >/dev/null 2>&1 && ok=$$((ok+1)) || true; \
+	  for url in \
+	    http://localhost:$${PORT_IDENTITY:-8001}/api/identity/v1/healthz \
+	    http://localhost:$${PORT_AUTHZ:-8002}/api/authz/v1/healthz \
+	    http://localhost:$${PORT_ORG:-8003}/api/org/v1/healthz \
+	    http://localhost:$${PORT_CRYPTO:-8004}/api/crypto/v1/healthz \
+	    http://localhost:$${PORT_DLP:-18007}/api/dlp/v1/healthz; do \
+	    curl -sf $$url >/dev/null 2>&1 && ok=$$((ok+1)) || true; \
 	  done; \
-	  if [ $$ok -eq 4 ]; then echo "$(GREEN)All 4 services healthy$(RESET)"; break; fi; \
-	  echo "  $$ok/4 healthy ($$i/30)"; sleep 2; \
+	  if [ $$ok -eq 5 ]; then echo "$(GREEN)All 5 services healthy$(RESET)"; break; fi; \
+	  echo "  $$ok/5 healthy ($$i/30)"; sleep 2; \
 	done
 	$(INTEGRATION_COMPOSE) run --rm integration-runner || TEST_EXIT=$$?
 	@echo ""
