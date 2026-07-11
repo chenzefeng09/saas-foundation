@@ -72,7 +72,7 @@ def test_c5a_dlp_check_download_injects_tenant_id() -> None:
         dlp = DLPResource(t)
 
         with tenant_context(TENANT_A):
-            dlp.check_download(file_id="file_001", sensitivity="L2")
+            dlp.check_download(file_id="file_001", destination="laptop")
 
     assert route.called
     sent = dict(route.calls[0].request.headers)
@@ -104,7 +104,9 @@ def test_c5b_l4_download_blocked_without_dlp_check(
     with tenant_context(TENANT_A):
         with pytest.raises((ComplianceError, PolicyError)) as exc_info:
             # 没有先调 check_download，直接触发下载（底座应阻断）
-            client.dlp.check_download(file_id="file_L4_no_prior_check", sensitivity="L4")
+            client.dlp.check_download(
+                file_id="file_L4_no_prior_check", destination="laptop"
+            )
 
     exc = exc_info.value
     assert exc.http_status in (403, 451), (

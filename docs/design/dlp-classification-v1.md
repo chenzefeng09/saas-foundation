@@ -12,7 +12,7 @@
 
 ## 0. TL;DR
 
-- **Classification（分级）**：每个资源（文件 / 数据库行 / 消息 / 提示词响应）打 `sensitivity ∈ {L1,L2,L3,L4,L5}`；默认 L2「内部」
+- **Classification（分级）**：每个资源（文件 / 数据库行 / 消息 / 提示词响应）打 `sensitivity ∈ {L1,L2,L3,L4,L5}`；未显式标记时默认 L3「秘密」（失败闭合基线）
 - **DLP**：4 个执行点 — **上传扫描**（异步 worker）、**下载拦截**（同步 SDK）、**外发管控**（邮件 / Webhook / 三方分享，同步）、**剪贴板/打印**（业务前端拦截，后置 v1.1）
 - **租户可配规则库**：默认敏感词样本（身份证 / 手机号 / 银行卡 / 病历号 / 关键词 blocklist）+ 租户自定义
 - **L5 绝密**：四眼审批 + 操作录屏 + 销毁联动 + 不可降级 + 不可分享外部
@@ -35,7 +35,7 @@
 | 级别 | 名称 | 定义 | 典型样例 | 默认控制 |
 |---|---|---|---|---|
 | **L1** | 公开 | 可对外发布 | 营销文案、产品文档、公开 API | 无 |
-| **L2** | 内部 | 仅租户内部可见（默认） | 普通工作文档、内部公告 | 租户内身份认证 |
+| **L2** | 内部 | 仅租户内部可见 | 普通公告、低敏协作文档 | 租户内身份认证 |
 | **L3** | 秘密 | 仅授权人员可见，泄露损害业务 | 客户名单、合同、源代码 | RBAC 显式授权 + 下载审计 |
 | **L4** | 机密 | 仅核心团队可见，泄露重大损失 | 财务数据、未发布战略、密钥配置 | MFA + 下载拦截白名单 + 行为分析 |
 | **L5** | 绝密 | 仅指定个人，泄露危及组织生存或国家安全 | 并购草案、核心算法、加密 master key | 四眼访问 + 操作录屏 + 不可外发 + WORM 保留 |
@@ -46,10 +46,10 @@
 
 | 角色基线 | 默认 clearance |
 |---|---|
-| 普通员工 | L2 |
-| 部门主管 | L3 |
-| 高管 / 安全管理员 | L4 |
-| 董事 / 核心机密持有人 | L5（须背景调查 + 单独签 NDA + 安全管理员特批） |
+| 外部协作 / 受限账号 | L2 |
+| 普通员工 | L3（默认） |
+| 高级员工 / 核心员工 | L4 |
+| 极少数高层 / 核心机密持有人 | L5（须背景调查 + 单独签 NDA + 安全管理员特批） |
 
 **访问基本约束**：`user.clearance >= resource.sensitivity` 才能读取（认证后第一道关）。
 **仅 L1 例外**：所有人都可访问 L1。
@@ -160,7 +160,7 @@ CREATE TABLE classification.resource_label (
   tenant_id        TEXT NOT NULL,
   resource_type    TEXT NOT NULL,          -- 'document'/'message'/'db_row' 等
   resource_id      TEXT NOT NULL,
-  sensitivity      sensitivity_level NOT NULL DEFAULT 'L2',  -- enum L1-L5
+  sensitivity      sensitivity_level NOT NULL DEFAULT 'L3',  -- enum L1-L5
   tags             TEXT[] NOT NULL DEFAULT '{}',  -- 'pii','contract','source_code'
   source           TEXT NOT NULL,          -- 'user'/'scanner'/'imported'/'inherited'
   reason           TEXT,
@@ -179,7 +179,7 @@ CREATE INDEX idx_label_tags ON classification.resource_label USING GIN (tags);
 CREATE TABLE classification.user_clearance (
   tenant_id        TEXT NOT NULL,
   user_id          TEXT NOT NULL,
-  clearance        sensitivity_level NOT NULL DEFAULT 'L2',
+  clearance        sensitivity_level NOT NULL DEFAULT 'L3',
   granted_by       TEXT NOT NULL,
   granted_reason   TEXT NOT NULL,
   expires_at       TIMESTAMPTZ,            -- 可临时授权（如出差访问敏感）
@@ -303,7 +303,7 @@ CREATE TABLE dlp.external_send_audit (
 ### 5.1 资源 sensitivity 升级
 
 ```
-   created (default L2)
+   created (default L3)
         │
         ├─→ scanner 命中 L3 规则 ─→ L3 (auto, audit)
         ├─→ scanner 命中 L4 规则 ─→ L4 (auto, audit, notify security)

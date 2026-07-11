@@ -13,13 +13,16 @@ class DLPResource:
     def __init__(self, transport: Transport) -> None:
         self._t = transport
 
-    def check_download(self, *, file_id: str, sensitivity: str) -> dict[str, Any]:
+    def check_download(self, *, file_id: str, destination: str = "laptop") -> dict[str, Any]:
         return self._t.request("POST", "/api/dlp/v1/check-download",
-                                json={"file_id": file_id, "sensitivity": sensitivity})
+                                json={"file_id": file_id, "destination": destination})
 
-    async def check_download_async(self, *, file_id: str, sensitivity: str) -> dict[str, Any]:
+    async def check_download_async(
+        self, *, file_id: str, destination: str = "laptop"
+    ) -> dict[str, Any]:
         return await self._t.request_async("POST", "/api/dlp/v1/check-download",
-                                            json={"file_id": file_id, "sensitivity": sensitivity})
+                                            json={"file_id": file_id,
+                                                  "destination": destination})
 
     def scan_content(self, *, content: str, content_type: str = "text",
                       sensitivity_threshold: str = "L4") -> dict[str, Any]:

@@ -132,6 +132,35 @@ describe("AuthzResource — check", () => {
   });
 });
 
+describe("DLPResource — checkDownload", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let client: FoundationClient;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    client = new FoundationClient({
+      apiUrl: "http://api.test",
+      apiToken: "tok",
+      context: createContext({ tenantId: "tnt_001", userId: "usr_001" }),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends destination without accepting a caller clearance", async () => {
+    fetchMock.mockResolvedValue(makeResponse(200, { allowed: true }));
+
+    await client.dlp.checkDownload({ fileId: "file_001", destination: "usb" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/dlp/v1/check-download");
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).toEqual({ file_id: "file_001", destination: "usb" });
+    expect(body).not.toHaveProperty("sensitivity");
+  });
+});
+
 describe("BillingResource — checkQuota", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let client: FoundationClient;

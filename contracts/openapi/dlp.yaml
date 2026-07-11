@@ -1,7 +1,7 @@
 # =============================================================================
 # DLP + Classification Service API — dlp-classification-v1
 # =============================================================================
-# 5 级分级（L1-L5）+ 用户 clearance + 下载/上传/外发/复制 4 点 enforce + scanner
+# 5 级资源分级（L1-L5）+ 权威用户 clearance + 读/下载强制检查
 # =============================================================================
 
 openapi: 3.1.0
@@ -10,7 +10,8 @@ info:
   title: DLP + Classification Service API
   version: 1.0.0
   description: |
-    资源分级（L1_PUBLIC → L5_SECRET） + 用户密级 + DLP 拦截 + 扫描器。
+    资源分级（L1_PUBLIC → L5_SECRET）+ DLP 拦截。用户密级由 Identity
+    服务权威管理；DLP 只按认证上下文中的 user_id 查询，不接受客户端自报密级。
     详见 [docs/design/dlp-classification-v1.md](../../docs/design/dlp-classification-v1.md)。
 
 servers:
@@ -23,8 +24,6 @@ security:
 tags:
   - name: labels
     description: 资源等级标签
-  - name: clearances
-    description: 用户密级
   - name: check
     description: DLP 检查（download / upload / external_send / copy）
   - name: rules
@@ -52,111 +51,108 @@ paths:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
   # --------------------------- Labels ---------------------------------------
-  /labels/{resource_type}/{resource_id}:
-    parameters:
-      - name: resource_type
-        in: path
-        required: true
-        schema: { type: string }
-      - name: resource_id
-        in: path
-        required: true
-        schema: { type: string }
+  /core/classification:get:
     get:
       tags: [labels]
       operationId: getResourceLabel
+      parameters:
+        - name: resource_type
+          in: query
+          required: true
+          schema: { type: string }
+        - name: resource_id
+          in: query
+          required: true
+          schema: { type: string }
       responses:
         '200':
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ResourceLabel' }
-        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
-    put:
+              schema:
+                type: object
+                required: [sensitivity, tags, downgradable]
+                properties:
+                  sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                  tags: { type: array, items: { type: string } }
+                  downgradable: { type: boolean }
+
+  /core/classification:tag:
+    post:
       tags: [labels]
       operationId: setResourceLabel
+      description: 仅受信 SERVICE/ADMIN 管理调用。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [level, source]
+              additionalProperties: false
+              required: [resource_type, resource_id, sensitivity]
               properties:
-                level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
-                source:
-                  type: string
-                  enum: [USER, SCANNER, IMPORTED, INHERITED]
+                resource_type: { type: string }
+                resource_id: { type: string }
+                sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                tags: { type: array, items: { type: string } }
                 reason: { type: string }
       responses:
-        '200':
+        '201':
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ResourceLabel' }
+              schema:
+                type: object
+                required: [id, sensitivity, tagged]
+                properties:
+                  id: { type: string }
+                  sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                  tagged: { type: boolean }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
 
-  # --------------------------- Clearances -----------------------------------
-  /clearances/{user_id}:
-    parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema: { $ref: './_common.yaml#/components/schemas/UserId' }
-    get:
-      tags: [clearances]
-      operationId: getUserClearance
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/UserClearance' }
-        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
-    put:
-      tags: [clearances]
-      operationId: setUserClearance
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [level]
-              properties:
-                level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
-                approved_by_id: { type: string }
-                valid_until: { type: string, format: date-time, nullable: true }
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/UserClearance' }
-        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
-
-  # --------------------------- Check ----------------------------------------
-  /check:
+  # --------------------------- Checks ---------------------------------------
+  /core/check:read:
     post:
       tags: [check]
-      summary: DLP 检查（业务下载 / 上传 / 外发前必经）
-      operationId: dlpCheck
+      summary: 读取前强制检查；用户和密级均由服务端上下文解析
+      operationId: checkResourceRead
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DlpCheckRequest' }
+            schema: { $ref: '#/components/schemas/ResourceCheckRequest' }
       responses:
         '200':
-          description: 允许
+          description: 决策结果
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DlpCheckResponse' }
-        '403':
-          description: 被 DLP 拒绝（FOUNDATION.DLP.POLICY.*）
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
+
+  /core/check:download:
+    post:
+      tags: [check]
+      summary: 下载或生成预签名 URL 前强制检查
+      operationId: checkResourceDownload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ResourceCheckRequest'
+                - type: object
+                  properties:
+                    destination: { type: string, default: laptop }
+      responses:
+        '200':
+          description: 决策结果
           content:
-            application/problem+json:
-              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+            application/json:
+              schema: { $ref: '#/components/schemas/DlpCheckResponse' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
 
   # --------------------------- Rules ----------------------------------------
   /rules:
@@ -332,45 +328,21 @@ components:
         set_at: { type: string, format: date-time }
         last_scanned_at: { type: string, format: date-time, nullable: true }
 
-    UserClearance:
+    ResourceCheckRequest:
       type: object
-      required: [user_id, level, granted_at]
+      additionalProperties: false
+      required: [resource_type, resource_id]
       properties:
-        user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
-        level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
-        approved_by_id: { type: string }
-        granted_at: { type: string, format: date-time }
-        valid_until: { type: string, format: date-time, nullable: true }
-
-    DlpCheckRequest:
-      type: object
-      required: [action, resource_type, resource_id]
-      properties:
-        action:
-          type: string
-          enum: [READ, DOWNLOAD, EXTERNAL_SEND, UPLOAD, COPY, PRINT]
         resource_type: { type: string }
         resource_id: { type: string }
-        target:
-          type: object
-          properties:
-            recipient: { type: string }
-            destination: { type: string }
 
     DlpCheckResponse:
       type: object
-      required: [allowed]
+      required: [allowed, sensitivity]
       properties:
         allowed: { type: boolean }
-        watermark:
-          type: object
-          nullable: true
-          properties:
-            text: { type: string }
-            position: { type: string, enum: [CENTER, DIAGONAL, FOOTER] }
-        applied_rules:
-          type: array
-          items: { type: string }
+        sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+        reason: { type: string, nullable: true }
 
     DlpRule:
       type: object

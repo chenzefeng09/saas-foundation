@@ -10,10 +10,13 @@ export class DLPResource {
 
   async checkDownload(params: {
     fileId: string;
-    sensitivity: string;
+    destination?: string;
   }): Promise<Record<string, unknown>> {
     return this.t.request("POST", "/api/dlp/v1/check-download", {
-      json: { file_id: params.fileId, sensitivity: params.sensitivity },
+      json: {
+        file_id: params.fileId,
+        destination: params.destination ?? "laptop",
+      },
     });
   }
 
