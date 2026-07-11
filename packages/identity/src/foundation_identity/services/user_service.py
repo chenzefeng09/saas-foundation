@@ -225,6 +225,11 @@ class UserService:
             payload=audit_payload,
         )
         await session.flush()
+        # ``updated_at`` is DB-computed via ``onupdate=func.now()``; after flush the
+        # attribute is expired, so serializing the returned ORM object (UserRead)
+        # would lazily refresh it in a synchronous context and raise MissingGreenlet.
+        # Refresh within the async greenlet so response serialization stays sync-safe.
+        await session.refresh(user)
         return user
 
     # ------------------------------------------------------------------ freeze

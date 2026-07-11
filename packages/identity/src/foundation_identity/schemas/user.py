@@ -2,13 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 USER_ID_PATTERN = r"^usr_[0-9A-Z]{26}$"
 TENANT_ID_PATTERN = r"^tnt_[0-9A-Z]{26}$"
+
+# Loose email pattern that allows special-use TLDs like .local/.test (used by the
+# dev/test seed users) while still requiring a basic user@host.tld structure.
+# Pydantic's strict ``EmailStr`` uses email-validator, which rejects RFC-6761
+# reserved TLDs; serializing a stored ``.local`` address through ``EmailStr``
+# raises a ValidationError and turns ``GET /users/{id}`` into a 500 — the exact
+# endpoint authz/dlp rely on to resolve authoritative clearance.  This mirrors
+# the permissive validator already used in schemas/session.py.
+_LOOSE_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_loose_email(v: str) -> str:
+    if not _LOOSE_EMAIL_RE.match(v):
+        raise ValueError(f"Invalid email address: {v!r}")
+    return v.lower()
+
 
 UserStatus = Literal["ACTIVE", "INVITED", "SUSPENDED", "LOCKED", "DEACTIVATED", "FROZEN"]
 ClearanceLevel = Literal["L1", "L2", "L3", "L4", "L5"]
@@ -24,7 +41,7 @@ class UserRead(BaseModel):
 
     id: str = Field(pattern=USER_ID_PATTERN)
     tenant_id: str = Field(pattern=TENANT_ID_PATTERN)
-    email: EmailStr
+    email: str
     display_name: str | None = None
     status: UserStatus
     roles: list[str] = Field(default_factory=list)
@@ -36,6 +53,11 @@ class UserRead(BaseModel):
     updated_at: datetime
     deleted_at: datetime | None = None
 
+    @field_validator("email")
+    @classmethod
+    def _accept_special_use_tlds(cls, v: str) -> str:
+        return _validate_loose_email(v)
+
     @field_validator("clearance", mode="before")
     @classmethod
     def legacy_null_clearance_defaults_to_l3(cls, value: object) -> object:
@@ -46,11 +68,16 @@ class UserRead(BaseModel):
 class InviteUserRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailStr
+    email: str
     display_name: str | None = Field(default=None, max_length=200)
     roles: list[str] = Field(default_factory=list)
     clearance: ClearanceLevel = Field(default_factory=_default_clearance)
     send_invite_email: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def _accept_special_use_tlds(cls, v: str) -> str:
+        return _validate_loose_email(v)
 
 
 class UpdateUserRequest(BaseModel):
