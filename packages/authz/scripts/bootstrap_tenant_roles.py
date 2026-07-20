@@ -7,7 +7,7 @@ existing rows are silently skipped.
 Roles created
 -------------
 super_admin    permissions=["*"]
-tenant_admin   permissions=["session.*","run.*","sandbox.*","skill.*","document.*","mcp_server.*","app.*"]
+tenant_admin   permissions=["session.*","run.*","sandbox.*","skill.*","document.*","mcp_server.*","app.*","workspace.*"]
 member         permissions=[<explicit list — see _MEMBER_PERMISSIONS>]
 
 Design notes
@@ -56,6 +56,7 @@ _TENANT_ADMIN_PERMISSIONS = [
     "document.*",
     "mcp_server.*",
     "app.*",
+    "workspace.*",
     # Self-service RBAC management within the tenant.  Granted as specific tokens
     # (NOT "authz.*") so a tenant_admin can manage roles/bindings but cannot
     # delegate authz management itself — see is_grantable() non-delegation rule.
@@ -97,6 +98,8 @@ _MEMBER_PERMISSIONS = [
     "run.create",
     "run.read",
     "run.cancel",
+    "workspace.read",
+    "workspace.manage",
     "skill.read",
     "document.read",
     "document.search",

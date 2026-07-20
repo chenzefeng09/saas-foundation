@@ -11,7 +11,7 @@ from foundation_lifecycle.api.exception_handlers import install_exception_handle
 from foundation_lifecycle.api.middleware import RequestIdMiddleware, TenantContextMiddleware
 from foundation_lifecycle.api.v1 import api_v1
 from foundation_lifecycle.config import get_settings
-from foundation_lifecycle.domain.db import dispose_engine, session_scope
+from foundation_lifecycle.domain.db import dispose_engine
 from foundation_lifecycle.observability import get_logger, setup_observability
 
 log = get_logger(__name__)
@@ -19,6 +19,7 @@ log = get_logger(__name__)
 
 async def _run_reconcile_job(drift_alert_pct: float) -> None:
     """APScheduler entry — opens its own session and storage client."""
+    from foundation_lifecycle.domain.db import admin_session_scope
     from foundation_lifecycle.services.storage_quota_reconcile import (
         reconcile_used_bytes,
     )
@@ -26,7 +27,11 @@ async def _run_reconcile_job(drift_alert_pct: float) -> None:
 
     storage_client = StorageClient.as_system(get_storage_settings())
     try:
-        async with session_scope() as session:
+        # APScheduler jobs run with no request-scoped FoundationContext, so
+        # session_scope() would raise "FoundationContext missing".  Use the
+        # admin engine (actor=ADMIN, admin_all RLS policy) so the reconcile can
+        # scan every tenant's quota rows cross-tenant.
+        async with admin_session_scope() as session:
             report = await reconcile_used_bytes(
                 session,
                 storage_client,
@@ -66,7 +71,10 @@ async def _run_orphan_reconcile_job(
     started_at = datetime.now(UTC)
     storage_client = StorageClient.as_system(get_storage_settings())
     try:
-        async with session_scope() as session:
+        # APScheduler background job: no request-scoped FoundationContext, so
+        # use the admin engine (actor=ADMIN) for the cross-tenant sweep — same
+        # scope used below to persist the report row.
+        async with admin_session_scope() as session:
             report = await reconcile_orphans(
                 session,
                 storage_client,

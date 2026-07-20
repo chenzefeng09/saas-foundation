@@ -76,6 +76,10 @@ class StorageQuotaService:
             )
             session.add(entry)
             await session.flush()
+            # updated_at is a server-side default/onupdate column: flush leaves
+            # it expired, and the sync serializers would trip MissingGreenlet
+            # lazily refreshing it. Same refresh in the two patch paths below.
+            await session.refresh(entry)
             log.info(
                 "storage.quota.created",
                 tenant_id=tenant_id,
@@ -90,6 +94,7 @@ class StorageQuotaService:
         if soft_warn_pct is not None:
             existing.soft_warn_pct = soft_warn_pct
         await session.flush()
+        await session.refresh(existing)
         log.info(
             "storage.quota.updated",
             tenant_id=tenant_id,
@@ -142,6 +147,7 @@ class StorageQuotaService:
         if soft_warn_pct is not None:
             existing.soft_warn_pct = soft_warn_pct
         await session.flush()
+        await session.refresh(existing)
         log.info(
             "storage.quota.admin_updated",
             tenant_id=tenant_id,
