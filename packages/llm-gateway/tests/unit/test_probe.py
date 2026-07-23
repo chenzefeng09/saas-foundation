@@ -260,3 +260,64 @@ async def test_probe_context_window_unknown_when_list_models_fails(svc, monkeypa
     assert "FAILED" in str(result["list_models"])
     assert result["context_window_32k"] == "unknown"
     assert result["context_window_value"] == "unknown"
+
+
+async def test_probe_model_details_per_model(svc, monkeypatch):
+    """model_details keeps per-model context_length/max_tokens keyed by id.
+
+    Covers: explicit fields, OpenRouter nested top_provider.max_completion_tokens,
+    top-level max_completion_tokens only, context_window alias, and a bare model
+    with no usable caps (None/None).
+    """
+    models = [
+        {"id": "full", "context_length": 131072, "max_tokens": 8192},
+        {"id": "openrouter-style", "context_length": 65536,
+         "top_provider": {"max_completion_tokens": 4096}},
+        {"id": "only-output", "max_completion_tokens": 2048},
+        {"id": "ctx-alias", "context_window": 32768},
+        {"id": "bare"},
+    ]
+    responses = [
+        _make_models_resp(models),
+        _make_chat_resp(),
+        _make_stream_resp(),
+        _make_parallel_resp([]),
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _build_fake_client(responses))
+    result = await svc.probe_endpoint("http://fake", "sk-x", ProviderKind.OPENAI_COMPATIBLE)
+
+    md = result["model_details"]
+    assert set(md.keys()) == {"full", "openrouter-style", "only-output", "ctx-alias", "bare"}
+    assert md["full"] == {"context_length": 131072, "max_tokens": 8192}
+    assert md["openrouter-style"] == {"context_length": 65536, "max_tokens": 4096}
+    assert md["only-output"] == {"context_length": None, "max_tokens": 2048}
+    assert md["ctx-alias"] == {"context_length": 32768, "max_tokens": None}
+    assert md["bare"] == {"context_length": None, "max_tokens": None}
+
+
+async def test_probe_model_details_does_not_alter_aggregate(svc, monkeypatch):
+    """Regression: model_details coexists with unchanged context_window aggregate."""
+    models = [
+        {"id": "big", "context_length": 65536, "max_tokens": 8192},
+        {"id": "small", "context_length": 4096},
+    ]
+    responses = [
+        _make_models_resp(models),
+        _make_chat_resp(),
+        _make_stream_resp(),
+        _make_parallel_resp([
+            {"id": "tc1", "function": {"name": "tool_alpha", "arguments": "{}"}},
+            {"id": "tc2", "function": {"name": "tool_beta", "arguments": "{}"}},
+        ]),
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _build_fake_client(responses))
+    result = await svc.probe_endpoint("http://fake", "sk-x", ProviderKind.OPENAI_COMPATIBLE)
+
+    # Aggregate (max context_length across models) is unchanged.
+    assert result["context_window_value"] == "65536"
+    assert result["context_window_32k"] is True
+    # Per-model detail is preserved alongside the aggregate.
+    assert result["model_details"] == {
+        "big": {"context_length": 65536, "max_tokens": 8192},
+        "small": {"context_length": 4096, "max_tokens": None},
+    }

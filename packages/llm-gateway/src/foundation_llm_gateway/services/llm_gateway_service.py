@@ -228,6 +228,37 @@ def _estimate_tokens(messages: list[dict], response_text: str) -> tuple[int, int
     return prompt_est, completion_est
 
 
+def _extract_model_caps(model_obj: dict) -> tuple[int | None, int | None]:
+    """Extract ``(context_length, max_tokens)`` caps from a /v1/models entry.
+
+    Scans the common field names used by OpenAI-compatible providers (and
+    OpenRouter's nested ``top_provider``).  Returns ``(None, None)`` when no
+    usable value is found for a given cap.
+    """
+    # context_length: prefer explicit context fields; max_tokens is intentionally
+    # excluded here (it is a completion cap, handled separately below).
+    ctx: int | None = None
+    for field in ("context_length", "context_window", "max_context_tokens", "max_input_tokens"):
+        raw = model_obj.get(field)
+        if isinstance(raw, int) and raw > 0:
+            ctx = raw
+            break
+
+    # max_tokens: scan top-level fields then OpenRouter's nested top_provider.
+    mt: int | None = None
+    for field in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+        raw = model_obj.get(field)
+        if isinstance(raw, int) and raw > 0:
+            mt = raw
+            break
+    if mt is None:
+        raw = (model_obj.get("top_provider") or {}).get("max_completion_tokens")
+        if isinstance(raw, int) and raw > 0:
+            mt = raw
+
+    return ctx, mt
+
+
 class ProviderKind(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC = "anthropic"
@@ -465,6 +496,7 @@ class LLMGatewayService:
           streaming            — response Content-Type is text/event-stream
           context_window_32k   — reported context_length / max_tokens >= 32768
           context_window_value — raw context_length value found (int or "unknown")
+          model_details        — per-model {context_length, max_tokens} keyed by id
           parallel_tool_calls  — single request triggers multiple tool_call entries
         """
         import httpx
@@ -503,6 +535,18 @@ class LLMGatewayService:
                     else:
                         results["context_window_value"] = "unknown"
                         results["context_window_32k"] = "unknown"
+
+                    # --- per-model caps (context_length + max_tokens) ---
+                    # Keep per-model detail that the aggregate above collapses.
+                    # One entry per advertised model id; missing caps are None.
+                    model_details: dict[str, dict[str, int | None]] = {}
+                    for m in model_list:
+                        mid = m.get("id")
+                        if not mid:
+                            continue
+                        ctx, mt = _extract_model_caps(m)
+                        model_details[mid] = {"context_length": ctx, "max_tokens": mt}
+                    results["model_details"] = model_details
             except Exception as e:
                 results["list_models"] = f"FAILED: {e}"
                 results["context_window_value"] = "unknown"
