@@ -43,8 +43,10 @@ set -uo pipefail
 # *-migrate one-shot containers are intentionally omitted: they reuse the main
 # service's image and source, so the main service's row already covers them.
 # ---------------------------------------------------------------------------
-FOUNDATION_ROOT="/Users/chenzefeng/Development/saas-foundation"
-AGENT_ROOT="/Users/chenzefeng/Development/agent-platform"
+# Repo roots. Default to this checkout and its sibling agent-platform; override
+# either via the environment when your layout differs.
+FOUNDATION_ROOT="${FOUNDATION_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+AGENT_ROOT="${AGENT_ROOT:-$(cd "$FOUNDATION_ROOT/../agent-platform" 2>/dev/null && pwd || echo "$FOUNDATION_ROOT/../agent-platform")}"
 FOUNDATION_COMPOSE="deploy/docker-compose/dev.yml"
 AGENT_COMPOSE="deploy/docker-compose/agent-platform.yml"
 

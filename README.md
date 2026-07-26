@@ -41,9 +41,7 @@ saas-foundation/
 - [x] P0 #4 Identity 详细设计
 - [x] P0 #5 Authz 详细设计
 
-下一步：A-M1 启动后滚动细化 P1（详见顶层 plan）。
-
-详见顶层 plan：`/Users/chenzefeng/.claude/plans/claude-code-claude-code-pi-mcp-skills-silly-dragon.md`
+下一步：A-M1 启动后滚动细化 P1。
 
 ## 文档入口
 
