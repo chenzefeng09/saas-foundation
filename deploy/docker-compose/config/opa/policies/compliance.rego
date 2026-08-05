@@ -7,7 +7,7 @@ import future.keywords.if
 import future.keywords.in
 import future.keywords.contains
 
-default allow := true
+default allow := false
 default deny_reason := "compliance.unspecified"
 
 allow if {

@@ -57,7 +57,9 @@ def fake_boto(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 @pytest.fixture
 def settings() -> StorageSettings:
-    return StorageSettings()
+    # Functional S3 tests isolate the storage backend. Mandatory access-control
+    # behavior is covered separately in test_access_control.py.
+    return StorageSettings(access_control_enabled=False)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,16 @@ def settings() -> StorageSettings:
 
 
 class TestTenantScope:
+    def test_constructor_rejects_implicit_system_scope(
+        self, settings: StorageSettings
+    ) -> None:
+        with pytest.raises(KeyValidationError, match="StorageClient.as_system"):
+            StorageClient(settings, tenant_id=None)
+
+    def test_factory_requires_explicit_tenant(self) -> None:
+        with pytest.raises(TypeError):
+            get_storage_client()  # type: ignore[call-arg]
+
     @pytest.mark.asyncio
     async def test_put_object_wrong_tenant_rejected(
         self, fake_boto: MagicMock, settings: StorageSettings
@@ -142,7 +154,7 @@ class TestPutObject:
         self, fake_boto: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("STORAGE_QUOTA_CHECK_ENABLED", "false")
-        s = StorageSettings()
+        s = StorageSettings(access_control_enabled=False)
         quota = MagicMock()
         quota.check_before_upload = AsyncMock()
         quota.increment_used = AsyncMock()
@@ -374,6 +386,60 @@ class TestPresign:
         assert kwargs["ClientMethod"] == "put_object"
         assert kwargs["ExpiresIn"] == 60
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["delete_object", "head_object", ""])
+    async def test_rejects_non_whitelisted_operation(
+        self,
+        fake_boto: MagicMock,
+        settings: StorageSettings,
+        operation: str,
+    ) -> None:
+        client = StorageClient(settings, tenant_id="tnt_01")
+        key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
+
+        with pytest.raises(KeyValidationError, match="get_object.*put_object"):
+            await client.generate_presigned_url(key, operation=operation)  # type: ignore[arg-type]
+
+        fake_boto.generate_presigned_url.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("expires_in", [0, -1, 61, True])
+    async def test_rejects_ttl_outside_configured_limit(
+        self,
+        fake_boto: MagicMock,
+        expires_in: int,
+    ) -> None:
+        settings = StorageSettings(
+            access_control_enabled=False,
+            presigned_url_ttl_seconds=60,
+        )
+        client = StorageClient(settings, tenant_id="tnt_01")
+        key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
+
+        with pytest.raises(KeyValidationError, match="between 1 and 60"):
+            await client.generate_presigned_url(key, expires_in=expires_in)
+
+        fake_boto.generate_presigned_url.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("expires_in", [1, 60])
+    async def test_accepts_ttl_boundaries(
+        self,
+        fake_boto: MagicMock,
+        expires_in: int,
+    ) -> None:
+        fake_boto.generate_presigned_url.return_value = "https://signed.example/x"
+        settings = StorageSettings(
+            access_control_enabled=False,
+            presigned_url_ttl_seconds=60,
+        )
+        client = StorageClient(settings, tenant_id="tnt_01")
+        key = ObjectKey.for_workspace_file("tnt_01", "ws_1", "f_1", "x.pdf")
+
+        await client.generate_presigned_url(key, expires_in=expires_in)
+
+        assert fake_boto.generate_presigned_url.call_args.kwargs["ExpiresIn"] == expires_in
+
 
 # ---------------------------------------------------------------------------
 # Error mapping
@@ -571,7 +637,7 @@ class TestDeleteAndFactory:
         assert c.tenant_id == "tnt_01"
 
     def test_bucket_for_all_purposes(self, settings: StorageSettings) -> None:
-        client = StorageClient(settings)
+        client = StorageClient.as_system(settings)
         assert client._bucket_for(BucketPurpose.AUDIT) == "foundation-audit"
         assert client._bucket_for(BucketPurpose.WORKSPACE) == "foundation-workspace"
         assert client._bucket_for(BucketPurpose.KB_RAW) == "foundation-kb-raw"
@@ -580,7 +646,7 @@ class TestDeleteAndFactory:
     def test_get_boto_caches_client(
         self, fake_boto: MagicMock, settings: StorageSettings
     ) -> None:
-        client = StorageClient(settings)
+        client = StorageClient.as_system(settings)
         a = client._get_boto()
         b = client._get_boto()
         assert a is b

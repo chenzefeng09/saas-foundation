@@ -6,10 +6,18 @@ from datetime import datetime
 from typing import Any, Literal
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, ForeignKey, Index, Integer,
-    String, Text, UniqueConstraint, func,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from foundation_dlp.domain.base import Base
@@ -24,7 +32,16 @@ SensitivityLevel = Literal["L1", "L2", "L3", "L4", "L5"]
 class Classification(Base):
     __tablename__ = "classification"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "resource_type", "resource_id", name="uq_classification_resource"),
+        UniqueConstraint(
+            "tenant_id",
+            "resource_type",
+            "resource_id",
+            name="uq_classification_resource",
+        ),
+        CheckConstraint(
+            "sensitivity IN ('L1','L2','L3','L4','L5')",
+            name="ck_dlp_classification_sensitivity",
+        ),
         Index("class_tenant_idx", "tenant_id"),
         Index("class_sensitivity_idx", "sensitivity"),
         {"schema": "dlp"},
@@ -36,7 +53,7 @@ class Classification(Base):
     resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
     resource_id: Mapped[str] = mapped_column(String(64), nullable=False)
     sensitivity: Mapped[str] = mapped_column(
-        String(2), nullable=False, default="L2",
+        String(2), nullable=False, default="L3",
         comment="L1/L2/L3/L4/L5")
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     reason: Mapped[str | None] = mapped_column(Text)
@@ -116,5 +133,8 @@ class Outbox(Base):
     aggregate_id: Mapped[str | None] = mapped_column(String(64))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(64))
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

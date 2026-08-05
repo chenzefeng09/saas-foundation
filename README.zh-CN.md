@@ -1,232 +1,443 @@
-# SaaS Foundation
+# saas-foundation
 
-[English](README.md) | 中文
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![API](https://img.shields.io/badge/API-OpenAPI%203.1-6ba539.svg)](contracts/openapi/)
+[![Errors](https://img.shields.io/badge/errors-RFC%209457-informational.svg)](docs/errors.md)
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![Language: Python 3.12](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
-[![SDK: Python | TypeScript](https://img.shields.io/badge/SDK-Python%20%7C%20TypeScript-2b7489.svg)](#通过类型化-sdk-接入)
-[![Kubernetes 1.24+](https://img.shields.io/badge/kubernetes-1.24%2B-326CE5.svg?logo=kubernetes&logoColor=white)](#部署档位)
+[English](README.md) · **简体中文**
 
-> 一个可复用、私有化优先的企业级 SaaS 底座。它把身份、授权、组织、计费、审计、合规、密码学、数据保护、DLP、LLM 网关等能力封装为一组能力服务，全部通过类型化 SDK 接入，业务代码无需直接接触 Keycloak、OPA、ClickHouse、OpenSearch 或 LiteLLM。
+通用企业级 SaaS 平台底座：**17 个可独立部署的服务**，覆盖身份、授权、组织、计费、审计、
+合规、DLP、密码学、通知、搜索、LLM 网关等基础能力，以及业务层调用它们所需的 SDK。
 
-SaaS Foundation 是一个独立、可跨项目复用的企业级底座。它把多租户产品中那些横切、棘手的关注点——*谁能对哪个租户的数据做什么、在哪种合规模式下、以及这一切如何被审计*——收敛成边界清晰的服务，并在它们前面放一个统一的客户端库。每个服务封装一个久经考验的开源引擎，对外暴露稳定、带版本的 REST/JSON 契约；SDK 把它们聚合起来，业务开发者只写 `client.identity.get_user(...)` 或 `client.crypto.encrypt(...)`，永远不需要了解底层引擎。
+核心是在平台能力与业务代码之间划一条硬边界。业务系统 `import foundation_sdk`，
+通过 HTTP 调用底座服务；**永远不直接触碰 Keycloak、OPA、ClickHouse、OpenSearch、
+LiteLLM、Vault 或 MinIO**。那些是底座自己持有的实现细节，可以整体替换而业务无感。
 
-它同时也是 [Agent Platform](https://github.com/chenzefeng09/agent-platform) 的底座——Agent Platform 引入 Foundation SDK，并调用 Foundation 的身份、授权、计费、审计与 LLM 网关服务。
+[**cloud·worker**](https://github.com/chenzefeng09/cloud-worker) 是构建在本底座之上的
+第一个产品 —— 详见[谁在用它](#谁在用它)。
+
+> **项目状态**：处于活跃开发中，已用于内部试点，尚未 1.0。服务接口仍在演进。
+> `go` SDK 目前是占位；Python 完整，TypeScript 部分可用。
+
+---
+
+## 目录
+
+- [设计目标](#设计目标)
+- [包含什么](#包含什么)
+- [架构](#架构)
+- [多租户：三道墙](#多租户三道墙)
+- [谁在用它](#谁在用它)
+- [仓库结构](#仓库结构)
+- [快速开始](#快速开始)
+- [使用 SDK](#使用-sdk)
+- [开发](#开发)
+- [部署](#部署)
+- [合规](#合规)
+- [文档](#文档)
+- [参与贡献](#参与贡献)
+- [许可证](#许可证)
+
+---
 
 ## 设计目标
 
-- **私有化优先。** 默认部署目标是客户自有机房：Kubernetes 1.24+，通过 Helm umbrella chart 离线 / 隔离网安装。SaaS 是这套体系的一个档位，而非相反。
-- **SaaS 兼容（按 profile 切换）。** 同一份 chart 切换 values profile 即可服务多租户 SaaS。隔离强度从共享表 → 每租户独立 schema → 每租户独立库 → 专属集群逐级提升——Row-Level Security 在每一档都保持开启。
-- **合规内建。** 等保（DJCP/Dengbao）2.0 三级 + PIPL 基线现已交付；国密（SM 系列）密码学 / 信创（国产栈）支持，以及 SOC 2 / ISO 27001 证据导出，在路线图上。
-- **业务零耦合（经由 SDK）。** 业务代码只引入 SDK，别无其他。它从不依赖、配置或直接访问底层开源组件——这些组件藏在能力服务背后，可以独立演进而不触碰业务代码。
+- **私有化优先** —— 默认交付目标是客户自己的机房：K8s 1.24+、离线安装、不要求任何外网调用。
+- **同一份 chart 兼容 SaaS** —— 切换 profile 即可得到多租户 SaaS 与分档隔离，
+  而不必维护两套代码。
+- **业务零感知底层组件** —— 业务层只 import SDK，看不到 Keycloak、OPA、LiteLLM、Vault、
+  MinIO，因此这些组件可以被替换而不动产品代码。
+- **合规是内建而非补丁** —— 等保 2.0 三级与 PIPL 在设计阶段就已覆盖；国密与信创紧随其后。
+- **三档规模** —— `small` / `medium` / `large` 三档 Helm profile，含 HA 与弹性伸缩。
 
-## 整体如何协作
+---
 
-业务服务依赖 SDK，SDK 通过 REST/JSON 调用能力服务，每个能力服务是*唯一*与其所封装开源引擎对话的角色。
+## 包含什么
 
-```mermaid
-flowchart TB
-    biz["业务服务<br/>（如 Agent Platform）"]
-    sdk["Foundation SDK<br/>（Python · TypeScript · Go 规划中）"]
+17 个服务，每个只负责一项能力。「一个服务一项能力」是**强制规则**而非建议 ——
+新能力就开新服务。
 
-    biz -->|"client.identity.* / client.crypto.* / ..."| sdk
+| 服务 | 端口 | 职责 |
+|---|---|---|
+| `identity` | 8001 | 会话、用户、MFA、SSO、SCIM、口令与登录策略 |
+| `authz` | 8002 | 授权 —— RBAC 与 OPA/ABAC 双轨并行 |
+| `org` | 8003 | 租户 → OU → 团队 → 用户 的组织层级 |
+| `crypto` | 8004 | 信封加密、KEK 生命周期、签名、口令哈希 |
+| `lifecycle` | 18006 | 留存策略、回收站、法务保全、销毁证明、备份编排 |
+| `dlp` | 18007 | 数据防泄漏 + 内容分级分类 |
+| `billing` | 8017 | 计量与计费 —— 双模（私有化 License + SaaS 订阅） |
+| `notification` | 18008 | 邮件、Webhook、WebSocket、钉钉、飞书、企业微信 |
+| `search` | 8009 | OpenSearch 封装 + ACL 感知的结果过滤 |
+| `api-platform` | 18010 | API Key、OAuth 应用、出站 Webhook |
+| `llm-gateway` | 8011 | LiteLLM 封装 —— 供应商路由、虚拟密钥、配额 |
+| `feature-flag` | 8012 | Unleash 封装 |
+| `audit` | 8013 | 不可篡改审计日志：OTel → ClickHouse → S3 WORM，哈希链 + 数字签名 |
+| `compliance` | 18014 | ROPA、DPIA、DSAR、合规报告 |
+| `pam` | 18015 | 特权访问管理 |
+| `data-protection` | 18016 | 脱敏引擎、数据销毁、跨境传输、同意管理 |
+| `security-ops` | 18019 | SSDLC、漏洞 SLA、SBOM、事件响应 |
 
-    subgraph cap["能力服务 — /api/&lt;service&gt;/v1"]
-        direction LR
-        idsvc["identity · authz · org<br/>pam · api-platform"]
-        datasvc["crypto · data-protection<br/>dlp · storage"]
-        govsvc["compliance · audit<br/>security-ops"]
-        platsvc["billing · lifecycle · notification<br/>search · feature-flag · llm-gateway"]
-    end
+此外还有 **`storage`** —— 它不是服务而是一个库：基于 boto3 的 S3/MinIO 客户端，
+带租户隔离的 key 布局、配额钩子与 OTel 埋点。
 
-    sdk -->|"REST/JSON, bearer 鉴权, X-Tenant-Id"| cap
+上表端口是 docker-compose 开发栈的**宿主端口**。部分服务为避免冲突映射到 `1xxxx`
+（`billing` 8017→8007、`notification` 18008→8008 等），详见 `deploy/docker-compose/dev.yml`。
 
-    subgraph oss["被封装的开源引擎"]
-        direction LR
-        kc["Keycloak"]
-        opa["OPA"]
-        ch["ClickHouse"]
-        os["OpenSearch"]
-        vault["Vault transit / HSM"]
-        litellm["LiteLLM Proxy"]
-        unleash["Unleash"]
-        s3["MinIO / S3"]
-    end
+### 底层开源组件
 
-    idsvc --> kc
-    idsvc --> opa
-    govsvc --> ch
-    platsvc --> os
-    datasvc --> vault
-    platsvc --> litellm
-    platsvc --> unleash
-    datasvc --> s3
+| 关注点 | 组件 | 由谁封装 |
+|---|---|---|
+| 身份提供方 | Keycloak | `identity` |
+| 策略引擎 | OPA | `authz` |
+| 关系型存储 | PostgreSQL + PgBouncer | 全部服务 |
+| 缓存 / 队列 | Redis | 多个服务 |
+| 审计数仓 | ClickHouse | `audit` |
+| 搜索索引 | OpenSearch | `search` |
+| 密钥 / KMS | Vault（transit） | `crypto` |
+| 对象存储 | MinIO（S3 兼容） | `storage` |
+| 特性开关 | Unleash | `feature-flag` |
+| LLM 路由 | LiteLLM | `llm-gateway` |
+| 可观测性 | OpenTelemetry、Jaeger、Prometheus | 全部服务 |
+
+业务代码不直接接触其中任何一个。**这层间接性本身就是底座的价值所在。**
+
+---
+
+## 架构
+
+```
+                    你的业务系统（例如 cloud·worker）
+                              │
+                              │  foundation_sdk  ·  HTTP + OpenAPI 3.1
+                              ▼
+   ┌───────────────────────────────────────────────────────────────────┐
+   │                          foundation 服务                          │
+   │                                                                   │
+   │  identity   authz    org      crypto     lifecycle   dlp          │
+   │  billing    search   audit    compliance pam         notification │
+   │  api-platform        llm-gateway   feature-flag   data-protection │
+   │  security-ops                                                     │
+   └───┬───────────────────────────────────────────────────────────┬───┘
+       │                                                           │
+       ▼                                                           ▼
+   ┌────────────────────────────────┐        ┌───────────────────────────┐
+   │  Keycloak · OPA · Vault        │        │  PostgreSQL + PgBouncer   │
+   │  ClickHouse · OpenSearch       │        │  （RLS 强制租户隔离）     │
+   │  MinIO · Redis · Unleash       │        │  Redis                    │
+   │  LiteLLM                       │        └───────────────────────────┘
+   └────────────────────────────────┘
+              ▲
+              └── 业务代码永远不直接触达这一层
 ```
 
-## 能力包
+每个服务内部结构统一（见 `docs/CONVENTIONS.md` §1.2）：
 
-共 18 个能力包，按领域分组。端口为 docker-compose 开发栈的默认值；当宿主机端口与容器内端口不同（为避免共享开发机上的端口冲突）时，两者都标注。
-
-### 身份与访问（Identity & access）
-
-| 能力包 | 端口（容器 / 开发宿主机） | 作用 |
-|---|---|---|
-| `identity` | 8001 | 用户、会话、MFA（TOTP）、SSO / 社交登录、SCIM，以及密码 / MFA / 会话策略——封装 Keycloak Admin API。 |
-| `authz` | 8002 | 常规路径走本地 RBAC，外加基于 OPA 的 ABAC；单次与批量权限校验，以及供 UI/搜索过滤的 `list-accessible-ids`。 |
-| `org` | 8003 | 四级组织树（租户 → 组织单元 → 团队 → 用户），含子树操作、租户路由与套餐档位迁移。 |
-| `pam` | 8015 / 18015 | 特权访问管理：JIT 提权、四眼审批、特权会话录制、高危命令拦截。 |
-| `api-platform` | 8010 / 18010 | 租户内部 API 平台：分级 API Key、OAuth2 服务器、带投递审计的签名 Webhook。 |
-
-### 数据与密码（Data & crypto）
-
-| 能力包 | 端口（容器 / 开发宿主机） | 作用 |
-|---|---|---|
-| `crypto` | 8004 | 唯一密码学边界：信封加密（KEK 永不离开 Vault）、签名/验签、Argon2id 哈希、完整 KEK 生命周期。 |
-| `data-protection` | 8016 / 18016 | 脱敏与假名化、带四眼审批的数据导出 / DSAR 流程、PIPL 跨境检查、同意管理。 |
-| `dlp` | 8007（开发宿主机 18007） | 五级数据分类（`L1_PUBLIC`→`L5_SECRET`）外加 DLP 管控：标签、密级、规则、扫描器、事件。 |
-| `storage` | _库（无网络端口）_ | 基于 boto3 的 MinIO/S3 存储抽象，提供租户隔离的 key 布局、配额钩子与 OTel span——以库形式被引入，不单独部署。 |
-
-### 治理与合规（Governance & compliance）
-
-| 能力包 | 端口（容器 / 开发宿主机） | 作用 |
-|---|---|---|
-| `compliance` | 8014（开发宿主机 18014） | 合规模式的权威来源；ROPA、DPIA、DSAR 编排、等保自评估、SOC 2 / ISO 27001 报告导出。 |
-| `audit` | 8013 | 不可篡改审计中枢：outbox → ClickHouse → S3 WORM，带哈希链与来自 `crypto` 的数字签名。 |
-| `security-ops` | 8019 / 18019 | 平台级安全运营：SSDLC 扫描、漏洞 SLA、SBOM、事件响应、渗透测试与混沌演练。 |
-
-### 平台（Platform）
-
-| 能力包 | 端口（容器 / 开发宿主机） | 作用 |
-|---|---|---|
-| `billing` | 8007（开发宿主机 8017） | 套餐、订阅、按维度的配额、用量计量与发票——离线 / SaaS 双模式。 |
-| `lifecycle` | 8006 / 18006 | 留存策略、回收站、法务保留（Legal Hold）、备份/恢复，以及签名的 PDF 销毁证书。 |
-| `notification` | 8008 / 18008 | 多通道通知中心：模板、订阅、8 通道扇出投递、带死信队列的重试、投递审计。 |
-| `search` | 8009 | 基于自托管 OpenSearch 的统一跨资源搜索，强制注入租户 + ACL 过滤。 |
-| `feature-flag` | 8012 | 封装自托管 Unleash 的轻量多租户特性开关服务，带 DB 持久化覆盖与紧急 kill-switch。 |
-| `llm-gateway` | 8011 | 所有 LLM 调用的唯一租户隔离出口：封装 LiteLLM，暴露 OpenAI 与 Anthropic 兼容 API，按租户分配虚拟 Key。 |
-
-> **端口说明。** `dlp` 与 `billing` 容器内都用 `8007`；在共享开发机上映射为不同宿主机端口（`18007` 与 `8017`）以避免冲突。`audit`、`compliance`、`data-protection` 容器内分别保持 `8013` / `8014` / `8016`，但在开发栈中暴露为不同宿主机端口。上述数字均为开发栈默认值；生产端口由 Helm chart 设定。
-
-## 通过类型化 SDK 接入
-
-业务代码从不直接引入开源组件——它引入 SDK 并调用某个资源组。
-
-```python
-from foundation_sdk import FoundationClient
-
-client = FoundationClient.from_env()  # 读取 FOUNDATION_API_URL + FOUNDATION_API_TOKEN
-
-user = client.identity.get_user(user_id)
-token = client.crypto.encrypt(plaintext=secret, kek="default")
-client.billing.check_quota(dimension="api_calls", amount=1)
-reply = client.llm_gateway.chat(messages=[...])
+```
+packages/<capability>/
+├── src/foundation_<capability>/
+│   ├── api/v1/        FastAPI router —— HTTP 入口，带版本
+│   ├── domain/        领域模型
+│   ├── services/      业务逻辑 —— 纯 Python，不 import FastAPI
+│   └── adapters/      出站适配器：DB、Keycloak、OPA、Redis…
+└── tests/
 ```
 
-| SDK | 状态 | 说明 |
-|---|---|---|
-| **Python**（`foundation_sdk`） | 就绪（v0.1.0） | 聚合全部 17 个资源组；可选 `[fastapi]` extra 附带请求上下文中间件 + RFC 7807 problem-details。所有服务 URL 由单一 base URL 推导。 |
-| **TypeScript**（`@foundation/sdk`） | 就绪（v0.1.0） | 与 Python 接口 1:1 对齐——相同的资源、错误分类与上下文辅助。零运行时依赖，基于 fetch，双 ESM/CJS。 |
-| **Go** | 规划中 | `sdks/go/` 目前仅为占位；`make sdk-go` 生成器在规划中，尚未生成。 |
+所有服务的错误统一走 RFC 9457 problem+json，错误码稳定且机器可读，
+另有面向终端用户的 `user_message` 字段 —— 详见 [docs/errors.md](docs/errors.md)。
 
-SDK 同时承载租户上下文：当业务服务挂载 SDK 的 FastAPI 中间件后，它会把身份与租户提取进 contextvars，SDK 在出站调用时自动附带 `X-Tenant-Id`。业务代码从不手动传 `tenant_id` 参数。
+---
 
-## 多租户：三道隔离墙
+## 多租户：三道墙
 
-租户隔离不依赖业务代码记得按租户过滤。它由三道互相独立的墙强制保障，设计目标是：即便漏写了 `WHERE tenant_id`，甚至发生 SQL 注入，也无法跨租户：
+这是底座里**后果最严重**的一份契约。租户隔离被强制执行三遍，
+下面的顺序就是某一层失效时的回退顺序：
 
-1. **网关墙。** API 网关从校验过的 JWT 提取 `tenant_id` 并强制注入 `X-Tenant-Id`；客户端无法覆盖。
-2. **应用墙。** 获取数据库连接时，适配器开启事务并执行 `SET LOCAL app.tenant_id`（以及 `app.user_id` / `app.actor`）。
-3. **数据墙。** Postgres 行级安全（`ENABLE` + **`FORCE ROW LEVEL SECURITY`**，每表四条 policy）依据 `current_setting('app.tenant_id')` 过滤每一行。
+1. **网关层** —— 从 JWT 提取 `tenant_id` 并强制注入 `X-Tenant-Id`，业务代码无法覆盖。
+2. **应用层** —— 每次获取数据库连接时执行 `SET LOCAL app.tenant_id`，事务内有效。
+3. **数据层** —— PostgreSQL 行级安全（RLS）过滤每一条查询，并开启
+   `FORCE ROW LEVEL SECURITY`，连表属主也受约束。
 
-`current_setting(..., true)` 在未设置时返回 `NULL`，因此默认是*拒绝*而非*放开*。PgBouncer 必须运行在 transaction 池模式，否则 `SET LOCAL` 会跨租户泄漏——启动健康检查会因此拒绝启动；CI 中还有强制的 RLS fuzz 套件（每服务 1000 次随机跨租户读）。
+结果：业务代码**忘写** `WHERE tenant_id = …` 也不会跨租户泄漏；
+即便应用层存在 SQL 注入，最坏也只能拿到当前租户的数据。
 
-完整基线见 [docs/multi-tenancy.md](docs/multi-tenancy.md)：四类数据库角色（`app_user` / `app_admin` / `app_migrator` / `app_observability`）、policy 模板、SaaS 套餐 → 隔离模式映射，以及 PR 自查清单。
+所有租户表必须带 `tenant_id` 列、启用 RLS + FORCE RLS、至少有一个以 `tenant_id`
+为前导列的复合索引，并定义 select/insert/update/delete 四条 policy。
+四个数据库角色分权 —— `app_user`（受 RLS 约束）、`app_admin`、
+`app_migrator`（唯一持有 `BYPASSRLS`）、`app_observability`。
+**禁止业务代码以 superuser 或 BYPASSRLS 角色连接。**
 
-## 合规现状
+PgBouncer 必须运行在 transaction 或 session 模式；statement 模式会破坏 `SET LOCAL`，
+因此被禁用。
 
-如实区分*现已实现*与*路线图*。
+完整契约与威胁模型见 [docs/multi-tenancy.md](docs/multi-tenancy.md)。
+改动此处需 ≥2 名架构师 sign-off 并记录 ADR。
+`make test-rls-fuzz` 会对所有 package 跑跨租户越权 fuzz。
 
-| 领域 | 状态 |
-|---|---|
-| 等保 2.0 **三级** + PIPL | **已实现基线。** 三级自评估覆盖约 83% 的技术与管理控制项，其余部分被明确记录为客户责任。 |
-| 等保 2.0 **四级** | **已记录的差距——尚未实现。** 一份差距分析列出了约 25 项额外控制（强制访问控制、形式化安全模型、可信计算、APT 检测）；这些明确尚未构建。 |
-| 国密（SM2/SM3/SM4 + GMTLS） / 信创（国产栈） | **路线图中。** 密码学与部署设计已存在（铜锁 Tongsuo 为主、GmSSL 兜底；鲲鹏/飞腾 ARM64，麒麟/UOS），请视为预发布。 |
-| SOC 2 / ISO 27001 | **路线图中。** `compliance` 服务已为导出这些证据而构建，但正式认证项目尚未落地。 |
+---
 
-`compliance` 服务是当前合规模式的唯一权威来源，其他服务读取它以设定自身策略强度（密码规则、留存期、密码算法等）。
+## 谁在用它
 
-## 部署档位
+[**cloud·worker**](https://github.com/chenzefeng09/cloud-worker) —— 一个企业级 AI Agent
+平台（沙箱化 Agent 运行、可复用应用、技能、MCP、知识库）—— 完全构建在本底座之上。
+它负责所有与 Agent 相关的部分；saas-foundation 在其下方负责身份、授权、组织、计费、
+审计、LLM 网关、存储、密码学、DLP 与特性开关。
 
-一份 Helm umbrella chart，按 values profile 切换——chart 主体保持不变。
+如果你在评估是否用本底座承载自己的产品，这条切分线值得一读：
+见 [cloud·worker 的「与 saas-foundation 的关系」](https://github.com/chenzefeng09/cloud-worker/blob/main/README.zh-CN.md#与-saas-foundation-的关系)。
 
-| 档位 | 目标 | 形态 |
-|---|---|---|
-| `small` | POC / 单节点 K3s / ≤50 用户 | 所有第三方依赖内嵌，1 副本，无 HA/mTLS/弹性。基线 8C/32G 单节点。 |
-| `medium` | 企业私有云 / 3–10 节点 / HA | 3+ 副本带 HPA，强制独立 PgBouncer（transaction 模式），cert-manager mTLS，机密来自 Vault/External Secrets。 |
-| `large` | 跨可用区 / 1000+ 用户 / SaaS 主集群 | 所有第三方组件外置，5+ 副本，HPA + KEDA，PodDisruptionBudget，拓扑分散，加固的 Pod 安全上下文，NetworkPolicy。 |
-| `信创`（Xinchuang） | 国产栈私有云 | 在 small/medium 之上叠加 `dataResidency=cn-only`、GMTLS、Tongsuo PKCS#11、多架构（鲲鹏/飞腾）镜像、KingbaseES/DM8 替换。 |
+> **外部使用者请注意**：`foundation-sdk` 尚未发布到公网 PyPI。
+> 消费方需从内部源安装，或在开发阶段从本仓库的兄弟目录检出安装。
+> 详见 [docs/sdk-release.md](docs/sdk-release.md)。
 
-```bash
-cd deploy/helm/foundation
-helm dependency update
-helm install foundation . -f values-small.yaml -n foundation --create-namespace
-```
-
-## 快速开始
-
-```bash
-# 一条命令拉起完整本地依赖栈并初始化：
-# docker-compose 依赖 → 等待 Keycloak realm → Vault transit / MinIO buckets / KC orgs → 健康检查
-make up-full
-```
-
-随后即可体验常见工作流：
-
-```bash
-make migrate && make seed     # 以 app_migrator 跑 alembic upgrade head，再 seed 一个开发租户 + 用户
-make test                     # 跨全部 package 跑 pytest
-make test-rls-fuzz            # 强制的 RLS 跨租户 fuzz 套件
-make scan && make sbom        # 本地安全门：gitleaks + semgrep + 许可证检查，再生成 CycloneDX/SPDX SBOM
-make helm-render PROFILE=medium   # 按 profile 渲染 umbrella chart
-```
-
-**前置条件：** Docker Desktop 24+ 且带 Compose v2（Windows 经 WSL2）、Python 3.12+ 且带 Poetry 1.8+、Helm 3.15+ 与 kubectl、Node.js 20+（用于 Spectral lint / TypeScript SDK 构建）。Makefile 面向 macOS/Linux（bash + GNU coreutils）。
+---
 
 ## 仓库结构
 
 ```
 saas-foundation/
-├── packages/        # 18 个能力服务（identity / authz / org / billing / audit / ...）
-├── sdks/            # 业务层 SDK——python（就绪） / typescript（就绪） / go（规划中）
-├── contracts/       # OpenAPI 3.1 规格（权威来源）、gRPC proto、OPA bundle 模板
-├── deploy/          # Helm umbrella chart、docker-compose 开发栈、离线包（规划中）
+├── packages/           17 个能力服务 + storage 库
+├── sdks/
+│   ├── python/         完整 —— FoundationClient、CookieSigner、FastAPI 辅助层
+│   ├── typescript/     部分可用
+│   └── go/             占位
+├── contracts/
+│   ├── openapi/        每个服务一份 OpenAPI 3.1 契约 + 公共组件
+│   ├── opa-bundles/    OPA 策略包
+│   └── proto/          gRPC 定义
+├── deploy/
+│   ├── docker-compose/ 本地开发栈
+│   ├── helm/           umbrella chart，small/medium/large 三档 profile
+│   └── offline-bundle/ 离线（无外网）安装打包
 ├── docs/
-│   ├── design/      # 各服务滚动细化的设计文档
-│   └── adr/         # 架构决策记录
-└── tests/
-    ├── e2e/         # 跨服务集成测试
-    └── conformance/ # 业务接入自检套件
+│   ├── CONVENTIONS.md  架构总约定 —— 先读这份
+│   ├── design/         各服务详细设计
+│   └── adr/            架构决策记录
+├── tests/
+│   ├── conformance/    业务方接入底座的自检套件
+│   ├── integration/    跨服务集成
+│   ├── e2e/
+│   └── security/       RLS 越权 fuzz
+└── tools/              CI 与开发工具
 ```
 
-契约层是权威来源：18 份 OpenAPI 3.1 规格由 Spectral 校验，含六条机器强制规则（所有路径在 `/v1` 下、`snake_case` JSON、共享 `$ref` 错误体、四段式错误码 `FOUNDATION.<SVC>.<CAT>.<NAME>`、唯一 operation ID、显式 security），并以破坏性变更检测把关 PR。SDK、文档与 mock 均由它生成。
+---
+
+## 快速开始
+
+**前置条件**：Docker（含 Compose v2）、Python 3.12、Poetry。
+
+```bash
+git clone https://github.com/chenzefeng09/saas-foundation.git
+cd saas-foundation
+```
+
+一条龙拉起整个开发栈 —— 基础设施、服务、初始化与健康检查：
+
+```bash
+make up-full
+```
+
+它会依次执行 `make up`（缺 `.env` 时从 `.env.example` 复制，启动 Postgres、Keycloak、
+ClickHouse、OpenSearch、Vault、MinIO、OPA、Unleash 及各服务）、等待容器就绪、
+执行 `post-up-init`（Vault transit 密钥、MinIO bucket、Keycloak Organizations），
+最后对所有服务跑健康检查。
+
+灌入测试数据（dev 租户 + 测试用户）：
+
+```bash
+make seed
+```
+
+常用命令：
+
+```bash
+make ps
+```
+
+```bash
+make logs SVC=keycloak
+```
+
+```bash
+make healthcheck
+```
+
+```bash
+make down
+```
+
+`make nuke` 会停服务**并删除数据卷**，不可恢复。
+
+更多细节见 [docs/dev-quickstart.md](docs/dev-quickstart.md)。
+
+---
+
+## 使用 SDK
+
+业务方依赖 `foundation_sdk`，而不是逐个依赖各服务：
+
+```python
+from foundation_sdk import FoundationClient, FoundationClientSettings, tenant_context
+
+client = FoundationClient(FoundationClientSettings(...))
+
+with tenant_context("tnt_..."):
+    decision = await client.authz.check(user_id=..., action="document.read",
+                                        resource_type="document")
+```
+
+对 FastAPI 应用，SDK 还提供中间件层 —— 请求上下文透传、RFC 9457 problem+json
+异常处理、租户/用户提取：
+
+```python
+from foundation_sdk.fastapi import (
+    install_request_context, register_problem_details, get_tenant_id, get_user_id,
+)
+
+install_request_context(app, service_name="my-service", service_version="1.0.0")
+register_problem_details(app)
+```
+
+BFF 所需的签名会话 Cookie 由 `CookieSigner` / `CookieSignerSettings` 提供。
+
+版本策略与升级流程见 [docs/sdk-release.md](docs/sdk-release.md)。
+
+---
+
+## 开发
+
+```bash
+make lint          # 全 package ruff check + mypy
+```
+
+```bash
+make test          # 全 package pytest
+```
+
+```bash
+make test-rls-fuzz # 跨租户越权 fuzz（tests/security/）
+```
+
+```bash
+make migrate       # 以 app_migrator 跑 alembic upgrade head
+```
+
+安全与供应链：
+
+```bash
+make scan          # gitleaks + semgrep + 许可证检查
+```
+
+```bash
+make sbom          # 生成 CycloneDX + SPDX
+```
+
+策略相关：
+
+```bash
+make opa-test      # OPA 策略单元测试
+```
+
+Helm：
+
+```bash
+make helm-lint     # lint 三档 profile
+```
+
+动手写代码前请先读 [docs/CONVENTIONS.md](docs/CONVENTIONS.md) —— 它约束服务命名、
+包结构、API 版本、错误处理与 SDK 形态。**违反约定的 PR 不予合并。**
+
+---
+
+## 部署
+
+**本地开发** —— docker-compose，见上文。
+
+**Kubernetes** —— Helm umbrella chart，三档 profile：
+
+| Profile | 适用场景 |
+|---|---|
+| `small` | 单节点 / 边缘 / PoC |
+| `medium` | 标准生产，适度 HA |
+| `large` | 完整 HA 与横向扩展 |
+
+```bash
+make helm-render PROFILE=medium
+```
+
+**离线部署** —— `deploy/offline-bundle/` 把镜像与 chart 打包，用于无外网环境，
+这也是私有化交付的默认假设。
+
+---
+
+## 合规
+
+合规在本底座里是**设计输入**，而不是事后补的认证工作。
+
+- **等保 2.0 三级**（GB/T 22239-2019）—— 自评将 211 项技术控制中的 176 项（83%）
+  与 70 项管理控制中的 58 项（83%）映射到底座能力，见
+  [docs/equal-protection-checklist-v1.md](docs/equal-protection-checklist-v1.md)，
+  以及[四级差距分析](docs/equal-protection-level4-gap-v1.md)。
+- **PIPL** —— 同意管理、跨境传输记录、DSAR 与 ROPA 由 `compliance` 与
+  `data-protection` 承载。
+- **信创软硬件** —— ARM64（鲲鹏 920、飞腾 FT-2000/4 与 S2500）与 x86_64（海光、兆芯）
+  已适配，龙芯在计划中，见[信创部署指南](docs/xinchuang-deployment-guide-v1.md)。
+- **审计证据** —— `audit` 服务产出哈希链 + 数字签名 + WORM 存储的日志；
+  RLS 是数据库层强制行为，可直接作为证据出示给审计方，而非靠口头论证。
+
+SOC 2 与 ISO 27001 是**计划中的对齐目标，并非已获得的认证**。
+
+---
 
 ## 文档
 
-- [架构总约定](docs/CONVENTIONS.md)——服务命名、包结构、URL/版本、分页、SDK 兼容策略。具约束力的顶层契约。
-- [多租户与 RLS 基线](docs/multi-tenancy.md)——三道隔离墙、数据库角色、RLS policy 模板、SaaS 套餐映射。
-- [开发快速上手](docs/dev-quickstart.md)——把本地栈跑起来。
-- 各服务设计文档位于 [docs/design/](docs/design/)；架构决策位于 [docs/adr/](docs/adr/)。
+| 主题 | 文档 |
+|---|---|
+| **架构总约定 —— 先读这份** | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) |
+| 多租户与 RLS 基线 | [docs/multi-tenancy.md](docs/multi-tenancy.md) |
+| 错误码与错误处理 | [docs/errors.md](docs/errors.md) |
+| 本地开发快速上手 | [docs/dev-quickstart.md](docs/dev-quickstart.md) |
+| SDK 发布与升级策略 | [docs/sdk-release.md](docs/sdk-release.md) |
+| 各服务详细设计 | [docs/design/](docs/design/) |
+| Helm chart | [deploy/helm/README.md](deploy/helm/README.md) |
+| OpenAPI 契约 | [contracts/openapi/](contracts/openapi/) |
 
-## 贡献
+部分设计文档为英文。
 
-欢迎贡献。请先阅读[架构总约定](docs/CONVENTIONS.md)——它具约束力，其中最关乎安全的是[多租户 / RLS 基线](docs/multi-tenancy.md)。新增租户表必须通过 RLS 检查（FORCE RLS、以 tenant_id 为前导列的索引、四条 policy、fuzz 测试）；CI 强制执行格式化、类型检查、安全扫描、许可证检查与 OpenAPI lint。
+---
 
-## 安全
+## 参与贡献
 
-如果你发现安全漏洞，请负责任地通过邮件 **chenzefeng09@gmail.com** 报告。请勿为涉及安全的问题公开提交 issue。
+- 先读 [docs/CONVENTIONS.md](docs/CONVENTIONS.md)。它是**契约**，不是风格建议。
+- 保持 `make lint` 与 `make test` 通过。
+- 涉及租户表的 schema 改动必须满足 [docs/multi-tenancy.md](docs/multi-tenancy.md)
+  并通过 `make test-rls-fuzz`。
+- 改动多租户基线或 CONVENTIONS 需 ≥2 名架构师 sign-off 并在 `docs/adr/` 下记录 ADR。
+- 跨 saas-foundation / 消费方边界的改动需要在对方仓库提配套 PR —— 请在描述中说明。
+- 贡献内容按 Apache 2.0 接受。
+
+---
 
 ## 许可证
 
-依据 Apache License 2.0 授权。见 [LICENSE](./LICENSE) 与 [NOTICE](./NOTICE)。
+采用 **Apache License 2.0** —— 见 [LICENSE](LICENSE)。
 
-版权所有 2026 The SaaS Foundation Authors。
+```
+Copyright 2026 The saas-foundation Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+底座所封装的开源组件 —— Keycloak、OPA、PostgreSQL、Redis、ClickHouse、OpenSearch、
+Vault、MinIO、Unleash、LiteLLM —— 各自遵循其原有许可证。

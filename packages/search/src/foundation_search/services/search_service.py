@@ -12,20 +12,37 @@ Architecture:
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import ulid
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_search.adapters.authz_client import AccessibleIds, AuthzClient, get_authz_client
 from foundation_search.adapters.opensearch_client import OpenSearchClient, get_opensearch_client
+from foundation_search.adapters.security_attributes_client import (
+    LEVEL_RANK,
+    SecurityAttributesClient,
+    get_security_attributes_client,
+)
+from foundation_search.domain.base import ActorKind
 from foundation_search.domain.models import Outbox, SearchIndex, SearchQueryLog
-from foundation_search.errors import SEARCH_BACKEND_UNAVAILABLE, FoundationError
+from foundation_search.errors import ACCESS_DENIED, SEARCH_BACKEND_UNAVAILABLE, FoundationError
 from foundation_search.observability import get_logger
 
 log = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _AclContext:
+    """One query's authoritative Authz result, reused for OS and SoT checks."""
+
+    os_filter: dict[str, Any] | None
+    accessible_ids: frozenset[str]
+    all_in_tenant: bool
+    service_query: bool
 
 
 class SearchService:
@@ -35,9 +52,11 @@ class SearchService:
         self,
         os_client: OpenSearchClient | None = None,
         authz_client: AuthzClient | None = None,
+        security_attributes_client: SecurityAttributesClient | None = None,
     ) -> None:
         self._os = os_client or get_opensearch_client()
         self._authz = authz_client or get_authz_client()
+        self._security = security_attributes_client or get_security_attributes_client()
 
     # ------------------------------------------------------------------
     # index_resource — PG write (SoT) + OS double-write
@@ -63,6 +82,13 @@ class SearchService:
         """Index a resource.  PG is SoT; OS gets double-written after PG flush."""
         assert tenant_id, "tenant_id is required"
 
+        sensitivity = await self._security.get_resource_sensitivity(
+            tenant_id=tenant_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+        )
+        sensitivity_rank = LEVEL_RANK[sensitivity]
+
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:32]
         idx = SearchIndex(
             id=f"idx_{ulid.new()!s}",
@@ -77,6 +103,8 @@ class SearchService:
             acl_team_ids=acl_team_ids or [],
             owner_id=owner_id,
             visibility=visibility,
+            sensitivity=sensitivity,
+            sensitivity_rank=sensitivity_rank,
             metadata_json=metadata or {},
         )
         session.add(idx)
@@ -101,11 +129,14 @@ class SearchService:
             "acl_team_ids": acl_team_ids or [],
             "owner_id": owner_id,
             "visibility": visibility or "PRIVATE",
+            "sensitivity": sensitivity,
+            "sensitivity_rank": sensitivity_rank,
             "indexed_at": datetime.now(UTC).isoformat(),
         }
         try:
             await self._os.index_doc(
                 tenant_id=tenant_id,
+                resource_type=resource_type,
                 resource_id=resource_id,
                 doc=doc,
             )
@@ -133,6 +164,7 @@ class SearchService:
         resource_types: list[str] | None,
         tags: list[str] | None,
         user_id: str | None,
+        actor: ActorKind,
         cursor: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
@@ -142,20 +174,30 @@ class SearchService:
         """
         assert tenant_id, "tenant_id is required — cross-tenant leakage guard"
 
-        # ------------------------------------------------------------------
-        # 1. Build ACL filter clause
-        # ------------------------------------------------------------------
-        acl_filter = await self._build_acl_filter(
+        acl_context = await self._resolve_acl_context(
             tenant_id=tenant_id,
             user_id=user_id,
+            actor=actor,
             resource_types=resource_types,
         )
 
+        user_clearance = (
+            await self._security.get_user_clearance(tenant_id=tenant_id, user_id=user_id)
+            if user_id
+            else "L1"
+        )
+        clearance_rank = LEVEL_RANK[user_clearance]
+
         # ------------------------------------------------------------------
-        # 2. Assemble OS bool query
+        # 1. Build ACL filter clause
+        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 2. Assemble OS bool query. This is only a candidate pre-filter; the
+        # current Postgres ACL is checked again before any hit is returned.
         # ------------------------------------------------------------------
         filters: list[dict[str, Any]] = [
             {"term": {"tenant_id": tenant_id}},  # MANDATORY — never omitted
+            {"range": {"sensitivity_rank": {"lte": clearance_rank}}},
         ]
 
         if resource_types:
@@ -164,8 +206,8 @@ class SearchService:
         if tags:
             filters.append({"terms": {"tags": tags}})
 
-        if acl_filter is not None:
-            filters.append(acl_filter)
+        if acl_context.os_filter is not None:
+            filters.append(acl_context.os_filter)
 
         must: list[dict[str, Any]] = []
         if q:
@@ -188,12 +230,18 @@ class SearchService:
                 }
             },
             "highlight": {
-                "fields": {"title": {}, "content": {"fragment_size": 150, "number_of_fragments": 2}},
+                "fields": {
+                    "title": {},
+                    "content": {"fragment_size": 150, "number_of_fragments": 2},
+                },
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
             },
             "size": limit,
-            "_source": ["resource_type", "resource_id", "title", "tags", "visibility", "indexed_at"],
+            "_source": [
+                "resource_type", "resource_id", "title", "tags", "visibility",
+                "sensitivity", "indexed_at",
+            ],
         }
 
         # search_after pagination
@@ -201,8 +249,8 @@ class SearchService:
             try:
                 import json as _json
                 query_body["search_after"] = _json.loads(cursor)
-            except Exception:
-                pass  # invalid cursor → start from beginning
+            except (TypeError, ValueError):
+                log.warning("search.invalid_cursor")
 
         # score-based sort + indexed_at for deterministic pagination
         query_body["sort"] = [{"_score": {"order": "desc"}}, {"indexed_at": {"order": "desc"}}]
@@ -219,16 +267,67 @@ class SearchService:
             raise
 
         # ------------------------------------------------------------------
-        # 4. Build response + log query
+        # 4. Resolve current PG SearchIndex rows (SoT) for every OS candidate.
+        # ------------------------------------------------------------------
+        current_rows = await self._load_current_rows(
+            session,
+            tenant_id=tenant_id,
+            hits=result.hits,
+        )
+
+        # ------------------------------------------------------------------
+        # 5. Build response only after current SoT ACL + live DLP checks.
         # ------------------------------------------------------------------
         items = []
         for hit in result.hits:
             src = hit.source
+            hit_resource_type = src.get("resource_type")
+            hit_resource_id = src.get("resource_id")
+            if not isinstance(hit_resource_type, str) or not isinstance(hit_resource_id, str):
+                log.warning("search.invalid_security_identity", hit_id=hit.id)
+                continue
+
+            current_row = current_rows.get((hit_resource_type, hit_resource_id))
+            if current_row is None:
+                # Missing, soft-deleted, or identity-mismatched PG rows are not
+                # searchable even when a stale OS document still exists.
+                log.warning(
+                    "search.missing_current_index_row",
+                    resource_type=hit_resource_type,
+                    resource_id=hit_resource_id,
+                    tenant_id=tenant_id,
+                )
+                continue
+
+            if not self._current_acl_allows(
+                current_row,
+                user_id=user_id,
+                acl_context=acl_context,
+            ):
+                log.info(
+                    "search.stale_acl_hit_blocked",
+                    resource_type=hit_resource_type,
+                    resource_id=hit_resource_id,
+                    tenant_id=tenant_id,
+                )
+                continue
+
+            # The index label is an optimization, not an authority. Revalidate
+            # every candidate against DLP so a post-index classification upgrade
+            # cannot leak a stale L4/L5 title or highlight to an L3 caller.
+            current_sensitivity = await self._security.get_resource_sensitivity(
+                tenant_id=tenant_id,
+                resource_type=hit_resource_type,
+                resource_id=hit_resource_id,
+            )
+            if LEVEL_RANK[current_sensitivity] > clearance_rank:
+                continue
             item: dict[str, Any] = {
-                "resource_type": src.get("resource_type"),
-                "resource_id": src.get("resource_id"),
+                "resource_type": hit_resource_type,
+                "resource_id": hit_resource_id,
                 "title": src.get("title"),
                 "tags": src.get("tags", []),
+                "sensitivity": current_sensitivity,
                 "indexed_at": src.get("indexed_at"),
                 "score": hit.score,
             }
@@ -246,13 +345,15 @@ class SearchService:
             tenant_id=tenant_id,
             query=q,
             user_id=user_id,
-            result_count=result.total,
+            result_count=len(items),
         ))
 
         return {
             "items": items,
             "next_cursor": next_cursor,
-            "total_estimate": result.total,
+            # Live DLP post-filtering makes the OpenSearch total unsafe to expose;
+            # report only the authorized count in this page.
+            "total_estimate": len(items),
         }
 
     # ------------------------------------------------------------------
@@ -264,6 +365,7 @@ class SearchService:
         session: AsyncSession,
         *,
         tenant_id: str,
+        resource_type: str,
         resource_id: str,
         request_id: str,
     ) -> int:
@@ -273,6 +375,7 @@ class SearchService:
         rows = list((await session.scalars(
             select(SearchIndex).where(
                 SearchIndex.tenant_id == tenant_id,
+                SearchIndex.resource_type == resource_type,
                 SearchIndex.resource_id == resource_id,
                 SearchIndex.deleted_at.is_(None),
             )
@@ -284,12 +387,16 @@ class SearchService:
 
         self._emit(
             session, tenant_id, "foundation.search.deindexed",
-            {"resource_id": resource_id}, request_id
+            {"resource_type": resource_type, "resource_id": resource_id}, request_id
         )
 
         # OS delete — tolerate 404 (idempotent), propagate other errors
         try:
-            await self._os.delete_doc(tenant_id=tenant_id, resource_id=resource_id)
+            await self._os.delete_doc(
+                tenant_id=tenant_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
         except FoundationError as e:
             log.error(
                 "opensearch.delete_failed.pg_ok",
@@ -305,24 +412,34 @@ class SearchService:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _build_acl_filter(
+    async def _resolve_acl_context(
         self,
         *,
         tenant_id: str,
         user_id: str | None,
+        actor: ActorKind,
         resource_types: list[str] | None,
-    ) -> dict[str, Any] | None:
-        """Build the ACL bool.filter clause.
+    ) -> _AclContext:
+        """Resolve one Authz result for both candidate and final ACL checks.
 
-        - user_id is None → no ACL filter (service-to-service call, trusted).
+        - Only SERVICE/SYSTEM may query without a user identity.
         - all_in_tenant=True → user has tenant-wide access, no ACL filter needed.
         - otherwise → inject should(visibility/owner/acl_user_ids/acl_team_ids).
         - fail-close: authz error or complete=False → narrow to user-only ACL,
           no team ids (never widen on failure).
         """
         if not user_id:
-            # Trusted service call — no ACL restriction beyond tenant
-            return None
+            if actor not in ("SERVICE", "SYSTEM"):
+                raise FoundationError(
+                    ACCESS_DENIED,
+                    detail="A user-scoped search requires a trusted user identity.",
+                )
+            return _AclContext(
+                os_filter=None,
+                accessible_ids=frozenset(),
+                all_in_tenant=True,
+                service_query=True,
+            )
 
         # Use the first resource_type for ACL lookup (or generic if multiple/none)
         resource_type = (resource_types[0] if resource_types and len(resource_types) == 1
@@ -337,7 +454,12 @@ class SearchService:
         if acl.all_in_tenant:
             # User has tenant-wide visibility — only the tenant filter is needed
             log.debug("acl.all_in_tenant", user_id=user_id, tenant_id=tenant_id)
-            return None
+            return _AclContext(
+                os_filter=None,
+                accessible_ids=frozenset(),
+                all_in_tenant=True,
+                service_query=False,
+            )
 
         # Build should clauses.
         # On fail-close (complete=False) we omit team_ids to never over-grant.
@@ -348,8 +470,9 @@ class SearchService:
         ]
 
         if acl.complete and acl.ids:
-            # Authz returned a complete set of team IDs → safe to add
+            # Scope IDs may identify a team or a concrete resource.
             should.append({"terms": {"acl_team_ids": acl.ids}})
+            should.append({"terms": {"resource_id": acl.ids}})
         elif not acl.complete:
             log.warning(
                 "acl.incomplete.fail_close",
@@ -359,12 +482,70 @@ class SearchService:
             )
             # Intentionally NOT adding team ACL filter — fail-close means narrow
 
-        return {
-            "bool": {
-                "should": should,
-                "minimum_should_match": 1,
-            }
+        accessible_ids = frozenset(acl.ids) if acl.complete else frozenset()
+        return _AclContext(
+            os_filter={
+                "bool": {
+                    "should": should,
+                    "minimum_should_match": 1,
+                }
+            },
+            accessible_ids=accessible_ids,
+            all_in_tenant=False,
+            service_query=False,
+        )
+
+    async def _load_current_rows(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        hits: list[Any],
+    ) -> dict[tuple[str, str], SearchIndex]:
+        """Batch-load active PG rows matching OS candidates by full identity."""
+        keys = {
+            (source.get("resource_type"), source.get("resource_id"))
+            for hit in hits
+            if isinstance((source := hit.source), dict)
+            and isinstance(source.get("resource_type"), str)
+            and isinstance(source.get("resource_id"), str)
         }
+        if not keys:
+            return {}
+
+        rows = list(
+            (
+                await session.scalars(
+                    select(SearchIndex).where(
+                        SearchIndex.tenant_id == tenant_id,
+                        tuple_(SearchIndex.resource_type, SearchIndex.resource_id).in_(keys),
+                        SearchIndex.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        return {(row.resource_type, row.resource_id): row for row in rows}
+
+    @staticmethod
+    def _current_acl_allows(
+        row: SearchIndex,
+        *,
+        user_id: str | None,
+        acl_context: _AclContext,
+    ) -> bool:
+        """Evaluate current PG ACL fields against this query's Authz result."""
+        if acl_context.service_query or acl_context.all_in_tenant:
+            return True
+        if not user_id:
+            return False
+        if row.visibility == "PUBLIC_IN_TENANT" or row.owner_id == user_id:
+            return True
+        if user_id in (row.acl_user_ids or []):
+            return True
+
+        current_acl_ids = set(row.acl_team_ids or [])
+        current_acl_ids.add(row.resource_id)
+        return bool(current_acl_ids & acl_context.accessible_ids)
 
     def _emit(
         self,

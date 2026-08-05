@@ -1,18 +1,17 @@
 """Core authorization decision service.
 
-Decision algorithm (authz-v1 §4.3):
+Decision algorithm (authz-v1 §4.3 + mandatory access control):
     1.  Look up permission_definition for `action`.
         - Unknown permission → PERMISSION_UNKNOWN (422) — strict by design.
-    2.  Kill switch on permission? → KILL_SWITCH_DENY.
-    3.  RBAC: any active binding (not revoked, not expired) granting that
-        permission to user, scoped to the resource? If yes AND no policy_required
-        flag → RBAC_HIT allow.
-    4.  ABAC: if the permission has any of {requires_mfa, requires_4eyes,
-        requires_pam_jit, requires_business_hours} → call OPA with full input.
-    5.  Otherwise → DEFAULT_DENY.
+    2.  Resolve clearance from Identity and sensitivity from DLP.  Callers cannot
+        assert either value; resolution failure denies the request.
+    3.  RBAC: require an active, in-scope binding granting the permission.
+    4.  MAC: require numeric rank(clearance) >= rank(sensitivity).
+    5.  OPA: always evaluate kill-switch, RBAC, MAC, MFA, four-eyes, PAM,
+        business-hours, and compliance rules.  Final allow requires all gates.
 
-Performance: RBAC step targets <2ms (Postgres partial index + Redis lookahead).
-OPA call adds ~5ms in same-pod sidecar. Total budget: P99 < 15ms.
+Performance: Identity and DLP lookups run concurrently inside the provider; the
+reported latency covers those lookups, the RBAC query, and OPA evaluation.
 """
 
 from __future__ import annotations
@@ -26,6 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_authz.adapters.opa_client import OpaClient
+from foundation_authz.adapters.security_attributes import (
+    SECURITY_LEVEL_RANK,
+    SecurityAttributeProvider,
+)
 from foundation_authz.domain.models import (
     PermissionDefinition,
     Role,
@@ -49,8 +52,13 @@ class _EffectiveRole:
 
 
 class CheckService:
-    def __init__(self, opa: OpaClient) -> None:
+    def __init__(
+        self,
+        opa: OpaClient,
+        attributes: SecurityAttributeProvider,
+    ) -> None:
         self._opa = opa
+        self._attributes = attributes
 
     # ------------------------------------------------------------------ public
     async def check(
@@ -79,53 +87,107 @@ class CheckService:
             roles, action=action, resource_type=resource_type, resource_id=resource_id
         )
 
-        # 3. If policy_required → ABAC (OPA) regardless of RBAC result
-        if _policy_required(perm):
-            opa_input = {
-                "user": {"id": user_id, "tenant_id": tenant_id},
-                "action": action,
-                "resource": {
-                    "type": resource_type,
-                    "id": resource_id,
-                },
-                "permission_definition": {
-                    "requires_mfa": perm.requires_mfa,
-                    "requires_4eyes": perm.requires_4eyes,
-                    "requires_pam_jit": perm.requires_pam_jit,
-                    "requires_business_hours": perm.requires_business_hours,
-                    "risk_level": perm.risk_level,
-                },
-                "request": context,
-                "user_roles": [r.role_name for r in roles],
-            }
-            decision = await self._opa.evaluate(opa_input)
+        # 3. Authoritative mandatory-access-control attributes.  In particular,
+        # ignore any clearance/sensitivity keys supplied in ``context``.
+        try:
+            attributes = await self._attributes.resolve(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "authz.security_attributes_unavailable",
+                tenant_id=tenant_id,
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                error=str(exc),
+            )
             latency = (time.perf_counter() - started) * 1000
             return CheckResponse(
-                allowed=decision.allow and matched is not None,
-                decision_path="OPA_HIT",
+                allowed=False,
+                decision_path="DEFAULT_DENY",
                 matched_role=matched.role_name if matched else None,
-                matched_policy=decision.matched_policy,
-                deny_reason=(
-                    None
-                    if (decision.allow and matched)
-                    else (decision.deny_reason or "rbac_or_opa")
-                ),
+                deny_reason="security_attributes_unavailable",
                 latency_ms=round(latency, 2),
             )
 
-        # 4. RBAC alone is authoritative
-        latency = (time.perf_counter() - started) * 1000
-        if matched is not None:
+        user_clearance_rank = SECURITY_LEVEL_RANK.get(attributes.user_clearance)
+        resource_sensitivity_rank = SECURITY_LEVEL_RANK.get(
+            attributes.resource_sensitivity
+        )
+        if user_clearance_rank is None or resource_sensitivity_rank is None:
+            log.warning(
+                "authz.security_attributes_invalid",
+                tenant_id=tenant_id,
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+            latency = (time.perf_counter() - started) * 1000
             return CheckResponse(
-                allowed=True,
-                decision_path="RBAC_HIT",
-                matched_role=matched.role_name,
+                allowed=False,
+                decision_path="DEFAULT_DENY",
+                matched_role=matched.role_name if matched else None,
+                deny_reason="security_attributes_invalid",
                 latency_ms=round(latency, 2),
             )
+
+        clearance_allowed = user_clearance_rank >= resource_sensitivity_rank
+
+        # 4. OPA is mandatory for every valid permission check, not only for
+        # permissions carrying an optional policy flag.  The fixed top-level
+        # keys below cannot be overridden by caller-controlled ``context``.
+        opa_input = {
+            "policy_id": action,
+            "user": {
+                "id": user_id,
+                "tenant_id": tenant_id,
+                "clearance": attributes.user_clearance,
+            },
+            "action": action,
+            "resource": {
+                "type": resource_type,
+                "id": resource_id,
+                "tenant_id": tenant_id,
+                "sensitivity": attributes.resource_sensitivity,
+                # Existing ABAC/compliance rules use a numeric classification.
+                "classification": resource_sensitivity_rank,
+            },
+            "permission_definition": {
+                "requires_mfa": bool(perm.requires_mfa),
+                "requires_4eyes": bool(perm.requires_4eyes),
+                "requires_pam_jit": bool(perm.requires_pam_jit),
+                "requires_business_hours": bool(perm.requires_business_hours),
+                "risk_level": perm.risk_level,
+            },
+            "request": context,
+            "user_roles": [r.role_name for r in roles],
+            # This is derived from the database-backed RBAC match above.  OPA
+            # never consumes a caller assertion for this gate.
+            "rbac": {"matched": matched is not None},
+        }
+        decision = await self._opa.evaluate(opa_input)
+
+        allowed = matched is not None and clearance_allowed and decision.allow
+        latency = (time.perf_counter() - started) * 1000
+        if matched is None:
+            deny_reason = "no_matching_binding"
+        elif not clearance_allowed:
+            deny_reason = "clearance_insufficient"
+        elif not decision.allow:
+            deny_reason = decision.deny_reason or "opa_policy_denied"
+        else:
+            deny_reason = None
+
         return CheckResponse(
-            allowed=False,
-            decision_path="DEFAULT_DENY",
-            deny_reason="no_matching_binding",
+            allowed=allowed,
+            decision_path="OPA_HIT",
+            matched_role=matched.role_name if matched else None,
+            matched_policy=decision.matched_policy,
+            deny_reason=deny_reason,
             latency_ms=round(latency, 2),
         )
 
@@ -142,13 +204,18 @@ class CheckService:
     ) -> ListAccessibleIdsResponse:
         """Return the set of scope_ids the user can perform *action* on.
 
-        Algorithm (pure RBAC, no OPA):
+        Algorithm (pure RBAC candidate enumeration, no MAC/OPA):
           1. Load all effective bindings for the user in this tenant.
           2. For each binding whose permissions include *action* (exact or wildcard):
              - TENANT / GLOBAL_SYSTEM scope → user has access to ALL resources;
                return immediately with all_in_tenant=True, ids=[], complete=True.
              - TEAM / ORG_UNIT / RESOURCE scope → collect scope_id into the result set.
           3. Truncate to *max* entries; if truncated set complete=False.
+
+        Security note: this endpoint does NOT fetch per-resource sensitivity and
+        therefore never claims that its result is clearance-filtered.  Callers must
+        run ``check`` for each concrete resource (or apply an equivalent trusted DLP
+        filter) before returning data.
 
         Note: resource_type is accepted for forward-compatibility (future: scope walk
         by resource type).  The current RBAC model does not index bindings by
@@ -383,17 +450,6 @@ class CheckService:
                 continue
             return r
         return None
-
-
-def _policy_required(perm: PermissionDefinition) -> bool:
-    return any(
-        (
-            perm.requires_mfa,
-            perm.requires_4eyes,
-            perm.requires_pam_jit,
-            perm.requires_business_hours,
-        )
-    )
 
 
 def _wildcard_match(permissions: Iterable[str], action: str) -> bool:

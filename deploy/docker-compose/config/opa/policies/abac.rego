@@ -7,7 +7,7 @@ import future.keywords.if
 import future.keywords.in
 import future.keywords.contains
 
-default allow := true   # 无 ABAC 限制时通过
+default allow := false
 default deny_reason := "abac.unspecified"
 
 allow if {

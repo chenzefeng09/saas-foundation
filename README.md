@@ -1,232 +1,461 @@
 # SaaS Foundation
 
-English | [中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![API](https://img.shields.io/badge/API-OpenAPI%203.1-6ba539.svg)](contracts/openapi/)
+[![Errors](https://img.shields.io/badge/errors-RFC%209457-informational.svg)](docs/errors.md)
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![Language: Python 3.12](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
-[![SDK: Python | TypeScript](https://img.shields.io/badge/SDK-Python%20%7C%20TypeScript-2b7489.svg)](#consume-it-from-a-typed-sdk)
-[![Kubernetes 1.24+](https://img.shields.io/badge/kubernetes-1.24%2B-326CE5.svg?logo=kubernetes&logoColor=white)](#deployment-profiles)
+**English** · [简体中文](README.zh-CN.md)
 
-> A reusable, private-cloud-first enterprise SaaS foundation. It packages identity, authorization, organization, billing, audit, compliance, cryptography, data protection, DLP, an LLM gateway and more into a set of capability services — all consumed through a typed SDK, so your business code never touches Keycloak, OPA, ClickHouse, OpenSearch or LiteLLM directly.
+A reusable enterprise SaaS platform base: **17 independently deployable services**
+covering identity, authorization, organization, billing, audit, compliance, DLP, crypto,
+notification, search, LLM gateway and more — plus the SDK your application uses to reach
+them.
 
-SaaS Foundation is a standalone enterprise base that any business system can build on. It turns the hard, cross-cutting concerns of a multi-tenant product — *who can do what, to which tenant's data, under which compliance regime, and how it's all audited* — into well-bounded services with a single client library in front of them. Each service wraps a battle-tested open-source engine and exposes a stable, versioned REST/JSON contract; the SDK aggregates them so a business developer writes `client.identity.get_user(...)` or `client.crypto.encrypt(...)` and never learns the engine underneath.
+The point is a hard line between platform plumbing and product code. Your application
+imports `foundation_sdk` and calls foundation services over HTTP; it never talks to
+Keycloak, OPA, ClickHouse, OpenSearch, LiteLLM, Vault or MinIO directly. Those are
+implementation details the base owns, and can swap, without your code noticing.
 
-It is also the base that [Agent Platform](https://github.com/chenzefeng09/agent-platform) is built on top of — Agent Platform imports the Foundation SDK and calls Foundation services for identity, authorization, billing, audit and the LLM gateway.
+[**cloud·worker**](https://github.com/chenzefeng09/cloud-worker) is the first product
+built on this base — see [Who uses this](#who-uses-this).
+
+> **Project status.** In active development, deployed for internal pilots — not yet 1.0.
+> Service interfaces still move. The `go` SDK is a placeholder; Python is complete and
+> TypeScript is partial.
+
+---
+
+## Table of contents
+
+- [Design goals](#design-goals)
+- [What's inside](#whats-inside)
+- [Architecture](#architecture)
+- [Multi-tenancy: three walls](#multi-tenancy-three-walls)
+- [Who uses this](#who-uses-this)
+- [Repository layout](#repository-layout)
+- [Quick start](#quick-start)
+- [Using the SDK](#using-the-sdk)
+- [Development](#development)
+- [Deployment](#deployment)
+- [Compliance](#compliance)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Design goals
 
-- **Private-cloud first.** The default target is the customer's own data center: Kubernetes 1.24+, offline / air-gapped install via a Helm umbrella chart. SaaS is a profile of this, not the other way around.
-- **SaaS-compatible via profiles.** The same chart serves multi-tenant SaaS by switching a values profile. Isolation strength scales from shared-table to schema-per-tenant to database-per-tenant to a dedicated cluster — Row-Level Security stays on in every tier.
-- **Compliance built in.** A China DJCP/Dengbao (等保) 2.0 level-3 and PIPL baseline ship today, with 国密 (SM) cryptography / 信创 (domestic-stack) support and SOC 2 / ISO 27001 evidence export on the roadmap.
-- **Business-zero-coupling via SDK.** Business code imports the SDK and nothing else. It never depends on, configures, or reaches the underlying open-source components — those live behind the capability services and can evolve without touching business code.
+- **Private-cloud first** — the default target is a customer's own datacentre: K8s 1.24+,
+  air-gapped install, no outbound calls required.
+- **SaaS-capable from the same chart** — flip a profile to get multi-tenant SaaS with
+  per-tier isolation, instead of maintaining two codebases.
+- **Zero component awareness in business code** — applications import the SDK. They never
+  see Keycloak, OPA, LiteLLM, Vault or MinIO, so those can be replaced without touching
+  product code.
+- **Compliance as a built-in, not a retrofit** — Chinese MLPS 2.0 Level 3 and PIPL are
+  covered by design; SM cryptography and domestic hardware come next.
+- **Three sizes** — `small` / `medium` / `large` Helm profiles, HA and scaling included.
 
-## How it fits together
+---
 
-A business service depends on the SDK, the SDK talks to the capability services over REST/JSON, and each capability service is the *only* thing that talks to the open-source engine it wraps.
+## What's inside
 
-```mermaid
-flowchart TB
-    biz["Business service<br/>(e.g. Agent Platform)"]
-    sdk["Foundation SDK<br/>(Python · TypeScript · Go planned)"]
+Seventeen services, each owning exactly one capability. One capability per service is a
+rule, not a guideline — new capability, new service.
 
-    biz -->|"client.identity.* / client.crypto.* / ..."| sdk
+| Service | Port | Responsibility |
+|---|---|---|
+| `identity` | 8001 | Sessions, users, MFA, SSO, SCIM, password/login policy |
+| `authz` | 8002 | Authorization — RBAC and OPA/ABAC on parallel tracks |
+| `org` | 8003 | Tenant → OU → Team → User hierarchy |
+| `crypto` | 8004 | Envelope encryption, KEK lifecycle, signatures, password hashing |
+| `lifecycle` | 18006 | Retention, recycle bin, legal hold, destruction certificates, backup orchestration |
+| `dlp` | 18007 | Data loss prevention + content classification |
+| `billing` | 8017 | Metering and billing — dual-mode (private licence + SaaS subscription) |
+| `notification` | 18008 | Email, webhook, WebSocket, DingTalk, Feishu, WeCom |
+| `search` | 8009 | OpenSearch wrapper with ACL-aware result filtering |
+| `api-platform` | 18010 | API keys, OAuth apps, outbound webhooks |
+| `llm-gateway` | 8011 | LiteLLM wrapper — provider routing, virtual keys, quota |
+| `feature-flag` | 8012 | Unleash wrapper |
+| `audit` | 8013 | Immutable audit log: OTel → ClickHouse → S3 WORM, hash-chained and signed |
+| `compliance` | 18014 | ROPA, DPIA, DSAR, compliance reporting |
+| `pam` | 18015 | Privileged access management |
+| `data-protection` | 18016 | Masking engine, data destruction, cross-border transfer, consent |
+| `security-ops` | 18019 | SSDLC, vulnerability SLA, SBOM, incident response |
 
-    subgraph cap["Capability services — /api/&lt;service&gt;/v1"]
-        direction LR
-        idsvc["identity · authz · org<br/>pam · api-platform"]
-        datasvc["crypto · data-protection<br/>dlp · storage"]
-        govsvc["compliance · audit<br/>security-ops"]
-        platsvc["billing · lifecycle · notification<br/>search · feature-flag · llm-gateway"]
-    end
+Plus **`storage`** — not a service but a library: a boto3-based S3/MinIO client with
+tenant-scoped key layout, quota hooks and OTel instrumentation.
 
-    sdk -->|"REST/JSON, bearer auth, X-Tenant-Id"| cap
+Ports above are the docker-compose dev-stack host ports. Several services are published
+on a `1xxxx` host port to avoid collisions (`billing` 8017→8007, `notification`
+18008→8008, and so on) — see `deploy/docker-compose/dev.yml`.
 
-    subgraph oss["Wrapped open-source engines"]
-        direction LR
-        kc["Keycloak"]
-        opa["OPA"]
-        ch["ClickHouse"]
-        os["OpenSearch"]
-        vault["Vault transit / HSM"]
-        litellm["LiteLLM Proxy"]
-        unleash["Unleash"]
-        s3["MinIO / S3"]
-    end
+### Open-source components underneath
 
-    idsvc --> kc
-    idsvc --> opa
-    govsvc --> ch
-    platsvc --> os
-    datasvc --> vault
-    platsvc --> litellm
-    platsvc --> unleash
-    datasvc --> s3
+| Concern | Component | Fronted by |
+|---|---|---|
+| Identity provider | Keycloak | `identity` |
+| Policy engine | OPA | `authz` |
+| Relational store | PostgreSQL + PgBouncer | all services |
+| Cache / queue | Redis | several |
+| Audit warehouse | ClickHouse | `audit` |
+| Search index | OpenSearch | `search` |
+| Secrets / KMS | Vault (transit) | `crypto` |
+| Object storage | MinIO (S3-compatible) | `storage` |
+| Feature flags | Unleash | `feature-flag` |
+| LLM routing | LiteLLM | `llm-gateway` |
+| Telemetry | OpenTelemetry, Jaeger, Prometheus | all services |
+
+Business code touches none of these directly. That indirection is the product.
+
+---
+
+## Architecture
+
+```
+                    Your application  (e.g. cloud·worker)
+                              │
+                              │  foundation_sdk  ·  HTTP + OpenAPI 3.1
+                              ▼
+   ┌───────────────────────────────────────────────────────────────────┐
+   │                        foundation services                        │
+   │                                                                   │
+   │  identity   authz    org      crypto     lifecycle   dlp          │
+   │  billing    search   audit    compliance pam         notification │
+   │  api-platform        llm-gateway   feature-flag   data-protection │
+   │  security-ops                                                     │
+   └───┬───────────────────────────────────────────────────────────┬───┘
+       │                                                           │
+       ▼                                                           ▼
+   ┌────────────────────────────────┐        ┌───────────────────────────┐
+   │  Keycloak · OPA · Vault        │        │  PostgreSQL + PgBouncer   │
+   │  ClickHouse · OpenSearch       │        │  (RLS-enforced isolation) │
+   │  MinIO · Redis · Unleash       │        │  Redis                    │
+   │  LiteLLM                       │        └───────────────────────────┘
+   └────────────────────────────────┘
+              ▲
+              └── never reached directly by business code
 ```
 
-## Capability packages
+Every service follows the same internal shape (`docs/CONVENTIONS.md` §1.2):
 
-Eighteen capability packages, grouped by domain. Ports are the development defaults from the docker-compose stack; where a host port differs from the in-container port (to avoid a collision on a shared dev host), both are noted.
-
-### Identity & access
-
-| Package | Port (container / dev host) | What it does |
-|---|---|---|
-| `identity` | 8001 | Users, sessions, MFA (TOTP), SSO / social login, SCIM, and password / MFA / session policy — wraps the Keycloak Admin API. |
-| `authz` | 8002 | RBAC for the common path plus OPA-based ABAC; single and batch permission checks and `list-accessible-ids` for UI/search filtering. |
-| `org` | 8003 | The four-level org tree (Tenant → OrgUnit → Team → User) with subtree ops, tenant routing, and plan tier migration. |
-| `pam` | 8015 / 18015 | Privileged Access Management: JIT elevation, four-eyes approval, recorded privileged sessions, high-risk command blocking. |
-| `api-platform` | 8010 / 18010 | Tenant-internal API platform: scoped API keys, an OAuth2 server, and signed webhooks with delivery audit. |
-
-### Data & crypto
-
-| Package | Port (container / dev host) | What it does |
-|---|---|---|
-| `crypto` | 8004 | The single crypto boundary: envelope encryption (KEK never leaves Vault), signing/verification, Argon2id hashing, full KEK lifecycle. |
-| `data-protection` | 8016 / 18016 | Masking & pseudonymization, data-export / DSAR workflows with four-eyes approval, PIPL cross-border checks, consent management. |
-| `dlp` | 8007 (dev host 18007) | Five-level data classification (`L1_PUBLIC`→`L5_SECRET`) plus DLP enforcement: labels, clearances, rules, scanner, incidents. |
-| `storage` | _library (no network port)_ | A boto3 storage abstraction over MinIO/S3 with tenant-scoped key layout, quota hooks and OTel spans — imported, not deployed. |
-
-### Governance & compliance
-
-| Package | Port (container / dev host) | What it does |
-|---|---|---|
-| `compliance` | 8014 (dev host 18014) | Source of truth for the active compliance mode; ROPA, DPIA, DSAR orchestration, 等保 self-assessment, SOC 2 / ISO 27001 export. |
-| `audit` | 8013 | Immutable audit hub: outbox → ClickHouse → S3 WORM, with a hash chain and digital signatures from `crypto`. |
-| `security-ops` | 8019 / 18019 | Platform-level security operations: SSDLC scans, vulnerability SLAs, SBOM, incident response, pentests and chaos drills. |
-
-### Platform
-
-| Package | Port (container / dev host) | What it does |
-|---|---|---|
-| `billing` | 8007 (dev host 8017) | Plans, subscriptions, per-dimension quotas, usage metering and invoices — dual offline / SaaS modes. |
-| `lifecycle` | 8006 / 18006 | Retention policies, a recycle bin, legal holds, backup/restore, and signed PDF destruction certificates. |
-| `notification` | 8008 / 18008 | Multi-channel notification center: templates, subscriptions, fan-out over 8 channels, retries with a DLQ, delivery audit. |
-| `search` | 8009 | Unified cross-resource search over self-hosted OpenSearch, with mandatory tenant + ACL filter injection. |
-| `feature-flag` | 8012 | Thin multi-tenant feature-flag service over a self-hosted Unleash, with DB-persisted overrides and an emergency kill-switch. |
-| `llm-gateway` | 8011 | The single tenant-isolated egress for all LLM calls: wraps LiteLLM, exposes OpenAI- and Anthropic-compatible APIs, per-tenant virtual keys. |
-
-> **Port notes.** `dlp` and `billing` both run on container port `8007`; on the shared dev host they are mapped to distinct host ports (`18007` and `8017`) to avoid collisions. `audit`, `compliance` and `data-protection` keep container `8013` / `8014` / `8016` but expose different host ports in dev. The numbers above are dev-stack defaults; production ports are set by the Helm chart.
-
-## Consume it from a typed SDK
-
-Business code never imports an open-source component directly — it imports the SDK and calls a resource group.
-
-```python
-from foundation_sdk import FoundationClient
-
-client = FoundationClient.from_env()  # reads FOUNDATION_API_URL + FOUNDATION_API_TOKEN
-
-user = client.identity.get_user(user_id)
-token = client.crypto.encrypt(plaintext=secret, kek="default")
-client.billing.check_quota(dimension="api_calls", amount=1)
-reply = client.llm_gateway.chat(messages=[...])
+```
+packages/<capability>/
+├── src/foundation_<capability>/
+│   ├── api/v1/        FastAPI routers — HTTP entry, versioned
+│   ├── domain/        domain models
+│   ├── services/      business logic — pure Python, no FastAPI import
+│   └── adapters/      outbound: DB, Keycloak, OPA, Redis, …
+└── tests/
 ```
 
-| SDK | Status | Notes |
-|---|---|---|
-| **Python** (`foundation_sdk`) | Ready (v0.1.0) | Aggregates all 17 resource groups; optional `[fastapi]` extra ships request-context middleware + RFC 7807 problem-details. Derives every service URL from one base URL. |
-| **TypeScript** (`@foundation/sdk`) | Ready (v0.1.0) | Mirrors the Python surface 1:1 — same resources, error taxonomy and context helpers. Zero runtime deps, fetch-based, dual ESM/CJS. |
-| **Go** | Planned | `sdks/go/` is a stub; a `make sdk-go` generator is planned but not yet generated. |
+Errors are RFC 9457 problem+json across every service, with stable machine-readable
+codes and a separate user-facing `user_message` — see [docs/errors.md](docs/errors.md).
 
-The SDK also carries the tenant context: when a business service mounts the SDK's FastAPI middleware, it extracts identity and tenant into contextvars, and the SDK automatically attaches `X-Tenant-Id` on outbound calls. Business code never passes a `tenant_id` argument by hand.
+---
 
-## Multi-tenancy: three isolation walls
+## Multi-tenancy: three walls
 
-Tenant isolation does not rely on business code remembering to filter by tenant. It is enforced by three independent walls, designed so that even a forgotten `WHERE tenant_id` — or a SQL injection — cannot cross tenants:
+The most consequential contract in the base. Tenant isolation is enforced three times
+over, and the order below is the fallback order when one layer fails:
 
-1. **Gateway wall.** The API gateway extracts `tenant_id` from the verified JWT and force-injects `X-Tenant-Id`; a client cannot override it.
-2. **Application wall.** On acquiring a DB connection, the adapter opens a transaction and runs `SET LOCAL app.tenant_id` (and `app.user_id` / `app.actor`).
-3. **Data wall.** Postgres Row-Level Security (`ENABLE` + **`FORCE ROW LEVEL SECURITY`**, four policies per table) filters every row by `current_setting('app.tenant_id')`.
+1. **Gateway** — `tenant_id` is extracted from the JWT and injected as `X-Tenant-Id`.
+   Business code cannot override it.
+2. **Application** — every DB connection issues `SET LOCAL app.tenant_id` on acquire,
+   scoped to the transaction.
+3. **Data** — PostgreSQL row-level security filters every query, with
+   `FORCE ROW LEVEL SECURITY` so even table owners are subject to it.
 
-`current_setting(..., true)` returns `NULL` when unset, so the default is *deny*, not *open*. PgBouncer must run in transaction pool mode or `SET LOCAL` would leak across tenants — a startup health check refuses to boot otherwise, and a mandatory RLS fuzz suite (1000 randomized cross-tenant reads per service) runs in CI.
+The result: business code that forgets `WHERE tenant_id = …` still cannot leak across
+tenants, and even a SQL injection is confined to the current tenant.
 
-See [docs/multi-tenancy.md](docs/multi-tenancy.md) for the full baseline: the four DB roles (`app_user` / `app_admin` / `app_migrator` / `app_observability`), policy templates, the SaaS tier → isolation mapping, and the PR self-review checklist.
+Every tenant-scoped table must carry a `tenant_id` column, enable RLS + FORCE RLS, have a
+composite index led by `tenant_id`, and define four policies (select/insert/update/delete).
+Four database roles separate concerns — `app_user` (RLS-bound), `app_admin`,
+`app_migrator` (the only role with `BYPASSRLS`) and `app_observability`. Business code
+connecting as a superuser or a `BYPASSRLS` role is prohibited.
 
-## Compliance posture
+PgBouncer must run in transaction or session mode; statement mode breaks `SET LOCAL` and
+is therefore banned.
 
-Stated honestly as *implemented today* versus *on the roadmap*.
+Full contract and threat model: [docs/multi-tenancy.md](docs/multi-tenancy.md). Changes
+here need two architect sign-offs and an ADR. `make test-rls-fuzz` runs cross-tenant
+escalation fuzzing against every package.
 
-| Area | Status |
-|---|---|
-| 等保 (DJCP/Dengbao) 2.0 **level 3** + PIPL | **Implemented baseline.** The level-3 self-assessment covers ~83% of technical and management controls, with the remainder documented as customer responsibility. |
-| 等保 2.0 **level 4** | **Documented gap — not implemented.** A gap analysis enumerates the ~25 additional controls (mandatory access control, formal security model, trusted computing, APT detection); these are explicitly not yet built. |
-| 国密 (SM2/SM3/SM4 + GMTLS) / 信创 (domestic stack) | **On the roadmap.** Crypto and deployment designs exist (Tongsuo primary, GmSSL fallback; Kunpeng/Phytium ARM64, Kylin/UOS); treat as pre-release. |
-| SOC 2 / ISO 27001 | **On the roadmap.** The `compliance` service is built to export evidence for these; the formal programs are not yet in place. |
+---
 
-The `compliance` service is the single source of truth for the active compliance mode, which other services read to set their own policy strength (password rules, retention, crypto algorithms).
+## Who uses this
 
-## Deployment profiles
+[**cloud·worker**](https://github.com/chenzefeng09/cloud-worker) — an enterprise AI agent
+platform (sandboxed agent runs, reusable Apps, skills, MCP, knowledge) — is built entirely
+on this base. It owns everything agent-shaped; saas-foundation owns identity, authz, org,
+billing, audit, LLM gateway, storage, crypto, DLP and feature flags underneath it.
 
-One Helm umbrella chart, switched by a values profile — the chart body stays the same.
+That split is worth reading if you're evaluating this base for your own product: see
+[cloud·worker's "Relationship with saas-foundation"](https://github.com/chenzefeng09/cloud-worker#relationship-with-saas-foundation).
 
-| Profile | Target | Shape |
-|---|---|---|
-| `small` | POC / single-node K3s / ≤50 users | All third-party deps embedded, 1 replica, no HA/mTLS/autoscaling. Baseline 8C/32G single node. |
-| `medium` | Enterprise private cloud / 3–10 nodes / HA | 3+ replicas with HPA, mandatory standalone PgBouncer (transaction mode), mTLS via cert-manager, secrets from Vault/External Secrets. |
-| `large` | Cross-AZ / 1000+ users / SaaS master cluster | All third-party components external, 5+ replicas, HPA + KEDA, PodDisruptionBudgets, topology spread, hardened pod security contexts, NetworkPolicy. |
-| `信创` (Xinchuang) | Domestic-stack private cloud | Layered over small/medium with `dataResidency=cn-only`, GMTLS, Tongsuo PKCS#11, multi-arch (Kunpeng/Phytium) images, KingbaseES/DM8 substitution. |
+> **Note for external users:** `foundation-sdk` is not published to public PyPI yet.
+> Consumers install it from an internal index or, in development, from a sibling checkout
+> of this repository. See [docs/sdk-release.md](docs/sdk-release.md).
 
-```bash
-cd deploy/helm/foundation
-helm dependency update
-helm install foundation . -f values-small.yaml -n foundation --create-namespace
-```
-
-## Quick start
-
-```bash
-# Bring up the full local dependency stack and initialize it in one shot:
-# docker-compose deps → wait for the Keycloak realm → Vault transit / MinIO buckets / KC orgs → healthcheck
-make up-full
-```
-
-Then explore the typical workflows:
-
-```bash
-make migrate && make seed     # alembic upgrade head (as app_migrator), then seed a dev tenant + users
-make test                     # pytest across all packages
-make test-rls-fuzz            # the mandatory RLS cross-tenant fuzz suite
-make scan && make sbom        # local security gates: gitleaks + semgrep + license check, then CycloneDX/SPDX SBOM
-make helm-render PROFILE=medium   # render the umbrella chart for a profile
-```
-
-**Prerequisites:** Docker Desktop 24+ with Compose v2 (Windows via WSL2), Python 3.12+ with Poetry 1.8+, Helm 3.15+ and kubectl, Node.js 20+ (for the Spectral lint / TypeScript SDK build). The Makefile is macOS/Linux-oriented (bash + GNU coreutils).
+---
 
 ## Repository layout
 
 ```
 saas-foundation/
-├── packages/        # The 18 capability services (identity / authz / org / billing / audit / ...)
-├── sdks/            # Business-layer SDKs — python (ready) / typescript (ready) / go (planned)
-├── contracts/       # OpenAPI 3.1 specs (source of truth), gRPC proto, OPA bundle templates
-├── deploy/          # Helm umbrella chart, docker-compose dev stack, offline bundle (planned)
+├── packages/           17 capability services + the storage library
+├── sdks/
+│   ├── python/         complete — FoundationClient, CookieSigner, FastAPI helpers
+│   ├── typescript/     partial
+│   └── go/             placeholder
+├── contracts/
+│   ├── openapi/        OpenAPI 3.1 spec per service + shared components
+│   ├── opa-bundles/    OPA policy bundles
+│   └── proto/          gRPC definitions
+├── deploy/
+│   ├── docker-compose/ local dev stack
+│   ├── helm/           umbrella chart, small/medium/large profiles
+│   └── offline-bundle/ air-gapped install packaging
 ├── docs/
-│   ├── design/      # Rolling per-service design docs
-│   └── adr/         # Architecture Decision Records
-└── tests/
-    ├── e2e/         # Cross-service integration tests
-    └── conformance/ # Business-onboarding self-check suite
+│   ├── CONVENTIONS.md  the architecture contract — read this first
+│   ├── design/         per-service design docs
+│   └── adr/            architecture decision records
+├── tests/
+│   ├── conformance/    self-check suite for applications adopting the base
+│   ├── integration/    cross-service
+│   ├── e2e/
+│   └── security/       RLS escalation fuzzing
+└── tools/              CI and dev tooling
 ```
 
-The contract layer is the source of truth: 18 OpenAPI 3.1 specs validated by Spectral, with six machine-enforced rules (all paths under `/v1`, `snake_case` JSON, shared `$ref` error bodies, four-segment error codes `FOUNDATION.<SVC>.<CAT>.<NAME>`, unique operation IDs, explicit security) and breaking-change detection gating PRs. SDKs, docs and mocks are generated from it.
+---
+
+## Quick start
+
+**Prerequisites:** Docker with Compose v2, Python 3.12, Poetry.
+
+```bash
+git clone https://github.com/chenzefeng09/saas-foundation.git
+cd saas-foundation
+```
+
+Bring the whole dev stack up — infrastructure, services, initialisation and health checks
+in one shot:
+
+```bash
+make up-full
+```
+
+That runs `make up` (copies `.env.example` to `.env` if missing, starts Postgres,
+Keycloak, ClickHouse, OpenSearch, Vault, MinIO, OPA, Unleash and the services), waits for
+containers to become ready, runs `post-up-init` (Vault transit keys, MinIO buckets,
+Keycloak organizations) and then health-checks everything.
+
+Seed test data — a dev tenant and test users:
+
+```bash
+make seed
+```
+
+Useful targets:
+
+```bash
+make ps
+```
+
+```bash
+make logs SVC=keycloak
+```
+
+```bash
+make healthcheck
+```
+
+```bash
+make down
+```
+
+`make nuke` stops everything **and deletes the volumes** — unrecoverable.
+
+More detail: [docs/dev-quickstart.md](docs/dev-quickstart.md).
+
+---
+
+## Using the SDK
+
+Applications depend on `foundation_sdk` rather than on individual services:
+
+```python
+from foundation_sdk import FoundationClient, FoundationClientSettings, tenant_context
+
+client = FoundationClient(FoundationClientSettings(...))
+
+with tenant_context("tnt_..."):
+    decision = await client.authz.check(user_id=..., action="document.read",
+                                        resource_type="document")
+```
+
+For FastAPI applications the SDK also supplies the middleware layer — request-context
+propagation, RFC 9457 problem+json handlers, and tenant/user extraction:
+
+```python
+from foundation_sdk.fastapi import (
+    install_request_context, register_problem_details, get_tenant_id, get_user_id,
+)
+
+install_request_context(app, service_name="my-service", service_version="1.0.0")
+register_problem_details(app)
+```
+
+Signed session cookies (for a BFF) come from `CookieSigner` / `CookieSignerSettings`.
+
+Version policy and upgrade procedure: [docs/sdk-release.md](docs/sdk-release.md).
+
+---
+
+## Development
+
+```bash
+make lint          # ruff check + mypy across every package
+```
+
+```bash
+make test          # pytest across every package
+```
+
+```bash
+make test-rls-fuzz # cross-tenant escalation fuzzing (tests/security/)
+```
+
+```bash
+make migrate       # alembic upgrade head, as app_migrator
+```
+
+Security and supply chain:
+
+```bash
+make scan          # gitleaks + semgrep + license check
+```
+
+```bash
+make sbom          # CycloneDX + SPDX
+```
+
+Policy work:
+
+```bash
+make opa-test      # OPA policy unit tests
+```
+
+Helm:
+
+```bash
+make helm-lint     # lint all three profiles
+```
+
+Before writing any code, read [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — it governs
+service naming, package structure, API versioning, error handling and SDK shape. PRs that
+violate it are not merged.
+
+---
+
+## Deployment
+
+**Local development** — docker-compose, as above.
+
+**Kubernetes** — a Helm umbrella chart with three profiles:
+
+| Profile | Intended for |
+|---|---|
+| `small` | Single-node / edge / PoC |
+| `medium` | Standard production, moderate HA |
+| `large` | Full HA and horizontal scale |
+
+```bash
+make helm-render PROFILE=medium
+```
+
+**Air-gapped** — `deploy/offline-bundle/` packages images and charts for environments
+with no outbound network access, the default assumption for private-cloud delivery.
+
+---
+
+## Compliance
+
+Compliance is treated as a design input rather than a certification exercise bolted on
+afterwards.
+
+- **MLPS 2.0 Level 3** (GB/T 22239-2019) — self-assessment maps 176 of 211 technical
+  controls (83%) and 58 of 70 management controls (83%) onto base capabilities. See
+  [docs/equal-protection-checklist-v1.md](docs/equal-protection-checklist-v1.md), and
+  [the Level 4 gap analysis](docs/equal-protection-level4-gap-v1.md).
+- **PIPL** — consent management, cross-border transfer records, DSAR and ROPA are handled
+  by `compliance` and `data-protection`.
+- **Domestic hardware and OS** — ARM64 (Kunpeng 920, Phytium FT-2000/4 and S2500) and
+  x86_64 (Hygon, Zhaoxin) are adapted; LoongArch is planned. See the
+  [localization deployment guide](docs/xinchuang-deployment-guide-v1.md).
+- **Audit evidence** — the `audit` service produces a hash-chained, digitally signed,
+  WORM-stored log; RLS is a database-enforced control that can be demonstrated to an
+  auditor rather than argued.
+
+SOC 2 and ISO 27001 alignment is planned, not claimed.
+
+---
 
 ## Documentation
 
-- [Architecture conventions](docs/CONVENTIONS.md) — service naming, package layout, URL/versioning, pagination, the SDK compatibility policy. The binding top-level contract.
-- [Multi-tenancy & RLS baseline](docs/multi-tenancy.md) — the three isolation walls, DB roles, RLS policy templates, SaaS tier mapping.
-- [Developer quick start](docs/dev-quickstart.md) — get the local stack running.
-- Service design docs live under [docs/design/](docs/design/); architecture decisions under [docs/adr/](docs/adr/).
+| Topic | Document |
+|---|---|
+| **Architecture contract — start here** | [docs/CONVENTIONS.md](docs/CONVENTIONS.md) |
+| Multi-tenancy and RLS baseline | [docs/multi-tenancy.md](docs/multi-tenancy.md) |
+| Error codes and handling | [docs/errors.md](docs/errors.md) |
+| Local dev quickstart | [docs/dev-quickstart.md](docs/dev-quickstart.md) |
+| SDK release and upgrade policy | [docs/sdk-release.md](docs/sdk-release.md) |
+| Per-service design docs | [docs/design/](docs/design/) |
+| Helm chart | [deploy/helm/README.md](deploy/helm/README.md) |
+| OpenAPI contracts | [contracts/openapi/](contracts/openapi/) |
+
+Several design documents are written in Chinese.
+
+---
 
 ## Contributing
 
-Contributions are welcome. Please read the [architecture conventions](docs/CONVENTIONS.md) first — they are binding, and the most safety-critical one is the [multi-tenancy / RLS baseline](docs/multi-tenancy.md). New tenant tables must pass the RLS checks (FORCE RLS, tenant-leading index, four policies, fuzz test); CI enforces formatting, typing, security scans, license checks and OpenAPI lint.
+- Read [docs/CONVENTIONS.md](docs/CONVENTIONS.md) first. It is a contract, not a style
+  guide.
+- Keep `make lint` and `make test` green.
+- Schema changes touching tenant-scoped tables must satisfy
+  [docs/multi-tenancy.md](docs/multi-tenancy.md) and pass `make test-rls-fuzz`.
+- Changes to the multi-tenancy baseline or to CONVENTIONS need two architect sign-offs and
+  an ADR under `docs/adr/`.
+- Changes that cross the saas-foundation / consumer boundary need a matching PR in the
+  consuming repository — say so in the description.
+- Contributions are accepted under Apache 2.0.
 
-## Security
-
-If you discover a security vulnerability, please report it responsibly by email to **chenzefeng09@gmail.com**. Do not open a public issue for security-sensitive reports.
+---
 
 ## License
 
-Licensed under the Apache License 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE).
 
-Copyright 2026 The SaaS Foundation Authors.
+```
+Copyright 2026 The saas-foundation Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+The open-source components this base wraps — Keycloak, OPA, PostgreSQL, Redis,
+ClickHouse, OpenSearch, Vault, MinIO, Unleash, LiteLLM — remain under their own licenses.

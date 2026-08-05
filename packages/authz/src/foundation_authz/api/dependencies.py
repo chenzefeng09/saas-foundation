@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_authz.adapters.audit_publisher import AuditPublisher, get_audit_publisher
 from foundation_authz.adapters.opa_client import OpaClient, get_opa_client
+from foundation_authz.adapters.security_attributes import (
+    SecurityAttributeProvider,
+    get_security_attribute_provider,
+)
 from foundation_authz.domain.base import FoundationContext, foundation_context
 from foundation_authz.domain.db import session_scope
 from foundation_authz.errors import PERMISSION_DENIED, FoundationError
@@ -38,8 +42,15 @@ def audit() -> AuditPublisher:
     return get_audit_publisher()
 
 
-def check_service(o: OpaClient = Depends(opa)) -> CheckService:
-    return CheckService(opa=o)
+def security_attributes() -> SecurityAttributeProvider:
+    return get_security_attribute_provider()
+
+
+def check_service(
+    o: OpaClient = Depends(opa),
+    attributes: SecurityAttributeProvider = Depends(security_attributes),
+) -> CheckService:
+    return CheckService(opa=o, attributes=attributes)
 
 
 def role_service(a: AuditPublisher = Depends(audit)) -> RoleService:

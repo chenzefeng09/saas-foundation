@@ -16,6 +16,7 @@
       "owner_id":       { "type": "keyword" },
       "visibility":     { "type": "keyword" },
       "sensitivity":    { "type": "keyword" },
+      "sensitivity_rank": { "type": "integer" },
       "indexed_at":     { "type": "date",    "format": "strict_date_time||epoch_millis" }
     }
   }

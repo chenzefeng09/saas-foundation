@@ -29,22 +29,31 @@ _USER = "usr_01J5DEVUSER000000000000001"
 _LOGIN = {"method": "EMAIL_PASSWORD", "email": "u@example.com", "password": "pw-123456"}
 
 
-def _patch_admin_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub admin_session_scope used by _persist_session (no real DB)."""
+def _patch_admin_scope(
+    monkeypatch: pytest.MonkeyPatch, *, mfa_enabled: bool = False
+) -> None:
+    """Stub admin_session_scope used by the login DB-touching helpers (no real DB).
+
+    ``mfa_enabled`` drives what ``execute().scalar_one_or_none()`` yields, which
+    is exactly the row ``_user_requires_mfa`` reads (``select(User.mfa_enabled)``).
+    Leaving it False keeps the honest "row not found" shape every other helper
+    (session-touch, lockout) expects; setting it True exercises the real MFA gate
+    without mocking ``_user_requires_mfa`` itself.
+    """
 
     @asynccontextmanager
     async def _scope(*, tenant_id: str = "", user_id: str = "PLATFORM"):
         # add() must be sync (AsyncMock would yield an un-awaited coroutine);
         # flush()/execute() are async.  execute() returns a Result whose
-        # scalar_one_or_none() / scalars().all() default to None / [] — the
-        # honest "row not found" shape the login / session-touch helpers expect.
+        # scalars().all() defaults to [] and whose scalar_one_or_none() reports
+        # the user's mfa_enabled flag (None ⇒ MFA disabled).
         fake = MagicMock()
         fake.add = MagicMock()
         fake.flush = AsyncMock()
-        empty_result = MagicMock()
-        empty_result.scalar_one_or_none.return_value = None
-        empty_result.scalars.return_value.all.return_value = []
-        fake.execute = AsyncMock(return_value=empty_result)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = mfa_enabled or None
+        result.scalars.return_value.all.return_value = []
+        fake.execute = AsyncMock(return_value=result)
         yield fake
 
     monkeypatch.setattr(
@@ -52,23 +61,11 @@ def _patch_admin_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _set_mfa_enabled(app, enabled: bool) -> None:
-    """Make the db_session override report the user's mfa_enabled flag."""
-    from foundation_identity.api.dependencies import db_session
-    from tests.conftest import FakeAsyncSession, _ExecuteResult
-
-    async def _override():
-        yield FakeAsyncSession(execute_result=_ExecuteResult(scalar=enabled))
-
-    app.dependency_overrides[db_session] = _override
-
-
 # --------------------------------------------------------------------------- #
 async def test_password_login_without_mfa_returns_token(
-    client: AsyncClient, app, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_admin_scope(monkeypatch)
-    _set_mfa_enabled(app, False)
+    _patch_admin_scope(monkeypatch, mfa_enabled=False)
 
     resp = await client.post("/api/identity/v1/sessions", json=_LOGIN)
 
@@ -77,10 +74,11 @@ async def test_password_login_without_mfa_returns_token(
 
 
 async def test_password_login_with_mfa_returns_challenge_no_token(
-    client: AsyncClient, app, mock_redis, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, mock_redis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_admin_scope(monkeypatch)
-    _set_mfa_enabled(app, True)
+    # mfa_enabled=True drives _user_requires_mfa (which reads scalar_one_or_none
+    # off the admin-scope db) through its real path to the 202 challenge branch.
+    _patch_admin_scope(monkeypatch, mfa_enabled=True)
 
     challenge = MfaChallengeResponse(
         challenge_id="chal_login1",

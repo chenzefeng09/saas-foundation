@@ -18,6 +18,8 @@ global:
     enabled: true
     className: nginx
     tls: true
+    externalAuthz:
+      enabled: true
   mtls:
     enabled: true
   complianceModes:

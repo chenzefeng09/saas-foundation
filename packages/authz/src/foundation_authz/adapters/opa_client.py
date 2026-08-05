@@ -28,6 +28,15 @@ from foundation_authz.observability import get_logger
 log = get_logger(__name__)
 
 
+def _decision_url(base: str, path: str) -> str:
+    """Join OPA base/path while tolerating a base already ending in ``/v1``."""
+    normalized_base = base.rstrip("/")
+    normalized_path = "/" + path.lstrip("/")
+    if normalized_base.endswith("/v1") and normalized_path.startswith("/v1/"):
+        normalized_path = normalized_path[3:]
+    return f"{normalized_base}{normalized_path}"
+
+
 @dataclass(frozen=True, slots=True)
 class OpaDecision:
     allow: bool
@@ -43,6 +52,7 @@ class OpaClient:
         settings = get_settings()
         self._base = str(settings.opa_url).rstrip("/")
         self._path = settings.opa_decision_path
+        self._url = _decision_url(self._base, self._path)
         self._timeout = settings.opa_timeout_seconds
         self._injected_client = client
         self._fail_open = settings.opa_unavailable_behaviour == "FAIL_OPEN"
@@ -57,7 +67,7 @@ class OpaClient:
 
     async def evaluate(self, opa_input: dict[str, Any]) -> OpaDecision:
         """Run policy against OPA. On unavailability honour the configured behaviour."""
-        url = f"{self._base}{self._path}"
+        url = self._url
         client = self._new_client()
         try:
             try:

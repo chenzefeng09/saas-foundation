@@ -1,29 +1,37 @@
 """StorageClient — the public S3/MinIO abstraction (storage-v1 §4).
 
 Phase 1 scope:
-* tenant-scoped key validation (when ``tenant_id`` is supplied);
+* mandatory tenant-scoped key validation for ordinary clients;
 * boto3 lazy client (sync) wrapped in ``run_in_executor`` for an async surface;
 * ``QuotaChecker`` hook around put_object;
 * OTel span per operation;
 * botocore ``ClientError`` → typed ``StorageError`` subclasses.
 
-Phase 2 will let ``get_storage_client()`` read ``tenant_id`` from a shared
-``foundation_context``; for now the tenant must be passed explicitly.
+The factory intentionally requires an explicit ``tenant_id``. Trusted
+cross-tenant jobs must opt into ``StorageClient.as_system()``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from opentelemetry import trace
 
+from foundation_storage.access_control import (
+    AccessAction,
+    DLPStorageAccessChecker,
+    StorageAccessChecker,
+    deny_missing_access_context,
+)
 from foundation_storage.config import StorageSettings, get_settings
 from foundation_storage.errors import (
+    ACCESS_DENIED,
     KEY_INVALID,
     OBJECT_LOCKED,
     OBJECT_NOT_FOUND,
     STORAGE_UNAVAILABLE,
+    AccessControlError,
     KeyValidationError,
     ObjectLockedError,
     ObjectNotFoundError,
@@ -50,6 +58,13 @@ _LOCK_ERROR_CODES = frozenset(
     }
 )
 
+# A system client must only be constructed through ``StorageClient.as_system``.
+# Checking an unexported object by identity prevents ``tenant_id=None`` from
+# silently becoming a cross-tenant, no-MAC client through the public constructor.
+_SYSTEM_CLIENT_CAPABILITY = object()
+_PRESIGN_OPERATIONS = frozenset({"get_object", "put_object"})
+PresignOperation = Literal["get_object", "put_object"]
+
 
 class StorageClient:
     """Tenant-scoped facade over boto3 S3 client.
@@ -59,9 +74,10 @@ class StorageClient:
     settings:
         Loaded ``StorageSettings``.
     tenant_id:
-        When set, every ``ObjectKey`` passed in must belong to this tenant.
-        Use ``StorageClient.as_system`` for trusted background tasks that
-        legitimately need cross-tenant access (lifecycle GC, admin tools).
+        Required for ordinary clients; every ``ObjectKey`` passed in must belong
+        to this tenant. Use ``StorageClient.as_system`` for trusted background
+        tasks that legitimately need cross-tenant access (lifecycle GC, admin
+        tools).
     quota_checker:
         Optional quota strategy.  Defaults to ``NoopQuotaChecker`` so callers
         are not forced to wire DB before Phase 3.
@@ -70,12 +86,43 @@ class StorageClient:
     def __init__(
         self,
         settings: StorageSettings,
-        tenant_id: str | None = None,
+        tenant_id: str | None,
         quota_checker: QuotaChecker | None = None,
+        actor_id: str | None = None,
+        access_checker: StorageAccessChecker | None = None,
+        *,
+        _system_capability: object | None = None,
     ) -> None:
+        is_system = _system_capability is _SYSTEM_CLIENT_CAPABILITY
+        if tenant_id is None and not is_system:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=(
+                    "tenant_id is required for StorageClient; trusted background "
+                    "jobs must use StorageClient.as_system(...) explicitly"
+                ),
+            )
+        if tenant_id is not None and _system_capability is not None:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail="The internal system capability cannot be used with a tenant-scoped client",
+            )
         self.settings = settings
         self.tenant_id = tenant_id
+        self._is_system = is_system
         self.quota_checker: QuotaChecker = quota_checker or NoopQuotaChecker()
+        self.actor_id = actor_id
+        self.access_checker = access_checker
+        if (
+            self.tenant_id is not None
+            and self.actor_id is not None
+            and self.access_checker is None
+            and self.settings.access_control_enabled
+        ):
+            self.access_checker = DLPStorageAccessChecker(
+                base_url=self.settings.dlp_url,
+                timeout_seconds=self.settings.dlp_timeout_seconds,
+            )
         self._boto_client: Any | None = None
 
     # ------------------------------------------------------------------ ctors
@@ -87,7 +134,11 @@ class StorageClient:
         ONLY for trusted background tasks (lifecycle GC, admin migrations).
         Request-handling code MUST pass ``tenant_id`` explicitly.
         """
-        return cls(settings=settings, tenant_id=None)
+        return cls(
+            settings=settings,
+            tenant_id=None,
+            _system_capability=_SYSTEM_CLIENT_CAPABILITY,
+        )
 
     # -------------------------------------------------------------- internals
 
@@ -125,6 +176,32 @@ class StorageClient:
                     f"key tenant_id {key.tenant_id!r} does not match client "
                     f"tenant_id {self.tenant_id!r}"
                 ),
+            )
+
+    async def _authorize_access(
+        self,
+        key: ObjectKey,
+        *,
+        action: AccessAction,
+        destination: str | None = None,
+    ) -> None:
+        """Enforce the clearance gate; explicit system clients bypass."""
+        if self._is_system or not self.settings.access_control_enabled:
+            return
+        if self.actor_id is None or self.access_checker is None:
+            raise deny_missing_access_context()
+        decision = await self.access_checker.check(
+            tenant_id=key.tenant_id,
+            actor_id=self.actor_id,
+            key=key,
+            action=action,
+            destination=destination,
+        )
+        if not decision.allowed:
+            raise AccessControlError(
+                ACCESS_DENIED,
+                detail=decision.reason or "DLP denied storage access",
+                extra={"sensitivity": decision.sensitivity or "unknown"},
             )
 
     @staticmethod
@@ -186,6 +263,7 @@ class StorageClient:
         ``"GOVERNANCE"`` if supplied; both arguments are required together.
         """
         self._check_tenant(key)
+        await self._authorize_access(key, action="WRITE")
         bucket = self._bucket_for(key.purpose)
         # NOTE: Phase 3 will replace len(body) with the result of a subsequent
         # head_object so multipart / streamed bodies are charged accurately.
@@ -240,6 +318,11 @@ class StorageClient:
     async def get_object(self, key: ObjectKey) -> bytes:
         """Download an object and return its full body."""
         self._check_tenant(key)
+        await self._authorize_access(
+            key,
+            action="DOWNLOAD",
+            destination="service_stream",
+        )
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.get", attributes={"bucket": bucket, "key": key.key}
@@ -258,6 +341,11 @@ class StorageClient:
     async def head_object(self, key: ObjectKey) -> ObjectMeta:
         """Fetch object metadata without downloading the body."""
         self._check_tenant(key)
+        await self._authorize_access(key, action="READ")
+        return await self._head_object_unchecked(key)
+
+    async def _head_object_unchecked(self, key: ObjectKey) -> ObjectMeta:
+        """Internal metadata read used by write/delete accounting."""
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.head", attributes={"bucket": bucket, "key": key.key}
@@ -286,6 +374,7 @@ class StorageClient:
         positive drift caught by the reconcile job than over-credit.
         """
         self._check_tenant(key)
+        await self._authorize_access(key, action="DELETE")
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.delete", attributes={"bucket": bucket, "key": key.key}
@@ -297,7 +386,7 @@ class StorageClient:
             size_bytes: int | None = None
             if self.settings.quota_check_enabled:
                 try:
-                    meta = await self.head_object(key)
+                    meta = await self._head_object_unchecked(key)
                     size_bytes = int(meta.content_length)
                 except StorageError:
                     size_bytes = None
@@ -340,6 +429,14 @@ class StorageClient:
                 detail=(
                     f"list tenant_id {tenant_id!r} does not match client "
                     f"tenant_id {self.tenant_id!r}"
+                ),
+            )
+        if self.tenant_id is not None and self.settings.access_control_enabled:
+            raise AccessControlError(
+                ACCESS_DENIED,
+                detail=(
+                    "Direct object-store listing is system-only; list authorized "
+                    "resource metadata through the owning service"
                 ),
             )
         bucket = self._bucket_for(purpose)
@@ -428,6 +525,11 @@ class StorageClient:
                     f"tenant_id {self.tenant_id!r}"
                 ),
             )
+        if self.tenant_id is not None and self.settings.access_control_enabled:
+            raise AccessControlError(
+                ACCESS_DENIED,
+                detail="Tenant usage aggregation is restricted to system clients",
+            )
         bucket = self._bucket_for(purpose)
         prefix = f"tenants/{tenant_id}/"
         with tracer.start_as_current_span(
@@ -453,13 +555,32 @@ class StorageClient:
     async def generate_presigned_url(
         self,
         key: ObjectKey,
-        operation: str = "get_object",
+        operation: PresignOperation = "get_object",
         expires_in: int | None = None,
     ) -> str:
         """Return a presigned URL for ``operation`` (``get_object``/``put_object``)."""
+        if operation not in _PRESIGN_OPERATIONS:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=(
+                    "presigned operation must be exactly 'get_object' or 'put_object', "
+                    f"got {operation!r}"
+                ),
+            )
+        max_ttl = self.settings.presigned_url_ttl_seconds
+        ttl = max_ttl if expires_in is None else expires_in
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or not 1 <= ttl <= max_ttl:
+            raise KeyValidationError(
+                KEY_INVALID,
+                detail=f"presigned URL TTL must be between 1 and {max_ttl} seconds",
+            )
         self._check_tenant(key)
+        await self._authorize_access(
+            key,
+            action="DOWNLOAD" if operation == "get_object" else "WRITE",
+            destination="presigned_url" if operation == "get_object" else None,
+        )
         bucket = self._bucket_for(key.purpose)
-        ttl = expires_in if expires_in is not None else self.settings.presigned_url_ttl_seconds
         with tracer.start_as_current_span(
             "storage.presign",
             attributes={"bucket": bucket, "key": key.key, "op": operation},
@@ -485,6 +606,7 @@ class StorageClient:
     ) -> str:
         """Start a multipart upload and return the ``UploadId``."""
         self._check_tenant(key)
+        await self._authorize_access(key, action="WRITE")
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.multipart_init", attributes={"bucket": bucket, "key": key.key}
@@ -512,6 +634,7 @@ class StorageClient:
     ) -> str:
         """Upload one part; returns the part ``ETag`` for completion."""
         self._check_tenant(key)
+        await self._authorize_access(key, action="WRITE")
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.multipart_part",
@@ -547,6 +670,7 @@ class StorageClient:
     ) -> None:
         """Complete a multipart upload.  ``parts`` is ``[(part_number, etag), ...]``."""
         self._check_tenant(key)
+        await self._authorize_access(key, action="WRITE")
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.multipart_complete",
@@ -579,6 +703,7 @@ class StorageClient:
     async def abort_multipart(self, key: ObjectKey, upload_id: str) -> None:
         """Abort an in-flight multipart upload."""
         self._check_tenant(key)
+        await self._authorize_access(key, action="DELETE")
         bucket = self._bucket_for(key.purpose)
         with tracer.start_as_current_span(
             "storage.multipart_abort",
@@ -597,16 +722,21 @@ class StorageClient:
 
 def get_storage_client(
     settings: StorageSettings | None = None,
-    tenant_id: str | None = None,
+    *,
+    tenant_id: str,
     quota_checker: QuotaChecker | None = None,
+    actor_id: str | None = None,
+    access_checker: StorageAccessChecker | None = None,
 ) -> StorageClient:
-    """Factory.  Phase 1 does NOT auto-read tenant from any context package
-    (avoids a foundation_context dependency).  Callers must pass ``tenant_id``
-    explicitly; Phase 2 will pull it from a shared request-scope context when
-    we wire audit/security-ops onto this layer.
+    """Build a tenant-scoped client; ``tenant_id`` is always explicit.
+
+    Trusted cross-tenant jobs must call :meth:`StorageClient.as_system` instead
+    of this factory.
     """
     return StorageClient(
         settings=settings or get_settings(),
         tenant_id=tenant_id,
         quota_checker=quota_checker,
+        actor_id=actor_id,
+        access_checker=access_checker,
     )

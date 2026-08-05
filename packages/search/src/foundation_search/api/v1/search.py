@@ -1,13 +1,21 @@
 """Search API endpoints — query, index, deindex."""
+
 from __future__ import annotations
+
 from typing import Any
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from foundation_search.api.dependencies import (
-    current_context, current_request_id, db_session, search_service,
+    current_context,
+    current_request_id,
+    db_session,
+    search_service,
 )
 from foundation_search.domain.base import FoundationContext
+from foundation_search.errors import ACCESS_DENIED, FoundationError
 from foundation_search.services.search_service import SearchService
 
 router = APIRouter()
@@ -48,6 +56,7 @@ async def query(
         resource_types=body.resource_types,
         tags=body.tags,
         user_id=ctx.user_id,
+        actor=ctx.actor,
         cursor=body.cursor,
         limit=body.limit,
     )
@@ -61,6 +70,7 @@ async def index(
     svc: SearchService = Depends(search_service),
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
+    _require_service_actor(ctx)
     idx = await svc.index_resource(
         session, tenant_id=ctx.tenant_id,
         resource_type=body.resource_type,
@@ -75,20 +85,41 @@ async def index(
         metadata=body.metadata,
         request_id=request_id,
     )
-    return {"id": idx.id, "resource_type": idx.resource_type, "resource_id": idx.resource_id, "indexed": True}
+    return {
+        "id": idx.id,
+        "resource_type": idx.resource_type,
+        "resource_id": idx.resource_id,
+        "indexed": True,
+    }
 
 
-@router.delete("/index/{resource_id}", tags=["search"])
+@router.delete("/index/{resource_type}/{resource_id}", tags=["search"])
 async def deindex(
+    resource_type: str,
     resource_id: str,
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: SearchService = Depends(search_service),
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
+    _require_service_actor(ctx)
     count = await svc.deindex(
         session, tenant_id=ctx.tenant_id,
+        resource_type=resource_type,
         resource_id=resource_id,
         request_id=request_id,
     )
-    return {"resource_id": resource_id, "deindexed": count}
+    return {
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "deindexed": count,
+    }
+
+
+def _require_service_actor(ctx: FoundationContext) -> None:
+    """Index mutation is reserved for trusted service-to-service callers."""
+    if ctx.actor != "SERVICE":
+        raise FoundationError(
+            ACCESS_DENIED,
+            detail="Search index mutations require a trusted SERVICE actor.",
+        )

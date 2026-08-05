@@ -16,6 +16,7 @@ from foundation_identity.api.dependencies import (
     user_service,
 )
 from foundation_identity.domain.base import FoundationContext
+from foundation_identity.errors import PERMISSION_DENIED, FoundationError
 from foundation_identity.schemas.common import CursorPage
 from foundation_identity.schemas.user import (
     FreezeUserRequest,
@@ -27,6 +28,15 @@ from foundation_identity.services.mfa_service import MfaService
 from foundation_identity.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _require_clearance_manager(ctx: FoundationContext) -> None:
+    """Only the trusted admin/BFF service path may assign security levels."""
+    if ctx.actor != "SERVICE":
+        raise FoundationError(
+            PERMISSION_DENIED,
+            detail="Changing user clearance requires trusted tenant-admin authority",
+        )
 
 
 @router.get("", response_model=CursorPage[UserRead], operation_id="listUsers")
@@ -65,6 +75,10 @@ async def invite_user(
     session: AsyncSession = Depends(db_session),
     svc: UserService = Depends(user_service),
 ) -> UserRead:
+    # Invites can assign both roles and clearance; the whole operation is an
+    # administrative boundary, even when the requested clearance is the L3
+    # default. Otherwise an L1/L2 caller could create a fresh L3 identity.
+    _require_clearance_manager(ctx)
     user = await svc.invite(
         session,
         tenant_id=ctx.tenant_id,
@@ -73,6 +87,7 @@ async def invite_user(
         email=str(body.email),
         display_name=body.display_name,
         roles=body.roles,
+        clearance=body.clearance,
         send_invite_email=body.send_invite_email,
     )
     return UserRead.model_validate(user)
@@ -97,13 +112,16 @@ async def update_user(
     session: AsyncSession = Depends(db_session),
     svc: UserService = Depends(user_service),
 ) -> UserRead:
+    patch = body.model_dump(exclude_unset=True)
+    if "clearance" in patch:
+        _require_clearance_manager(ctx)
     user = await svc.update(
         session,
         tenant_id=ctx.tenant_id,
         request_id=ctx.request_id,
         actor_id=ctx.user_id,
         user_id=user_id,
-        patch=body.model_dump(exclude_unset=True),
+        patch=patch,
     )
     return UserRead.model_validate(user)
 

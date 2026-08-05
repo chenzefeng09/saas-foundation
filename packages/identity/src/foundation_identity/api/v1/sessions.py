@@ -47,12 +47,17 @@ from foundation_identity.api.dependencies import (
     mfa_service,
     redis_cache,
     risk_evaluator,
+    user_service,
 )
 from foundation_identity.config import get_settings
 from foundation_identity.domain.base import FoundationContext
 from foundation_identity.domain.db import admin_session_scope
+from foundation_identity.domain.models import (
+    DEFAULT_USER_CLEARANCE,
+    SsoProvider,
+    User,
+)
 from foundation_identity.domain.models import Session as SessionModel
-from foundation_identity.domain.models import SsoProvider, User
 from foundation_identity.errors import (
     ACCOUNT_LOCKED,
     INVALID_CREDENTIALS,
@@ -65,6 +70,7 @@ from foundation_identity.errors import (
     TOKEN_EXPIRED,
     TOKEN_INVALID,
     TTL_OUT_OF_RANGE,
+    VALIDATION_FAILED,
     FoundationError,
 )
 from foundation_identity.observability import get_logger
@@ -75,6 +81,7 @@ from foundation_identity.schemas.session import (
     ServiceAccountTokenResponse,
     SessionRead,
 )
+from foundation_identity.schemas.user import ChangeOwnPasswordRequest, ProfileSelfUpdate
 from foundation_identity.services.mfa_service import MfaService
 from foundation_identity.services.risk_evaluator import (
     RiskContext,
@@ -82,6 +89,7 @@ from foundation_identity.services.risk_evaluator import (
     RiskOutcome,
 )
 from foundation_identity.services.sso_service import SsoService
+from foundation_identity.services.user_service import UserService
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 log = get_logger(__name__)
@@ -208,12 +216,13 @@ def _extract_clearance(claims: dict[str, Any]) -> str:
 
     Realm config injects a ``clearance`` claim (user-attribute mapper).  Tokens
     minted before that mapper was added — or users without the attribute set —
-    will not carry it; default to ``L2`` rather than failing.
+    will not carry it; default to the ordinary-employee level ``L3`` rather
+    than failing.
     """
     candidate = claims.get("clearance")
     if isinstance(candidate, str) and candidate in {"L1", "L2", "L3", "L4", "L5"}:
         return candidate
-    return "L2"
+    return DEFAULT_USER_CLEARANCE
 
 
 # --------------------------------------------------------------------------- #
@@ -412,7 +421,7 @@ async def _evaluate_risk(
                     user_agent=user_agent,
                 ),
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("auth.risk_eval.infra_error", error=str(exc))
         return RiskOutcome(score=0, decision="ALLOW", fired=())
 
@@ -858,6 +867,7 @@ async def _complete_sso_session(
                 status="ACTIVE",
                 keycloak_user_id=sub if isinstance(sub, str) else None,
                 roles=[default_role] if default_role else None,
+                clearance=DEFAULT_USER_CLEARANCE,
                 mfa_enabled=False,
             )
             session.add(user)
@@ -895,6 +905,7 @@ async def _complete_sso_session(
                     attrs = dict(kc_user.get("attributes") or {})
                     attrs["user_id"] = [user_id]
                     attrs["tenant_id"] = [tenant_id]
+                    attrs["clearance"] = [DEFAULT_USER_CLEARANCE]
                     await kc.update_user(sub, {"attributes": attrs})
                 except FoundationError:
                     log.warning(
@@ -1522,7 +1533,7 @@ async def get_me(
         user_id = row.id
         tenant_id = row.tenant_id
         roles = list(row.roles or [])
-        clearance = row.clearance or "L2"
+        clearance = row.clearance or DEFAULT_USER_CLEARANCE
         db_display_name = row.display_name
 
     # P2-B: keep the session alive (idle clock) or revoke it (idle/absolute timeout).
@@ -1548,6 +1559,204 @@ async def get_me(
         mfa_enabled=False,
         locale="zh-CN",
     )
+
+
+# --------------------------------------------------------------------------- #
+# PATCH /sessions/me — self-service profile update (display_name only)
+# --------------------------------------------------------------------------- #
+
+
+@router.patch(
+    "/me",
+    response_model=MeResponse,
+    operation_id="updateMyProfile",
+    summary="Update the caller's own profile (display_name)",
+)
+async def update_my_profile(
+    body: ProfileSelfUpdate = Body(...),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
+    session: AsyncSession = Depends(db_session),
+    svc: UserService = Depends(user_service),
+) -> MeResponse:
+    """Let the authenticated caller change ONLY their own ``display_name``.
+
+    Authentication mirrors ``get_me``: the bearer token is JWKS-verified and the
+    caller's ``user_id`` / ``tenant_id`` are resolved from the token's foundation
+    claims (or, for SSO-federated subjects, the provisioned ``identity.user`` row
+    keyed by ``keycloak_user_id == sub``).  The target user is ALWAYS the caller
+    themselves — never a path parameter — so this endpoint cannot be used to edit
+    anyone else's profile.
+
+    Persistence goes through ``UserService.update``, which also syncs the new
+    name to Keycloak (``firstName``) and emits the ``foundation.identity.user.updated``
+    audit event.  The response is a freshly-built ``MeResponse`` reflecting the
+    saved name, so the BFF/frontend get the authoritative value immediately
+    without waiting for a Keycloak token refresh.
+    """
+    token = _parse_bearer(authorization)
+    claims = await oidc.verify_token(token)
+
+    email = claims.get("email") or claims.get("preferred_username") or ""
+    if not email:
+        raise FoundationError(
+            TOKEN_INVALID,
+            detail="Token missing email / preferred_username claim",
+        )
+
+    claim_user_id = claims.get("user_id")
+    if isinstance(claim_user_id, str) and _USR_PATTERN.match(claim_user_id):
+        user_id = claim_user_id
+        tenant_id = _extract_tenant_id(claims)
+        realm_access = claims.get("realm_access") or {}
+        roles = list(realm_access.get("roles") or [])
+        clearance = _extract_clearance(claims)
+    else:
+        # SSO-federated subject — resolve via the provisioned user row.
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise FoundationError(TOKEN_INVALID, detail="Token missing sub claim")
+        async with admin_session_scope(tenant_id="", user_id="PLATFORM") as ses:
+            res = await ses.execute(
+                select(User).where(
+                    User.keycloak_user_id == sub,
+                    User.deleted_at.is_(None),
+                )
+            )
+            row = res.scalar_one_or_none()
+        if row is None:
+            raise FoundationError(
+                TOKEN_INVALID,
+                detail="Token subject is not a provisioned user",
+            )
+        user_id = row.id
+        tenant_id = row.tenant_id
+        roles = list(row.roles or [])
+        clearance = row.clearance or DEFAULT_USER_CLEARANCE
+
+    # Caller must be a real foundation user — never act on a None subject.
+    if not user_id:
+        raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+
+    # This endpoint exists solely to set display_name; an absent value is a
+    # client error, not a silent no-op.
+    if body.display_name is None:
+        raise FoundationError(
+            VALIDATION_FAILED,
+            detail="display_name is required",
+        )
+
+    user = await svc.update(
+        session,
+        tenant_id=tenant_id,
+        request_id=f"req_{ulid.new()!s}",
+        actor_id=user_id,
+        user_id=user_id,  # SELF — never from a path param
+        patch={"display_name": body.display_name},
+    )
+
+    return MeResponse(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        email=email,
+        display_name=user.display_name or body.display_name,
+        roles=roles,
+        clearance=clearance,
+        mfa_enabled=False,
+        locale="zh-CN",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# POST /sessions/me/password — self-service change-password
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/me/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="changeMyPassword",
+    summary="Change the caller's own password",
+    response_class=Response,
+)
+async def change_my_password(
+    body: ChangeOwnPasswordRequest = Body(...),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    oidc: KeycloakOIDCAdapter = Depends(_oidc_adapter),
+    session: AsyncSession = Depends(db_session),
+    svc: UserService = Depends(user_service),
+) -> Response:
+    """Let the authenticated caller change ONLY their own password.
+
+    Authentication mirrors ``update_my_profile`` / ``get_me``: the bearer token
+    is JWKS-verified and the caller's ``user_id`` / ``tenant_id`` / ``email`` are
+    resolved from the token's foundation claims (or, for SSO-federated subjects,
+    the provisioned ``identity.user`` row keyed by ``keycloak_user_id == sub``).
+    The target user is ALWAYS the caller — never a path/body parameter.
+
+    The heavy lifting (verify-current-password via the OIDC password grant,
+    reject SSO/federated/passwordless accounts, enforce the new-password policy
+    floor, set the new password via the Admin reset-password call, emit
+    ``foundation.identity.password.changed``) lives in
+    :meth:`UserService.change_own_password`.  Error contract:
+
+      * 400 ``CURRENT_PASSWORD_INCORRECT`` — current password wrong.
+      * 409 ``PASSWORD_CHANGE_NOT_ALLOWED`` — SSO/federated/passwordless account.
+      * 422 ``PASSWORD_TOO_WEAK`` — new password below the length floor.
+
+    On success returns ``204 No Content`` (no body).
+    """
+    token = _parse_bearer(authorization)
+    claims = await oidc.verify_token(token)
+
+    email = claims.get("email") or claims.get("preferred_username") or ""
+    if not email:
+        raise FoundationError(
+            TOKEN_INVALID,
+            detail="Token missing email / preferred_username claim",
+        )
+
+    claim_user_id = claims.get("user_id")
+    if isinstance(claim_user_id, str) and _USR_PATTERN.match(claim_user_id):
+        user_id = claim_user_id
+        tenant_id = _extract_tenant_id(claims)
+    else:
+        # SSO-federated subject — resolve via the provisioned user row.
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise FoundationError(TOKEN_INVALID, detail="Token missing sub claim")
+        async with admin_session_scope(tenant_id="", user_id="PLATFORM") as ses:
+            res = await ses.execute(
+                select(User).where(
+                    User.keycloak_user_id == sub,
+                    User.deleted_at.is_(None),
+                )
+            )
+            row = res.scalar_one_or_none()
+        if row is None:
+            raise FoundationError(
+                TOKEN_INVALID,
+                detail="Token subject is not a provisioned user",
+            )
+        user_id = row.id
+        tenant_id = row.tenant_id
+
+    # Caller must be a real foundation user — never act on a None subject.
+    if not user_id:
+        raise FoundationError(PERMISSION_DENIED, detail="Actor user_id required")
+
+    await svc.change_own_password(
+        session,
+        tenant_id=tenant_id,
+        request_id=f"req_{ulid.new()!s}",
+        user_id=user_id,  # SELF — never from a path/body param
+        email=email,
+        current_password=body.current_password,
+        new_password=body.new_password,
+        oidc=oidc,
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --------------------------------------------------------------------------- #

@@ -24,7 +24,7 @@ import pytest
 from foundation_search.adapters.authz_client import AccessibleIds
 from foundation_search.adapters.opensearch_client import SearchHit, SearchResult
 from foundation_search.domain.models import SearchIndex, SearchQueryLog
-from foundation_search.errors import SEARCH_BACKEND_UNAVAILABLE, FoundationError
+from foundation_search.errors import ACCESS_DENIED, SEARCH_BACKEND_UNAVAILABLE, FoundationError
 from foundation_search.services.search_service import SearchService
 
 
@@ -45,10 +45,15 @@ def _make_svc(
     os_raises: Exception | None = None,
     authz_result: AccessibleIds | None = None,
     authz_raises: Exception | None = None,
+    user_clearance: str = "L3",
+    resource_sensitivity: str = "L3",
 ) -> tuple[SearchService, AsyncMock, AsyncMock]:
     """Return (svc, mock_os, mock_authz)."""
     mock_os = MagicMock()
     mock_authz = MagicMock()
+    mock_security = MagicMock()
+    mock_security.get_resource_sensitivity = AsyncMock(return_value=resource_sensitivity)
+    mock_security.get_user_clearance = AsyncMock(return_value=user_clearance)
 
     if os_raises is not None:
         mock_os.search = AsyncMock(side_effect=os_raises)
@@ -65,7 +70,11 @@ def _make_svc(
             return_value=authz_result or AccessibleIds(ids=[], complete=True, all_in_tenant=False)
         )
 
-    svc = SearchService(os_client=mock_os, authz_client=mock_authz)
+    svc = SearchService(
+        os_client=mock_os,
+        authz_client=mock_authz,
+        security_attributes_client=mock_security,
+    )
     return svc, mock_os, mock_authz
 
 
@@ -82,7 +91,38 @@ def _hit(resource_id: str, score: float = 1.0, **src_extra: Any) -> SearchHit:
         "indexed_at": "2026-06-05T00:00:00+00:00",
         **src_extra,
     }
-    return SearchHit(id=f"{TENANT_A}:{resource_id}", score=score, source=src)
+    return SearchHit(id=f"{TENANT_A}:document:{resource_id}", score=score, source=src)
+
+
+def _stage_sot_rows(
+    session: FakeAsyncSession,
+    hits: list[SearchHit],
+    *,
+    visibility: str = "PUBLIC_IN_TENANT",
+    owner_id: str | None = None,
+    acl_user_ids: list[str] | None = None,
+    acl_team_ids: list[str] | None = None,
+) -> list[SearchIndex]:
+    rows = [
+        SearchIndex(
+            id=f"idx_sot_{position}",
+            tenant_id=TENANT_A,
+            resource_type=hit.source["resource_type"],
+            resource_id=hit.source["resource_id"],
+            title=hit.source["title"],
+            content="current content",
+            content_hash="hash",
+            tags=hit.source.get("tags", []),
+            acl_user_ids=acl_user_ids or [],
+            acl_team_ids=acl_team_ids or [],
+            owner_id=owner_id,
+            visibility=visibility,
+            metadata_json={},
+        )
+        for position, hit in enumerate(hits)
+    ]
+    session.queue_scalars(rows)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +204,8 @@ class TestIndexDoubleWrite:
         assert doc["acl_team_ids"] == [TEAM_ENG]
         assert doc["owner_id"] == USER_BOB
         assert doc["visibility"] == "PUBLIC_IN_TENANT"
+        assert doc["sensitivity"] == "L3"
+        assert doc["sensitivity_rank"] == 3
 
     async def test_os_failure_propagates(self, fake_session: FakeAsyncSession) -> None:
         """OS write failure after PG flush raises — PG row already committed."""
@@ -206,11 +248,51 @@ class TestQueryBody:
             resource_types=None,
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
         tenant_filter = [f for f in filters if f.get("term", {}).get("tenant_id") == TENANT_A]
         assert len(tenant_filter) == 1, "tenant_id filter must always be present"
+
+    async def test_clearance_filter_always_injected(self, fake_session: FakeAsyncSession) -> None:
+        svc, mock_os, _ = _make_svc(
+            authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
+        )
+        await svc.query(
+            fake_session,
+            tenant_id=TENANT_A,
+            q="classified",
+            resource_types=None,
+            tags=None,
+            user_id=USER_ALICE,
+            actor="USER",
+        )
+        filters = mock_os.search.call_args.kwargs["query_body"]["query"]["bool"]["filter"]
+        assert {"range": {"sensitivity_rank": {"lte": 3}}} in filters
+
+    async def test_live_dlp_recheck_blocks_stale_index_hit(
+        self, fake_session: FakeAsyncSession
+    ) -> None:
+        stale_hit = _hit("doc_reclassified", sensitivity="L3", sensitivity_rank=3)
+        svc, _, _ = _make_svc(
+            os_result=SearchResult(total=1, hits=[stale_hit], search_after=None),
+            authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
+            user_clearance="L3",
+            resource_sensitivity="L4",
+        )
+        _stage_sot_rows(fake_session, [stale_hit])
+        result = await svc.query(
+            fake_session,
+            tenant_id=TENANT_A,
+            q="secret",
+            resource_types=None,
+            tags=None,
+            user_id=USER_ALICE,
+            actor="USER",
+        )
+        assert result["items"] == []
+        assert result["total_estimate"] == 0
 
     async def test_resource_types_filter(self, fake_session: FakeAsyncSession) -> None:
         svc, mock_os, _ = _make_svc(
@@ -223,6 +305,7 @@ class TestQueryBody:
             resource_types=["document", "note"],
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -241,6 +324,7 @@ class TestQueryBody:
             resource_types=None,
             tags=["legal", "finance"],
             user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -259,6 +343,7 @@ class TestQueryBody:
             resource_types=None,
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         must = body["query"]["bool"]["must"]
@@ -279,6 +364,7 @@ class TestQueryBody:
             resource_types=None,
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
             cursor=cursor,
         )
         body = mock_os.search.call_args.kwargs["query_body"]
@@ -290,6 +376,7 @@ class TestQueryBody:
             os_result=SearchResult(total=100, hits=hits, search_after=[0.5, "2026-01-01T00:00:00"]),
             authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
         )
+        _stage_sot_rows(fake_session, hits)
         result = await svc.query(
             fake_session,
             tenant_id=TENANT_A,
@@ -297,6 +384,7 @@ class TestQueryBody:
             resource_types=None,
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
             limit=5,
         )
         assert result["next_cursor"] is not None
@@ -310,6 +398,7 @@ class TestQueryBody:
             os_result=SearchResult(total=1, hits=hits, search_after=None),
             authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
         )
+        _stage_sot_rows(fake_session, hits)
         result = await svc.query(
             fake_session,
             tenant_id=TENANT_A,
@@ -317,6 +406,7 @@ class TestQueryBody:
             resource_types=None,
             tags=None,
             user_id=USER_ALICE,
+            actor="USER",
             limit=20,
         )
         assert result["next_cursor"] is None
@@ -336,6 +426,7 @@ class TestACLFilter:
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="x",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -351,6 +442,7 @@ class TestACLFilter:
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="x",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -383,6 +475,7 @@ class TestACLFilter:
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="x",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -406,6 +499,7 @@ class TestACLFilter:
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="x",
             resource_types=None, tags=None, user_id=None,
+            actor="SERVICE",
         )
         # authz must NOT be called for service-to-service
         mock_authz.list_accessible_ids.assert_not_called()
@@ -424,6 +518,7 @@ class TestACLFilter:
             await svc.query(
                 fake_session, tenant_id=TENANT_A, q="test",
                 resource_types=None, tags=None, user_id=USER_ALICE,
+                actor="USER",
             )
         assert exc_info.value.error_code.http_status == 503
         assert exc_info.value.error_code == SEARCH_BACKEND_UNAVAILABLE
@@ -435,9 +530,11 @@ class TestACLFilter:
             os_result=SearchResult(total=1, hits=hits, search_after=None),
             authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
         )
+        _stage_sot_rows(fake_session, hits)
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="test",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         log_entries = [a for a in fake_session.added if isinstance(a, SearchQueryLog)]
         assert len(log_entries) == 1
@@ -451,9 +548,11 @@ class TestACLFilter:
             os_result=SearchResult(total=1, hits=hits, search_after=None),
             authz_result=AccessibleIds(ids=[], complete=True, all_in_tenant=True),
         )
+        _stage_sot_rows(fake_session, hits)
         result = await svc.query(
             fake_session, tenant_id=TENANT_A, q="test",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         assert result["items"][0]["score"] == pytest.approx(0.98)
 
@@ -465,6 +564,7 @@ class TestACLFilter:
         await svc.query(
             fake_session, tenant_id=TENANT_A, q="x",
             resource_types=None, tags=None, user_id=USER_ALICE,
+            actor="USER",
         )
         body = mock_os.search.call_args.kwargs["query_body"]
         filters = body["query"]["bool"]["filter"]
@@ -493,12 +593,15 @@ class TestDeindex:
         count = await svc.deindex(
             fake_session,
             tenant_id=TENANT_A,
+            resource_type="document",
             resource_id="doc_del",
             request_id="r_del",
         )
         assert count == 1
         assert row.deleted_at is not None
-        mock_os.delete_doc.assert_called_once_with(tenant_id=TENANT_A, resource_id="doc_del")
+        mock_os.delete_doc.assert_called_once_with(
+            tenant_id=TENANT_A, resource_type="document", resource_id="doc_del"
+        )
 
     async def test_os_delete_failure_propagates(self, fake_session: FakeAsyncSession) -> None:
         row = SearchIndex(
@@ -518,6 +621,7 @@ class TestDeindex:
             await svc.deindex(
                 fake_session,
                 tenant_id=TENANT_A,
+                resource_type="document",
                 resource_id="doc_fail",
                 request_id="r_fail",
             )

@@ -22,10 +22,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_identity.adapters.audit_publisher import AuditPublisher
 from foundation_identity.adapters.keycloak_admin import KeycloakAdminAdapter
-from foundation_identity.domain.models import User
+from foundation_identity.adapters.keycloak_oidc import KeycloakOIDCAdapter
+from foundation_identity.config import get_settings
+from foundation_identity.domain.models import (
+    DEFAULT_USER_CLEARANCE,
+    VALID_USER_CLEARANCES,
+    User,
+)
 from foundation_identity.errors import (
+    CURRENT_PASSWORD_INCORRECT,
+    INVALID_CREDENTIALS,
+    PASSWORD_CHANGE_NOT_ALLOWED,
+    PASSWORD_TOO_WEAK,
+    PERMISSION_DENIED,
     USER_ALREADY_EXISTS,
     USER_NOT_FOUND,
+    VALIDATION_FAILED,
     FoundationError,
 )
 from foundation_identity.observability import get_logger
@@ -35,6 +47,15 @@ log = get_logger(__name__)
 
 def _new_user_id() -> str:
     return f"usr_{ulid.new()!s}"
+
+
+def _validate_clearance(value: object) -> str:
+    if not isinstance(value, str) or value not in VALID_USER_CLEARANCES:
+        raise FoundationError(
+            VALIDATION_FAILED,
+            detail="clearance must be one of L1, L2, L3, L4, L5",
+        )
+    return value
 
 
 class UserService:
@@ -87,8 +108,11 @@ class UserService:
         email: str,
         display_name: str | None = None,
         roles: list[str] | None = None,
+        clearance: str = DEFAULT_USER_CLEARANCE,
         send_invite_email: bool = True,
     ) -> User:
+        clearance = _validate_clearance(clearance)
+
         # Uniqueness pre-check (RLS ensures we only see same-tenant rows)
         existing = await session.scalar(
             select(User).where(User.tenant_id == tenant_id, User.email == email)
@@ -98,7 +122,10 @@ class UserService:
 
         kc_user_id = await self._kc.create_user(
             email=email,
-            attributes={"tenant_id": [tenant_id]},
+            attributes={
+                "tenant_id": [tenant_id],
+                "clearance": [clearance],
+            },
             enabled=True,
         )
 
@@ -110,6 +137,7 @@ class UserService:
             status="INVITED",
             keycloak_user_id=kc_user_id,
             roles=roles or [],
+            clearance=clearance,
             mfa_enabled=False,
         )
         session.add(user)
@@ -126,6 +154,7 @@ class UserService:
             payload={
                 "user_id": user.id,
                 "email": email,
+                "clearance": clearance,
                 "invited_by": actor_id,
             },
         )
@@ -146,29 +175,61 @@ class UserService:
     ) -> User:
         user = await self.get_user(session, tenant_id=tenant_id, user_id=user_id)
 
-        for field in ("display_name", "status", "roles"):
+        if "clearance" in patch:
+            patch["clearance"] = _validate_clearance(patch["clearance"])
+            if actor_id == user_id:
+                raise FoundationError(
+                    PERMISSION_DENIED,
+                    detail="Users cannot modify their own clearance",
+                )
+
+        previous_clearance = user.clearance or DEFAULT_USER_CLEARANCE
+        applied_fields: list[str] = []
+        for field in ("display_name", "status", "roles", "clearance"):
             if field in patch and patch[field] is not None:
                 setattr(user, field, patch[field])
+                applied_fields.append(field)
 
-        # Propagate display_name & email to Keycloak when applicable
+        # Propagate display_name and the authoritative clearance to Keycloak.
+        # Keycloak treats ``attributes`` as a complete map on update, so merge
+        # the existing representation instead of erasing unrelated attributes.
         kc_patch: dict[str, Any] = {}
         if "display_name" in patch and patch["display_name"] is not None:
             kc_patch["firstName"] = patch["display_name"]
+        if "clearance" in applied_fields and user.keycloak_user_id:
+            kc_user = await self._kc.get_user(user.keycloak_user_id)
+            raw_attributes = kc_user.get("attributes")
+            attributes = dict(raw_attributes) if isinstance(raw_attributes, dict) else {}
+            attributes["tenant_id"] = [tenant_id]
+            attributes["clearance"] = [user.clearance]
+            kc_patch["attributes"] = attributes
         if kc_patch and user.keycloak_user_id:
             await self._kc.update_user(user.keycloak_user_id, kc_patch)
+
+        audit_payload: dict[str, Any] = {
+            "user_id": user.id,
+            "changed_fields": sorted(applied_fields),
+            "updated_by": actor_id,
+        }
+        if "clearance" in applied_fields:
+            audit_payload["clearance_change"] = {
+                "from": previous_clearance,
+                "to": user.clearance,
+            }
 
         await self._emit(
             session,
             event_type="foundation.identity.user.updated",
             tenant_id=tenant_id,
             request_id=request_id,
-            payload={
-                "user_id": user.id,
-                "changed_fields": sorted(patch.keys()),
-                "updated_by": actor_id,
-            },
+            payload=audit_payload,
         )
         await session.flush()
+        # ``updated_at`` is DB-computed via ``onupdate=func.now()``; after flush the
+        # attribute is expired, so serializing the returned ORM object (UserRead)
+        # would lazily refresh it in a synchronous context and raise MissingGreenlet.
+        # Refresh within the async greenlet so response serialization stays sync-safe.
+        await session.refresh(user)
         return user
 
     # ------------------------------------------------------------------ freeze
@@ -271,6 +332,101 @@ class UserService:
             request_id=request_id,
             payload={"user_id": user.id, "triggered_by": actor_id, "source": "admin_reset"},
         )
+
+    # ------------------------------------------------------ self-service password change
+    async def change_own_password(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        request_id: str,
+        user_id: str,
+        email: str,
+        current_password: str,
+        new_password: str,
+        oidc: KeycloakOIDCAdapter,
+    ) -> None:
+        """Self-service password change for the authenticated caller.
+
+        Flow (the caller is ALWAYS resolved from the bearer token by the route;
+        ``user_id`` is never a path param):
+
+          1. Load the caller's row → resolve ``keycloak_user_id``.
+          2. Reject SSO/federated/passwordless accounts (no local password to
+             change) with ``PASSWORD_CHANGE_NOT_ALLOWED`` (409).  Detected via a
+             non-empty ``federationLink`` on the KC user record OR the absence of
+             a local ``password`` credential.
+          3. Validate the new password against the hard length floor →
+             ``PASSWORD_TOO_WEAK`` (422).
+          4. Verify the *current* password via the OIDC password grant.  A bad
+             password raises ``INVALID_CREDENTIALS`` from the adapter, which we
+             remap to ``CURRENT_PASSWORD_INCORRECT`` (400) so the SPA can show a
+             precise message (and the BFF does not mask it as a 401 session
+             expiry).
+          5. Set the new password directly via the Admin reset-password call
+             (``temporary=False`` → immediately usable, no forced re-reset).
+          6. Emit ``foundation.identity.password.changed``.
+
+        Neither ``current_password`` nor ``new_password`` is ever logged.
+        """
+        user = await self.get_user(session, tenant_id=tenant_id, user_id=user_id)
+        kc_user_id = user.keycloak_user_id
+        if not kc_user_id:
+            # No backing Keycloak identity → nothing to change (treat like an
+            # SSO/federated account: not a local-password user).
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="User has no local Keycloak credential to change",
+            )
+
+        # --- (2) federated / passwordless detection -------------------------
+        kc_user = await self._kc.get_user(kc_user_id)
+        if kc_user.get("federationLink"):
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="Account is linked to a federated identity provider",
+            )
+        if not await self._kc.has_local_password(kc_user_id):
+            raise FoundationError(
+                PASSWORD_CHANGE_NOT_ALLOWED,
+                detail="Account has no local password credential",
+            )
+
+        # --- (3) new-password policy (hard length floor) --------------------
+        min_len = get_settings().password_min_length_floor
+        if not new_password or len(new_password) < min_len:
+            raise FoundationError(
+                PASSWORD_TOO_WEAK,
+                detail=f"New password must be at least {min_len} characters",
+            )
+
+        # --- (4) verify the CURRENT password --------------------------------
+        try:
+            await oidc.password_grant(username=email, password=current_password)
+        except FoundationError as exc:
+            if exc.error_code is INVALID_CREDENTIALS:
+                raise FoundationError(
+                    CURRENT_PASSWORD_INCORRECT,
+                    detail="Current password is incorrect",
+                ) from exc
+            raise
+
+        # --- (5) set the NEW password ---------------------------------------
+        await self._kc.reset_password(kc_user_id, new_password, temporary=False)
+
+        # --- (6) audit ------------------------------------------------------
+        await self._emit(
+            session,
+            event_type="foundation.identity.password.changed",
+            tenant_id=tenant_id,
+            request_id=request_id,
+            payload={
+                "user_id": user.id,
+                "triggered_by": user.id,
+                "source": "self_service",
+            },
+        )
+        await session.flush()
 
     # ------------------------------------------------------------------ helpers
     async def _emit(

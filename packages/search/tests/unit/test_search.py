@@ -8,8 +8,6 @@ OS/ACL behavior is covered in test_search_os.py.
 import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from foundation_search.adapters.authz_client import AccessibleIds
 from foundation_search.adapters.opensearch_client import SearchHit, SearchResult
 from foundation_search.domain.models import SearchIndex, SearchQueryLog
@@ -31,12 +29,19 @@ def _make_svc(
     mock_authz.list_accessible_ids = AsyncMock(
         return_value=AccessibleIds(ids=[], complete=True, all_in_tenant=all_in_tenant)
     )
-    return SearchService(os_client=mock_os, authz_client=mock_authz)
+    mock_security = MagicMock()
+    mock_security.get_resource_sensitivity = AsyncMock(return_value="L3")
+    mock_security.get_user_clearance = AsyncMock(return_value="L3")
+    return SearchService(
+        os_client=mock_os,
+        authz_client=mock_authz,
+        security_attributes_client=mock_security,
+    )
 
 
 def _hit(resource_id: str, title: str, score: float = 1.0) -> SearchHit:
     return SearchHit(
-        id=f"tnt:{resource_id}",
+        id=f"tnt:document:{resource_id}",
         score=score,
         source={
             "resource_type": "document",
@@ -45,6 +50,28 @@ def _hit(resource_id: str, title: str, score: float = 1.0) -> SearchHit:
             "tags": [],
             "indexed_at": "2026-06-05T00:00:00+00:00",
         },
+    )
+
+
+def _stage_sot_rows(fake_session, tenant_id: str, hits: list[SearchHit]) -> None:
+    fake_session.queue_scalars(
+        [
+            SearchIndex(
+                id=f"idx_{position}",
+                tenant_id=tenant_id,
+                resource_type=hit.source["resource_type"],
+                resource_id=hit.source["resource_id"],
+                title=hit.source["title"],
+                content="current content",
+                content_hash="hash",
+                tags=hit.source.get("tags", []),
+                acl_user_ids=[],
+                acl_team_ids=[],
+                visibility="PUBLIC_IN_TENANT",
+                metadata_json={},
+            )
+            for position, hit in enumerate(hits)
+        ]
     )
 
 
@@ -92,10 +119,12 @@ class TestSearchQuery:
     async def test_query_basic(self, fake_session, tenant_id, request_id):
         hits = [_hit("doc_001", "Privacy Policy"), _hit("doc_002", "Terms of Service")]
         svc = _make_svc(total=2, hits=hits)
+        _stage_sot_rows(fake_session, tenant_id, hits)
 
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="privacy",
-            resource_types=None, tags=None, user_id=None,
+            resource_types=None, tags=None, user_id="usr_employee",
+            actor="USER",
             cursor=None, limit=20,
         )
         assert "items" in result
@@ -106,10 +135,12 @@ class TestSearchQuery:
     async def test_query_tag_filter(self, fake_session, tenant_id, request_id):
         hits = [_hit("doc_001", "Doc A")]
         svc = _make_svc(total=1, hits=hits)
+        _stage_sot_rows(fake_session, tenant_id, hits)
 
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="",
-            resource_types=None, tags=["legal"], user_id=None,
+            resource_types=None, tags=["legal"], user_id="usr_employee",
+            actor="USER",
             cursor=None, limit=20,
         )
         titles = [item["title"] for item in result["items"]]
@@ -130,11 +161,21 @@ class TestSearchQuery:
         mock_authz.list_accessible_ids = AsyncMock(
             return_value=AccessibleIds(ids=[], complete=True, all_in_tenant=True)
         )
-        svc = SearchService(os_client=mock_os, authz_client=mock_authz)
+        mock_security = MagicMock()
+        mock_security.get_resource_sensitivity = AsyncMock(return_value="L3")
+        mock_security.get_user_clearance = AsyncMock(return_value="L3")
+        svc = SearchService(
+            os_client=mock_os,
+            authz_client=mock_authz,
+            security_attributes_client=mock_security,
+        )
+        page_hits = [_hit(f"doc_{i}", f"Doc {i}") for i in range(3)]
+        _stage_sot_rows(fake_session, tenant_id, page_hits)
 
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="",
-            resource_types=None, tags=None, user_id=None,
+            resource_types=None, tags=None, user_id="usr_employee",
+            actor="USER",
             cursor=None, limit=3,
         )
         assert len(result["items"]) == 3
@@ -146,6 +187,7 @@ class TestSearchQuery:
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="nothing",
             resource_types=None, tags=None, user_id=None,
+            actor="SERVICE",
             cursor=None, limit=20,
         )
         assert result["items"] == []
@@ -154,10 +196,12 @@ class TestSearchQuery:
     async def test_query_logs_search(self, fake_session, tenant_id, request_id):
         """Every query should create a SearchQueryLog entry."""
         svc = _make_svc(total=1, hits=[_hit("doc_1", "Test")])
+        _stage_sot_rows(fake_session, tenant_id, [_hit("doc_1", "Test")])
 
         await svc.query(
             fake_session, tenant_id=tenant_id, q="test",
             resource_types=None, tags=None, user_id="usr_001",
+            actor="USER",
             cursor=None, limit=20,
         )
         log_entries = [a for a in fake_session.added if isinstance(a, SearchQueryLog)]
@@ -171,10 +215,12 @@ class TestSearchQuery:
         """
         hits = [_hit("doc_001", "Public Doc")]
         svc = _make_svc(total=1, hits=hits, all_in_tenant=False)
+        _stage_sot_rows(fake_session, tenant_id, hits)
 
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="Doc",
             resource_types=None, tags=None, user_id="usr_regular",
+            actor="USER",
             cursor=None, limit=20,
         )
         titles = [item["title"] for item in result["items"]]
@@ -184,10 +230,12 @@ class TestSearchQuery:
         """Admin with all_in_tenant=True sees everything OS returns."""
         hits = [_hit("doc_001", "Public Doc"), _hit("doc_002", "Secret Doc")]
         svc = _make_svc(total=2, hits=hits, all_in_tenant=True)
+        _stage_sot_rows(fake_session, tenant_id, hits)
 
         result = await svc.query(
             fake_session, tenant_id=tenant_id, q="Doc",
             resource_types=None, tags=None, user_id="usr_admin",
+            actor="USER",
             cursor=None, limit=20,
         )
         titles = [item["title"] for item in result["items"]]

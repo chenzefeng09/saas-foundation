@@ -16,7 +16,7 @@ import httpx
 import pytest
 import respx
 
-from foundation_authz.adapters.opa_client import OpaClient, OpaDecision
+from foundation_authz.adapters.opa_client import OpaClient, OpaDecision, _decision_url
 from foundation_authz.config import get_settings
 from foundation_authz.errors import (
     OPA_DECISION_ERROR,
@@ -25,8 +25,26 @@ from foundation_authz.errors import (
     FoundationError,
 )
 
-
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("base", "path", "expected"),
+    [
+        (
+            "http://opa:8181",
+            "/v1/data/foundation/authz/allow",
+            "http://opa:8181/v1/data/foundation/authz/allow",
+        ),
+        (
+            "http://opa:8181/v1",
+            "/v1/data/foundation/authz/allow",
+            "http://opa:8181/v1/data/foundation/authz/allow",
+        ),
+    ],
+)
+def test_decision_url_does_not_duplicate_v1(base: str, path: str, expected: str) -> None:
+    assert _decision_url(base, path) == expected
 
 
 def _opa_url() -> str:

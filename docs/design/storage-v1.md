@@ -306,13 +306,18 @@ class StorageClient:
 
 **TenantContext 来源**
 
-从 `foundation_identity.domain.base.foundation_context`（`ContextVar[FoundationContext | None]`）读取，与其他服务的做法一致（`packages/identity/src/foundation_identity/domain/base.py:34`）。`StorageClient` 工厂函数：
+请求服务从自身已经验签的上下文取得 tenant/user，再显式传入工厂；Storage
+不得在上下文缺失时退化为跨租户客户端。可信后台任务必须显式调用
+`StorageClient.as_system(...)`：
 
 ```python
-def get_storage_client() -> StorageClient:
-    ctx = foundation_context.get()
-    tenant_id = ctx.tenant_id if ctx else None
-    return StorageClient(get_settings(), tenant_id=tenant_id)
+ctx = current_context()
+client = get_storage_client(
+    tenant_id=ctx.tenant_id,
+    actor_id=ctx.user_id,
+)
+
+system_client = StorageClient.as_system(get_settings())  # 仅后台任务
 ```
 
 ### 4.3 配置项

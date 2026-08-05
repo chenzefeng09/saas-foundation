@@ -43,12 +43,10 @@ set -uo pipefail
 # *-migrate one-shot containers are intentionally omitted: they reuse the main
 # service's image and source, so the main service's row already covers them.
 # ---------------------------------------------------------------------------
-# Repo roots are derived from this script's location (saas-foundation/scripts/)
-# so the check works for any checkout. agent-platform is assumed to be a sibling
-# of saas-foundation; override AGENT_ROOT to point elsewhere.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FOUNDATION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-AGENT_ROOT="${AGENT_ROOT:-$(cd "$FOUNDATION_ROOT/../agent-platform" 2>/dev/null && pwd)}"
+# Repo roots. Default to this checkout and its sibling agent-platform; override
+# either via the environment when your layout differs.
+FOUNDATION_ROOT="${FOUNDATION_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+AGENT_ROOT="${AGENT_ROOT:-$(cd "$FOUNDATION_ROOT/../agent-platform" 2>/dev/null && pwd || echo "$FOUNDATION_ROOT/../agent-platform")}"
 FOUNDATION_COMPOSE="deploy/docker-compose/dev.yml"
 AGENT_COMPOSE="deploy/docker-compose/agent-platform.yml"
 

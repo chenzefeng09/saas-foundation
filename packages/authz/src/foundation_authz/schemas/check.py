@@ -52,8 +52,11 @@ class ListAccessibleIdsResponse(BaseModel):
     complete: bool = True
     # True when the user has a TENANT- or GLOBAL_SYSTEM-scoped binding that
     # grants the requested action, meaning they can access ALL resources of that
-    # type within the tenant.  Callers should treat this as "no ACL filter needed".
+    # type within the tenant at the RBAC layer.  MAC/DLP filtering is still required.
     all_in_tenant: bool = False
+    # This endpoint only enumerates RBAC scopes.  A Literal prevents any future
+    # implementation from accidentally claiming per-resource MAC coverage.
+    clearance_filtered: Literal[False] = False
 
 
 class EffectivePermissionsResponse(BaseModel):

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
-from unittest.mock import AsyncMock
-
 from foundation_authz.adapters.opa_client import OpaClient
+from foundation_authz.adapters.security_attributes import SecurityAttributeProvider
 from foundation_authz.errors import (
     BINDING_NOT_FOUND,
     PERMISSION_ESCALATION,
@@ -17,10 +17,8 @@ from foundation_authz.errors import (
 )
 from foundation_authz.services.binding_service import BindingService
 from foundation_authz.services.check_service import CheckService
-
 from tests._factories import make_binding, make_role
 from tests.conftest import FakeAsyncSession
-
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +32,10 @@ _SUPER = {"*"}
 def _check_svc() -> CheckService:
     """A real CheckService with a stubbed OPA — role_permission_closure only
     uses the DB (FakeAsyncSession), never OPA."""
-    return CheckService(opa=AsyncMock(spec=OpaClient))
+    return CheckService(
+        opa=AsyncMock(spec=OpaClient),
+        attributes=AsyncMock(spec=SecurityAttributeProvider),
+    )
 
 
 # ---------------------------------------------------------------------------
