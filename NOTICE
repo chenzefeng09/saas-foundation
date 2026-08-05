@@ -1,0 +1,24 @@
+SaaS Foundation
+Copyright 2026 The SaaS Foundation Authors
+
+This product is licensed under the Apache License, Version 2.0 (see the
+LICENSE file in this repository).
+
+SaaS Foundation wraps a number of third-party open-source engines so that
+business systems consume them only through the foundation SDK. Each engine
+is distributed under its own license and remains the property of its owners.
+Notable wrapped components include:
+
+  - Keycloak (identity / OIDC / OAuth2 / SAML)
+  - Open Policy Agent (authorization / ABAC)
+  - PostgreSQL, PgBouncer, Redis
+  - ClickHouse (audit event store)
+  - OpenSearch (search)
+  - HashiCorp Vault (key management / crypto)
+  - LiteLLM (LLM routing backend behind the LLM gateway)
+  - MinIO / S3-compatible object storage
+  - Unleash (feature flags)
+  - OpenTelemetry, Prometheus, Jaeger (observability)
+
+No inference engine is bundled; the LLM gateway forwards to external or
+customer-provided model endpoints.

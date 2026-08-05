@@ -45,7 +45,7 @@ agent-platform 和 saas-foundation 双方都 merge 后才发布 `v1.0.0`，避�
 ## 3. 本地手动发布（应急）
 
 ```bash
-export FOUNDATION_PYPI_URL=https://pypi.internal.example/repository/pypi-hosted/
+export FOUNDATION_PYPI_URL=https://pypi.example.com/repository/pypi-hosted/
 export FOUNDATION_PYPI_TOKEN=<token>
 make sdk-publish-dry   # twine check，不上传
 make sdk-publish       # 真上传

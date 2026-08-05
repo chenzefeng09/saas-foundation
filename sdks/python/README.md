@@ -7,14 +7,15 @@ the FastAPI middleware contract.
 
 ## Install
 
-From the internal PyPI (preferred for CI and production images):
+From a private PyPI mirror, if you publish the package to one (for CI and
+production images):
 
 ```bash
-pip install --extra-index-url https://pypi.internal.example/simple/ \
+pip install --extra-index-url https://pypi.example.com/simple/ \
   "foundation-sdk[fastapi]>=0.1,<0.2"
 ```
 
-Or directly from a checked-out monorepo (dev only):
+Or directly from a checked-out copy of this repository:
 
 ```bash
 pip install -e ./sdks/python[fastapi]

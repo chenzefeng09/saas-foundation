@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/chenzefeng09/saas-foundation/security/policy
+    about: >-
+      Please do NOT open a public issue for security problems. Follow the security
+      policy (SECURITY.md) to report privately, or email chenzefeng09@gmail.com.
+  - name: Questions and discussions
+    url: https://github.com/chenzefeng09/saas-foundation/discussions
+    about: Ask questions, share ideas, or discuss usage with the community.
+  - name: Agent Platform issues
+    url: https://github.com/chenzefeng09/agent-platform/issues
+    about: For problems that only reproduce in Agent Platform (built on top of SaaS Foundation), file there instead.

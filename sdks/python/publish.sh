@@ -3,7 +3,7 @@
 # publish.sh — upload ./dist/* to the internal PyPI via twine
 #
 # Required env:
-#   FOUNDATION_PYPI_URL    e.g. https://pypi.internal.example/repository/pypi-hosted/
+#   FOUNDATION_PYPI_URL    e.g. https://pypi.example.com/repository/pypi-hosted/
 #   FOUNDATION_PYPI_TOKEN  upload token (username defaults to __token__)
 #
 # Flags:

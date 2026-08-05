@@ -60,7 +60,7 @@ MinIO 操作（在管理节点执行）：
 
 ```bash
 # 1) 列一下当前 policy 备份
-mc alias set foundation https://minio.internal.example.com $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+mc alias set foundation https://minio.example.com $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
 mc admin policy info foundation foundation-audit-worm-rw > /tmp/audit-worm-rw.policy.json
 
 # 2) 设为下载（只读）
@@ -183,7 +183,7 @@ done
 curl -X POST \
   -H "Authorization: Bearer $UNLEASH_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  https://unleash.internal.example.com/api/admin/features/storage.worm_via_storage_client/off
+  https://unleash.example.com/api/admin/features/storage.worm_via_storage_client/off
 ```
 
 flag 翻 OFF 后，下一次 `write_worm()` 调用立即回到老 boto3 路径，写老 bucket。
@@ -202,7 +202,7 @@ mc admin policy detach foundation audit-worm-readonly --user foundation-audit-se
 ```bash
 curl -X POST \
   -H "Authorization: Bearer $UNLEASH_ADMIN_TOKEN" \
-  https://unleash.internal.example.com/api/admin/features/storage.security_ops_validate_key_format/off
+  https://unleash.example.com/api/admin/features/storage.security_ops_validate_key_format/off
 ```
 
 flag OFF 后，drift 仅 log.warning 不阻断；已经写到业务表的 `s3_location` 数据**不**回滚。

@@ -1,0 +1,88 @@
+name: Feature request
+description: Suggest an enhancement or new capability for SaaS Foundation.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement.
+
+        Before you continue:
+        - Search [existing issues](https://github.com/chenzefeng09/saas-foundation/issues) and
+          [discussions](https://github.com/chenzefeng09/saas-foundation/discussions) to see if it has already been raised.
+        - For open-ended ideas or questions, a
+          [discussion](https://github.com/chenzefeng09/saas-foundation/discussions) is often a better starting point than an issue.
+        - SaaS Foundation is a reusable enterprise base; features should be generally useful across business systems, not specific to one consumer such as
+          [Agent Platform](https://github.com/chenzefeng09/agent-platform).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve? What is the use case, and who is affected?
+      placeholder: As a tenant administrator, I cannot ... which means ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the change you would like. Include API shape, behavior, or configuration where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you have considered, and why they fall short.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package
+      description: Which foundation package would this change touch? Pick the closest one, or "Unknown / multiple".
+      options:
+        - identity
+        - authz
+        - org
+        - billing
+        - audit
+        - compliance
+        - crypto
+        - data-protection
+        - dlp
+        - feature-flag
+        - lifecycle
+        - llm-gateway
+        - notification
+        - pam
+        - search
+        - security-ops
+        - storage
+        - api-platform
+        - Unknown / multiple
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, references, mockups, or compliance/security considerations that help us understand the request.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and discussions and did not find a duplicate.
+          required: true
+        - label: This is a general-purpose capability suitable for a reusable foundation, not a one-off for a single consumer.
+          required: false

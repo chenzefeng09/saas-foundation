@@ -1,0 +1,144 @@
+name: Bug report
+description: Report a reproducible problem in SaaS Foundation.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        Before you continue:
+        - Search [existing issues](https://github.com/chenzefeng09/saas-foundation/issues) to avoid duplicates.
+        - **Do not report security vulnerabilities here.** Please follow our
+          [security policy](https://github.com/chenzefeng09/saas-foundation/security/policy)
+          and report privately instead.
+        - SaaS Foundation is the standalone base that
+          [Agent Platform](https://github.com/chenzefeng09/agent-platform) is built on top of.
+          If the problem only reproduces through Agent Platform, please file it in that repository instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of what the bug is.
+      placeholder: Calling POST /api/authz/v1/check returns 500 when the role binding has no scope.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, ordered steps that reproduce the behavior. Include exact requests, payloads, or commands where possible.
+      placeholder: |
+        1. Start the dev stack with `make up`.
+        2. Run migrations with `make migrate`.
+        3. Create a role binding without a scope.
+        4. POST to /api/authz/v1/check with ...
+        5. Observe the error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened, including any error codes or response bodies.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package
+      description: Which foundation package does this affect? Pick the closest one, or "Unknown / multiple".
+      options:
+        - identity
+        - authz
+        - org
+        - billing
+        - audit
+        - compliance
+        - crypto
+        - data-protection
+        - dlp
+        - feature-flag
+        - lifecycle
+        - llm-gateway
+        - notification
+        - pam
+        - search
+        - security-ops
+        - storage
+        - api-platform
+        - Unknown / multiple
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sdk
+    attributes:
+      label: SDK affected
+      description: If the issue is in (or surfaces through) a business-layer SDK, which one?
+      options:
+        - "Not applicable (service / API only)"
+        - "Python (foundation_sdk)"
+        - "TypeScript"
+        - "Both Python and TypeScript"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment profile
+      description: How is the affected instance deployed?
+      options:
+        - Local dev (docker-compose)
+        - Helm — small profile
+        - Helm — medium profile
+        - Helm — large profile
+        - Other / unknown
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag, chart version, or the git commit SHA you are running.
+      placeholder: "v1.0.0 or commit edc0470"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs and output
+      description: |
+        Paste any relevant log lines, stack traces, or response bodies. This is automatically formatted as code, so no backticks are needed.
+        **Redact secrets, tokens, and personal data before pasting.**
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those are reported privately via the security policy).
+          required: true
+        - label: I have removed any secrets, tokens, or personal data from the details above.
+          required: true

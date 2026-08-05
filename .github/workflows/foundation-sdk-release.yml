@@ -9,7 +9,7 @@
 #      so the git tag is the single source of truth.
 #
 # Required repo secrets (only used by the publish job):
-#   INTERNAL_PYPI_URL    e.g. https://pypi.internal.example/repository/pypi-hosted/
+#   INTERNAL_PYPI_URL    e.g. https://pypi.example.com/repository/pypi-hosted/
 #   INTERNAL_PYPI_TOKEN  upload token
 # =============================================================================
 name: foundation-sdk release

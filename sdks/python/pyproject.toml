@@ -4,15 +4,15 @@ version = "0.1.0"
 description = "Python SDK for SaaS Foundation — typed client for all 16 microservices"
 authors = ["SaaS Foundation Team <foundation@example.com>"]
 readme = "README.md"
-license = "Proprietary"
+license = "Apache-2.0"
 packages = [{ include = "foundation_sdk", from = "." }]
 include = ["foundation_sdk/py.typed"]
 
 [tool.poetry.urls]
-# Surfaced on the internal PyPI index page so operators can jump back to source.
-Repository = "https://git.internal.example/saas-foundation/saas-foundation"
-Documentation = "https://git.internal.example/saas-foundation/saas-foundation/-/blob/main/docs/sdk-release.md"
-Changelog = "https://git.internal.example/saas-foundation/saas-foundation/-/blob/main/sdks/python/CHANGELOG.md"
+# Surfaced on the package index page so users can jump back to source.
+Repository = "https://github.com/chenzefeng09/saas-foundation"
+Documentation = "https://github.com/chenzefeng09/saas-foundation/blob/main/docs/sdk-release.md"
+Changelog = "https://github.com/chenzefeng09/saas-foundation/blob/main/sdks/python/CHANGELOG.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"

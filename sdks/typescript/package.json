@@ -2,7 +2,7 @@
   "name": "@foundation/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for SaaS Foundation — typed client for all 17 microservices",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
