@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Breaking:** `foundation-sdk` and `@foundation/sdk` 1.0.0. Every method now
   sends the request its service serves. Six methods with no route behind them
-  are removed and seventeen change signature; see
+  are removed and seventeen change signature. The lifecycle resource gains the
+  four-eyes approval requests, and its hard-delete and legal-hold release now
+  wait for a second user's approval. See
   [ADR 0001](docs/adr/0001-sdk-1-0-follows-served-routes.md).
 - org: `GET /org-units` and `GET /teams` filter by `filter.parent_id` and
   `filter.org_unit_id`, as the contract documents. The bare names still work
