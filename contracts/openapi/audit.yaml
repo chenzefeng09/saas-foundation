@@ -155,7 +155,7 @@ paths:
                 occurred_to: { type: string, format: date-time, nullable: true }
       responses:
         '200':
-          description: 导出文件（附带 Content-Disposition: attachment）
+          description: '导出文件（附带 Content-Disposition: attachment）'
           content:
             text/csv:
               schema: { type: string, format: binary }

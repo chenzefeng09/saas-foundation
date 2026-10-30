@@ -16,7 +16,7 @@ import time
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -281,14 +281,22 @@ async def list_tenant_keys(
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
 ) -> dict[str, Any]:
-    """List virtual keys for the authenticated tenant (internal scope for scheduler lookup)."""
-    from sqlalchemy import select
+    """List the tenant's long-lived virtual keys (internal scope for scheduler lookup).
+
+    Callers take the first key (the scheduler's fallback when it cannot mint a
+    run key, the BFF canvas), so only keys that still work are listed, oldest
+    first.  Run-scoped ephemeral keys never are: each belongs to one sandbox,
+    and most of them have expired.
+    """
+    from sqlalchemy import func, or_, select
     from foundation_llm_gateway.domain.models import LLMTenantKey
     rows = list((await session.scalars(
         select(LLMTenantKey).where(
             LLMTenantKey.tenant_id == ctx.tenant_id,
             LLMTenantKey.enabled.is_(True),
-        )
+            LLMTenantKey.ephemeral.is_(False),
+            or_(LLMTenantKey.expires_at.is_(None), LLMTenantKey.expires_at > func.now()),
+        ).order_by(LLMTenantKey.created_at, LLMTenantKey.id)
     )).all())
     return {
         "items": [
@@ -1100,6 +1108,56 @@ async def delete_user_preference(
         raise FoundationError(VALIDATION_FAILED, detail="user_id required for user preferences")
     deleted = await svc.delete_user_preference(
         session, tenant_id=ctx.tenant_id, user_id=ctx.user_id, purpose=purpose,
+    )
+    return {"deleted": deleted}
+
+
+# --- A member's preferences (tenant-admin data-subject requests) ---
+#
+# The /user-preferences routes above answer only for the calling user.  An
+# administrator handling a GDPR access or erasure request for another member of
+# the tenant (Art. 15 / 17) reads and deletes that member's preferences here.
+
+_MEMBER_USER_ID = r"^usr_[0-9A-Z]{26}$"
+
+
+def _require_privileged_actor(ctx: FoundationContext) -> None:
+    # The BFF sends ``X-Actor: ADMIN`` only after enforcing a tenant-admin
+    # permission (the same contract as PUT /tenant-defaults).
+    if ctx.actor not in {"ADMIN", "SERVICE"}:
+        raise FoundationError(
+            PERMISSION_DENIED,
+            detail="Another user's preferences require an ADMIN or SERVICE actor.",
+        )
+
+
+@router.get("/users/{user_id}/preferences", tags=["llm-gateway"])
+async def list_member_preferences(
+    user_id: str = Path(pattern=_MEMBER_USER_ID),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    """Every model preference one member of the caller's tenant has set."""
+    _require_privileged_actor(ctx)
+    rows = await svc.list_user_preferences(session, tenant_id=ctx.tenant_id, user_id=user_id)
+    return {"items": [_serialize_user_preference(r) for r in rows]}
+
+
+@router.delete("/users/{user_id}/preferences", tags=["llm-gateway"])
+async def delete_member_preferences(
+    user_id: str = Path(pattern=_MEMBER_USER_ID),
+    ctx: FoundationContext = Depends(current_context),
+    session: AsyncSession = Depends(db_session),
+    svc: LLMGatewayService = Depends(llm_gateway_service),
+) -> dict[str, Any]:
+    """Delete every model preference of one member of the caller's tenant.
+
+    Idempotent: a member with none left answers ``{"deleted": 0}``.
+    """
+    _require_privileged_actor(ctx)
+    deleted = await svc.delete_all_user_preferences(
+        session, tenant_id=ctx.tenant_id, user_id=user_id,
     )
     return {"deleted": deleted}
 

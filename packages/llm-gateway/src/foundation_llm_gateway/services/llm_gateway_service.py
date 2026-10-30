@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 import ulid
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import delete, func as sa_func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -995,6 +995,20 @@ class LLMGatewayService:
         await session.delete(existing)
         await session.flush()
         return True
+
+    async def delete_all_user_preferences(
+        self, session: AsyncSession, *,
+        tenant_id: str, user_id: str,
+    ) -> int:
+        """Delete every preference of one user (GDPR erasure); returns how many."""
+        result = await session.execute(
+            delete(LLMUserModelPreference).where(
+                LLMUserModelPreference.tenant_id == tenant_id,
+                LLMUserModelPreference.user_id == user_id,
+            )
+        )
+        await session.flush()
+        return int(getattr(result, "rowcount", 0) or 0)
 
     def _emit(self, session, tenant_id, event_type, payload, request_id):
         session.add(Outbox(tenant_id=tenant_id, event_type=event_type,

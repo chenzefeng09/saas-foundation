@@ -163,14 +163,22 @@ async def test_list_roles_paginates(
         make_role(role_id=f"rol_01J000000000000000000ROL{i}", tenant_id=tenant_id, name=f"r{i}")
         for i in range(5)
     ]
-    fake_session.queue_scalars(rows[:3])
+    fake_session.queue_scalars(rows[:3])  # page 1: limit+1 rows signal more
+    fake_session.queue_scalars(rows[2:])  # page 2: what `id > cursor` selects
 
     svc = RoleService(audit=audit_publisher)
-    items, next_cursor = await svc.list_roles(
-        fake_session, tenant_id=tenant_id, cursor=None, limit=2
+    page1, cursor1 = await svc.list_roles(fake_session, tenant_id=tenant_id, cursor=None, limit=2)
+    assert page1 == rows[:2]
+    # The cursor is the last id returned, so the (limit+1)-th row is not skipped.
+    assert cursor1 == rows[1].id
+
+    page2, cursor2 = await svc.list_roles(
+        fake_session, tenant_id=tenant_id, cursor=cursor1, limit=2
     )
-    assert len(items) == 2
-    assert next_cursor == rows[2].id  # limit+1 row signals next page
+    assert page2 == rows[2:4]
+    assert cursor2 == rows[3].id
+    where = fake_session.statements[-1].whereclause.compile(compile_kwargs={"literal_binds": True})
+    assert f"authz.role.id > '{cursor1}'" in str(where)
 
 
 async def test_list_roles_last_page_returns_no_cursor(

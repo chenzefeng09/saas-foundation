@@ -19,7 +19,11 @@ import pytest
 from httpx import AsyncClient
 
 from foundation_identity.domain.models import User
-from foundation_identity.errors import INVALID_CREDENTIALS, FoundationError
+from foundation_identity.errors import (
+    ACCOUNT_SETUP_REQUIRED,
+    INVALID_CREDENTIALS,
+    FoundationError,
+)
 
 # Mirrors tests.conftest.STUB_OIDC_CLAIMS — the bearer token resolves to this caller.
 CALLER_USER_ID = "usr_01J5DEVUSER000000000000001"
@@ -134,6 +138,34 @@ async def test_change_own_password_wrong_current_is_400(
     # No password was set, no audit emitted.
     mock_keycloak.reset_password.assert_not_called()
     mock_audit.publish.assert_not_called()
+
+
+@pytest.mark.integration
+async def test_change_own_password_with_pending_update_password_succeeds(
+    client: AsyncClient,
+    mock_keycloak: AsyncMock,
+    mock_oidc: AsyncMock,
+    mock_audit: AsyncMock,
+) -> None:
+    """Expired password (KC "Account is not fully set up") → the current password
+    was accepted, so the change proceeds and the non-temporary reset clears the
+    pending UPDATE_PASSWORD action."""
+    seeded = _seed_user()
+    mock_keycloak.get_user.return_value = {"id": "kc-user-fake-uuid"}
+    mock_keycloak.has_local_password.return_value = True
+    mock_oidc.password_grant.side_effect = FoundationError(ACCOUNT_SETUP_REQUIRED)
+
+    with _patch_get_user(seeded):
+        resp = await client.post(
+            "/api/identity/v1/sessions/me/password",
+            headers={"Authorization": "Bearer stub-access-token"},
+            json={"current_password": "ExpiredPassw0rd", "new_password": "NewStrongPassw0rd"},
+        )
+
+    assert resp.status_code == 204, resp.text
+    mock_keycloak.reset_password.assert_awaited_once()
+    assert mock_keycloak.reset_password.call_args.kwargs.get("temporary") is False
+    mock_audit.publish.assert_called_once()
 
 
 @pytest.mark.integration

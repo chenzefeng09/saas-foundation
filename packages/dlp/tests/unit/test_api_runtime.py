@@ -306,7 +306,9 @@ def test_core_scan_uses_real_resource_identity_for_classification() -> None:
     assert response.json()["classification_persisted"] is True
 
 
-def test_core_scan_rejects_user_actor_before_persisting_classification() -> None:
+def test_core_scan_user_actor_gets_verdict_without_persisting_classification() -> None:
+    # A non-management caller may scan, but the scan must never write the
+    # resource's classification label (which drives check:read/check:download).
     response = _client().post(
         "/api/dlp/v1/core/scan",
         json={
@@ -317,7 +319,51 @@ def test_core_scan_rejects_user_actor_before_persisting_classification() -> None
         headers=_headers(),
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["max_sensitivity"] == "L3"
+    assert response.json()["resource_id"] == "doc_1"
+    assert response.json()["classification_persisted"] is False
+
+
+def test_core_scan_accepts_sandbox_worker_tool_call_shape() -> None:
+    # Regression: the agent worker's PreToolUse hook (direct, or via the
+    # tool-broker which strips X-Actor) sends only a bearer + X-Tenant-Id.  This
+    # was a 403 DLP_DENIED, so every tool-call scan silently failed open.
+    response = _client().post(
+        "/api/dlp/v1/core/scan",
+        json={
+            "content": '{"command":"echo 身份证"}',
+            "resource_type": "tool_call",
+            "resource_id": "Bash:toolu_1",
+        },
+        headers={"Authorization": "Bearer sandbox-token", "X-Tenant-Id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["max_sensitivity"] == "L3"
+    assert response.json()["classification_persisted"] is False
+
+
+def test_core_scan_spoofed_admin_header_cannot_persist_classification() -> None:
+    # ADMIN is never accepted from a header (it downgrades to USER), so it must
+    # not unlock label persistence either.
+    response = _client().post(
+        "/api/dlp/v1/core/scan",
+        json={"content": "身份证", "resource_type": "document", "resource_id": "doc_1"},
+        headers=_headers(actor="ADMIN"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["classification_persisted"] is False
+
+
+def test_core_scan_requires_tenant_context() -> None:
+    response = _client().post(
+        "/api/dlp/v1/core/scan",
+        json={"content": "身份证", "resource_type": "document", "resource_id": "doc_1"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_classify_file_returns_sdk_response() -> None:

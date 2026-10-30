@@ -12,6 +12,7 @@ from foundation_dlp.api.dependencies import (
     current_request_id,
     db_session,
     dlp_service,
+    is_management_actor,
     require_management_actor,
     trusted_user_clearance,
 )
@@ -137,11 +138,20 @@ async def check_download(
 @router.post("/scan", operation_id="scanContent")
 async def scan_content(
     body: ScanContentRequest,
-    ctx: FoundationContext = Depends(require_management_actor),
+    ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: DLPService = Depends(dlp_service),
     request_id: str = Depends(current_request_id),
 ) -> dict:
+    """Scan ``content`` for the resource and return ``{hits, max_sensitivity, action}``.
+
+    Any tenant-scoped caller may scan: the verdict depends only on the content and
+    the tenant's rules, and every hit is recorded as a DLP event either way.  Only a
+    trusted SERVICE/ADMIN caller also persists the hit level as the resource's
+    classification label.  That label drives ``check:read`` / ``check:download``,
+    so an untrusted caller (for example a sandboxed agent worker scanning its own
+    tool calls) must never be able to raise the label of an arbitrary resource id.
+    """
     return await svc.scan_content(
         session,
         tenant_id=ctx.tenant_id,
@@ -150,6 +160,7 @@ async def scan_content(
         resource_id=body.resource_id,
         user_id=ctx.user_id,
         request_id=request_id,
+        persist_classification=is_management_actor(ctx),
     )
 
 

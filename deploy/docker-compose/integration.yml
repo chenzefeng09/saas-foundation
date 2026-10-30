@@ -32,15 +32,18 @@ services:
       IDENTITY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
       IDENTITY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
       IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
-      IDENTITY_KEYCLOAK_URL: http://keycloak:8080
+      IDENTITY_KEYCLOAK_BASE_URL: http://keycloak:8080
       IDENTITY_KEYCLOAK_REALM: foundation
-      IDENTITY_KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      IDENTITY_KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN:-admin}
       IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
       IDENTITY_VAULT_URL: http://vault:8200
       IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
       IDENTITY_OTEL_ENABLED: "true"
       IDENTITY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
-      IDENTITY_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
+      # Settings.redis_dsn (refresh-token replay guard).  An unknown IDENTITY_*
+      # name is silently ignored and identity falls back to localhost:6379, where
+      # every session refresh then fails with REDIS_UNAVAILABLE.
+      IDENTITY_REDIS_DSN: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
     ports:
       - "${PORT_IDENTITY:-8001}:8001"
     networks: [foundation]

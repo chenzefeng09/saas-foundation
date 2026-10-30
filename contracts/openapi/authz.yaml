@@ -247,17 +247,37 @@ paths:
   /bindings:
     get:
       tags: [bindings]
+      summary: 列角色绑定（默认只列 ACTIVE）
+      description: |
+        默认只返回 ACTIVE 绑定——即 `/check` 实际采纳、当前生效的授权。
+        已撤销（REVOKED）与已过期（EXPIRED）的绑定是审计历史，只有在
+        `filter.status` 显式请求时才返回；每条记录都带 `status` 与
+        `revoked_at` / `revoked_by` / `revoked_reason`，调用方据此区分
+        "当前授权" 与 "历史记录"。按 `id` 升序游标分页。
       operationId: listBindings
       parameters:
-        - name: filter.subject_type
+        - name: filter.principal_kind
           in: query
-          schema: { type: string, enum: [USER, TEAM, ORG_UNIT] }
-        - name: filter.subject_id
+          schema: { $ref: '#/components/schemas/PrincipalKind' }
+        - name: filter.principal_id
           in: query
           schema: { type: string }
         - name: filter.role_id
           in: query
           schema: { $ref: './_common.yaml#/components/schemas/RoleId' }
+        - name: filter.status
+          in: query
+          description: |
+            逗号分隔的生命周期状态，如 `filter.status=REVOKED` 或
+            `filter.status=ACTIVE,REVOKED`。缺省 = `ACTIVE`；三种全选 = 不按状态过滤。
+            非法值（含小写、空值）→ 422 `FOUNDATION.AUTHZ.INPUT.VALIDATION_FAILED`。
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            items: { $ref: '#/components/schemas/RoleBindingStatus' }
+            default: [ACTIVE]
         - $ref: './_common.yaml#/components/parameters/Cursor'
         - $ref: './_common.yaml#/components/parameters/Limit'
       responses:
@@ -273,6 +293,7 @@ paths:
                       items:
                         type: array
                         items: { $ref: '#/components/schemas/RoleBinding' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
     post:
       tags: [bindings]
       operationId: createBinding
@@ -297,12 +318,19 @@ paths:
       - name: binding_id
         in: path
         required: true
-        schema: { type: string }
+        schema: { $ref: '#/components/schemas/RoleBindingId' }
     delete:
       tags: [bindings]
+      summary: 撤销绑定（软撤销，幂等）
+      description: |
+        不物理删除：写入 `revoked_at` / `revoked_by` / `revoked_reason`，绑定立即
+        失效，从默认列表消失，仍可用 `GET /bindings?filter.status=REVOKED` 查到。
+        对已撤销的绑定重复调用返回 204，原撤销记录不变。撤销是终态——
+        再次授权须新建绑定（新的 id）。
       operationId: deleteBinding
       responses:
-        '204': { description: ok }
+        '204': { description: 已撤销（或此前已撤销） }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
   # --------------------------- OPA Policies ---------------------------------
@@ -444,38 +472,86 @@ components:
         owner_service: { type: string, example: 'identity' }
         requires_policy: { type: boolean, description: true → 必走 OPA }
 
+    RoleBindingId:
+      type: string
+      pattern: '^rbd_[0-9A-Z]{26}$'
+
+    PrincipalKind:
+      type: string
+      enum: [USER, TEAM, ORG_UNIT, API_KEY, SERVICE_ACCOUNT]
+
+    ScopeKind:
+      type: string
+      enum: [TENANT, ORG_UNIT, TEAM, RESOURCE, GLOBAL_SYSTEM]
+
+    RoleBindingStatus:
+      type: string
+      enum: [ACTIVE, EXPIRED, REVOKED]
+      description: |
+        绑定在响应生成时刻的生命周期状态，互斥、按序判定（与 `/check` 同一规则）：
+        `REVOKED` = `revoked_at` 非空（撤销优先于过期）；
+        `EXPIRED` = 未撤销但 `expires_at` 已过；
+        `ACTIVE` = 其余，即当前生效、`/check` 采纳的绑定。
+
     RoleBinding:
       type: object
-      required: [id, tenant_id, subject_type, subject_id, role_id, granted_at]
+      required:
+        - id
+        - tenant_id
+        - principal_kind
+        - principal_id
+        - role_id
+        - scope_kind
+        - granted_at
+        - granted_by
+        - status
       properties:
-        id: { type: string }
+        id: { $ref: '#/components/schemas/RoleBindingId' }
         tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
-        subject_type: { type: string, enum: [USER, TEAM, ORG_UNIT] }
-        subject_id: { type: string }
+        principal_kind: { $ref: '#/components/schemas/PrincipalKind' }
+        principal_id:
+          type: string
+          description: 主体 ID，前缀随 principal_kind（如 USER → `usr_…`）
         role_id: { $ref: './_common.yaml#/components/schemas/RoleId' }
-        scope_resource_id:
+        scope_kind: { $ref: '#/components/schemas/ScopeKind' }
+        scope_id:
           type: string
           nullable: true
-          description: 角色 scope 限制到某资源
-        granted_by: { $ref: './_common.yaml#/components/schemas/UserId' }
+          description: scope_kind 非 TENANT / GLOBAL_SYSTEM 时的作用域对象 ID
         granted_at: { type: string, format: date-time }
+        granted_by:
+          type: string
+          description: 授予者 user_id；系统引导写入的绑定为 `BOOTSTRAP`
+        grant_reason: { type: string, nullable: true }
         expires_at:
           type: string
           format: date-time
           nullable: true
-          description: JIT 提权用；到期自动 revoke（与 pam-v1 联动）
-        reason: { type: string, nullable: true }
+          description: JIT 提权用；过期后 status = EXPIRED，不再参与鉴权
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 撤销时间；null = 未撤销
+        revoked_by: { type: string, nullable: true }
+        revoked_reason: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/RoleBindingStatus' }
 
     CreateBindingRequest:
       type: object
-      required: [subject_type, subject_id, role_id]
+      additionalProperties: false
+      required: [principal_kind, principal_id, role_id]
       properties:
-        subject_type: { type: string, enum: [USER, TEAM, ORG_UNIT] }
-        subject_id: { type: string }
+        principal_kind: { $ref: '#/components/schemas/PrincipalKind' }
+        principal_id: { type: string, minLength: 1, maxLength: 64 }
         role_id: { $ref: './_common.yaml#/components/schemas/RoleId' }
-        scope_resource_id: { type: string }
-        expires_at: { type: string, format: date-time }
-        reason: { type: string }
+        scope_kind:
+          type: string
+          enum: [TENANT, ORG_UNIT, TEAM, RESOURCE, GLOBAL_SYSTEM]
+          default: TENANT
+        scope_id: { type: string, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        grant_reason: { type: string, maxLength: 500, nullable: true }
 
     Policy:
       type: object

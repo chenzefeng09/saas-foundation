@@ -57,6 +57,7 @@ def make_binding(
     scope_id: str | None = None,
     expires_at: datetime | None = None,
     revoked: bool = False,
+    revoked_reason: str | None = None,
 ) -> RoleBinding:
     b = RoleBinding(
         id=binding_id,
@@ -74,6 +75,7 @@ def make_binding(
     if revoked:
         b.revoked_at = datetime.now(UTC)
         b.revoked_by = "usr_01J0000000000000000000ACT1"
+        b.revoked_reason = revoked_reason
     return b
 
 

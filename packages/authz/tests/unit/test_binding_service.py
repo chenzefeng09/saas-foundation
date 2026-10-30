@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from foundation_authz.adapters.opa_client import OpaClient
 from foundation_authz.adapters.security_attributes import SecurityAttributeProvider
@@ -15,7 +17,8 @@ from foundation_authz.errors import (
     ROLE_NOT_FOUND,
     FoundationError,
 )
-from foundation_authz.services.binding_service import BindingService
+from foundation_authz.schemas.binding import BINDING_STATUSES, binding_status
+from foundation_authz.services.binding_service import BindingService, status_filter_clause
 from foundation_authz.services.check_service import CheckService
 from tests._factories import make_binding, make_role
 from tests.conftest import FakeAsyncSession
@@ -431,14 +434,19 @@ async def test_list_bindings_paginates(
         make_binding(binding_id=f"rbd_01J000000000000000000RBD{i}", tenant_id=tenant_id)
         for i in range(5)
     ]
-    fake_session.queue_scalars(bindings[:3])
+    fake_session.queue_scalars(bindings[:3])  # page 1: limit+1 rows signal more
+    fake_session.queue_scalars(bindings[2:])  # page 2: what `id > cursor` selects
 
     svc = BindingService(audit=audit_publisher)
-    items, next_cursor = await svc.list(
-        fake_session, tenant_id=tenant_id, cursor=None, limit=2
-    )
-    assert len(items) == 2
-    assert next_cursor == bindings[2].id
+    page1, cursor1 = await svc.list(fake_session, tenant_id=tenant_id, cursor=None, limit=2)
+    assert page1 == bindings[:2]
+    # The cursor is the last id returned, so the (limit+1)-th row is not skipped.
+    assert cursor1 == bindings[1].id
+
+    page2, cursor2 = await svc.list(fake_session, tenant_id=tenant_id, cursor=cursor1, limit=2)
+    assert page2 == bindings[2:4]
+    assert cursor2 == bindings[3].id
+    assert f"authz.role_binding.id > '{cursor1}'" in _where(fake_session.statements[-1])
 
 
 async def test_list_bindings_passes_through_filters(
@@ -562,3 +570,149 @@ async def test_revoke_cross_tenant_binding_treated_as_not_found(
             reason=None,
         )
     assert ei.value.error_code is BINDING_NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# list — lifecycle-state filtering (active by default, revoked only on request)
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+_NOW_SQL = "'2026-10-30 12:00:00+00:00'"
+
+
+def _where(stmt: Any) -> str:
+    """Render a recorded SELECT's WHERE clause as Postgres SQL, values inlined.
+
+    Only the WHERE clause: the column list names revoked_at/expires_at too.
+    """
+    compiled = stmt.whereclause.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    )
+    return " ".join(str(compiled).split())
+
+
+@pytest.mark.parametrize(
+    ("revoked_at", "expires_at", "expected"),
+    [
+        (None, None, "ACTIVE"),
+        (None, _NOW + timedelta(days=1), "ACTIVE"),
+        (None, _NOW, "ACTIVE"),  # CheckService only drops expires_at < now
+        (None, _NOW - timedelta(seconds=1), "EXPIRED"),
+        (_NOW - timedelta(days=1), None, "REVOKED"),
+        (_NOW - timedelta(days=1), _NOW + timedelta(days=1), "REVOKED"),
+        (_NOW - timedelta(days=1), _NOW - timedelta(days=2), "REVOKED"),  # revoked wins
+    ],
+)
+def test_binding_status_rule(
+    revoked_at: datetime | None, expires_at: datetime | None, expected: str
+) -> None:
+    assert binding_status(revoked_at=revoked_at, expires_at=expires_at, now=_NOW) == expected
+
+
+async def test_list_defaults_to_active_bindings_only(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str
+) -> None:
+    active = make_binding(tenant_id=tenant_id)
+    fake_session.queue_scalars([active])
+
+    svc = BindingService(audit=audit_publisher)
+    rows, next_cursor = await svc.list(fake_session, tenant_id=tenant_id, now=_NOW)
+
+    assert rows == [active]
+    assert next_cursor is None
+    sql = _where(fake_session.statements[-1])
+    assert f"authz.role_binding.tenant_id = '{tenant_id}'" in sql
+    # Exactly the set CheckService honours: not revoked, not past expires_at.
+    assert (
+        "authz.role_binding.revoked_at IS NULL AND (authz.role_binding.expires_at IS NULL "
+        f"OR authz.role_binding.expires_at >= {_NOW_SQL})"
+    ) in sql
+    assert "revoked_at IS NOT NULL" not in sql
+
+
+async def test_list_returns_revoked_bindings_only_on_request(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str
+) -> None:
+    revoked = make_binding(tenant_id=tenant_id, revoked=True)
+    fake_session.queue_scalars([revoked])
+
+    svc = BindingService(audit=audit_publisher)
+    rows, _ = await svc.list(fake_session, tenant_id=tenant_id, statuses={"REVOKED"}, now=_NOW)
+
+    assert rows == [revoked]
+    sql = _where(fake_session.statements[-1])
+    assert "authz.role_binding.revoked_at IS NOT NULL" in sql
+    assert "revoked_at IS NULL" not in sql
+    assert "expires_at" not in sql
+
+
+async def test_list_expired_excludes_revoked(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str
+) -> None:
+    svc = BindingService(audit=audit_publisher)
+    await svc.list(fake_session, tenant_id=tenant_id, statuses={"EXPIRED"}, now=_NOW)
+
+    sql = _where(fake_session.statements[-1])
+    expired = (
+        f"authz.role_binding.revoked_at IS NULL AND authz.role_binding.expires_at < {_NOW_SQL}"
+    )
+    assert expired in sql
+    assert "revoked_at IS NOT NULL" not in sql
+
+
+async def test_list_active_and_revoked_combines_with_or(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str
+) -> None:
+    svc = BindingService(audit=audit_publisher)
+    await svc.list(fake_session, tenant_id=tenant_id, statuses={"REVOKED", "ACTIVE"}, now=_NOW)
+
+    sql = _where(fake_session.statements[-1])
+    assert f"authz.role_binding.expires_at >= {_NOW_SQL}" in sql
+    assert " OR authz.role_binding.revoked_at IS NOT NULL" in sql
+    assert f"expires_at < {_NOW_SQL}" not in sql  # EXPIRED not requested
+
+
+async def test_list_all_statuses_applies_no_lifecycle_predicate(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str
+) -> None:
+    svc = BindingService(audit=audit_publisher)
+    await svc.list(fake_session, tenant_id=tenant_id, statuses=BINDING_STATUSES, now=_NOW)
+
+    sql = _where(fake_session.statements[-1])
+    assert "revoked_at" not in sql
+    assert "expires_at" not in sql
+
+
+async def test_list_keeps_other_filters_and_cursor(
+    fake_session: FakeAsyncSession, audit_publisher, tenant_id: str, user_id: str
+) -> None:
+    first = make_binding(binding_id="rbd_01J0000000000000000000RBD1", tenant_id=tenant_id)
+    second = make_binding(binding_id="rbd_01J0000000000000000000RBD2", tenant_id=tenant_id)
+    fake_session.queue_scalars([first, second])  # limit + 1 rows → another page
+
+    svc = BindingService(audit=audit_publisher)
+    rows, next_cursor = await svc.list(
+        fake_session,
+        tenant_id=tenant_id,
+        cursor="rbd_01J0000000000000000000RBD0",
+        limit=1,
+        principal_kind="USER",
+        principal_id=user_id,
+        role_id="rol_01J0000000000000000000ROL1",
+        now=_NOW,
+    )
+
+    assert rows == [first]
+    assert next_cursor == first.id
+    sql = _where(fake_session.statements[-1])
+    assert "authz.role_binding.principal_kind = 'USER'" in sql
+    assert f"authz.role_binding.principal_id = '{user_id}'" in sql
+    assert "authz.role_binding.role_id = 'rol_01J0000000000000000000ROL1'" in sql
+    assert "authz.role_binding.id > 'rbd_01J0000000000000000000RBD0'" in sql
+    assert "authz.role_binding.revoked_at IS NULL" in sql
+
+
+@pytest.mark.parametrize("statuses", [set(), {"DELETED"}])
+def test_status_filter_clause_rejects_empty_or_unknown(statuses: set[str]) -> None:
+    with pytest.raises(ValueError, match="status"):
+        status_filter_clause(statuses, now=_NOW)  # type: ignore[arg-type]
