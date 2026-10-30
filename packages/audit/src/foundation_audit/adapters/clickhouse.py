@@ -362,11 +362,30 @@ async def query_events(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Verification reads chains in the order the worker chained them: batch after
+# batch (ingested_at), a batch's events in leaf order.  A place in that order is
+# a ChainPosition; a verify-integrity window starts at one.
+# ---------------------------------------------------------------------------
+ChainPosition = tuple[datetime, str, int]  # (ingested_at, merkle_batch_id, merkle_leaf_idx)
+
+_CHAIN_ORDER = "(ingested_at, merkle_batch_id, merkle_leaf_idx)"
+_AT_POSITION = (
+    "({at_ingested_at:DateTime64(3, 'UTC')}, {at_batch_id:String}, {at_leaf_idx:UInt32})"
+)
+
+
+def _position_params(position: ChainPosition) -> dict[str, Any]:
+    ingested_at, batch_id, leaf_idx = position
+    return {"at_ingested_at": ingested_at, "at_batch_id": batch_id, "at_leaf_idx": leaf_idx}
+
+
 async def get_events_for_verification(
     *,
     tenant_id: str,
     service: str | None = None,
-    from_event_id: str | None = None,
+    start: ChainPosition | None = None,
+    include_start: bool = False,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     """Fetch events for hash-chain verification, in the order the worker chained them.
@@ -375,15 +394,17 @@ async def get_events_for_verification(
     batch's ingested_at, so that order is ingested_at, then merkle_leaf_idx;
     event_id need not follow it.  It holds while ingested_at moves on from batch
     to batch, as it does for one worker on a clock that does not step back.
+
+    The events come after ``start``, or from it on with ``include_start``.
     """
     conditions = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if service:
         conditions.append("service = {service:String}")
         params["service"] = service
-    if from_event_id:
-        conditions.append("event_id >= {from_event_id:String}")
-        params["from_event_id"] = from_event_id
+    if start is not None:
+        conditions.append(f"{_CHAIN_ORDER} {'>=' if include_start else '>'} {_AT_POSITION}")
+        params.update(_position_params(start))
 
     where = " AND ".join(conditions)
     cols = "event_id, tenant_id, service, occurred_at, ingested_at, prev_hash, curr_hash, merkle_batch_id, merkle_leaf_idx"
@@ -411,29 +432,80 @@ async def get_events_for_verification(
     return out
 
 
-async def get_merkle_batches(
+async def get_chain_position(*, tenant_id: str, event_id: str) -> ChainPosition | None:
+    """Where the worker chained ``event_id``; None if no such event of the tenant is stored."""
+    sql = (
+        "SELECT ingested_at, merkle_batch_id, merkle_leaf_idx FROM audit.events "
+        "WHERE tenant_id = {tenant_id:String} AND event_id = {event_id:String} "
+        "ORDER BY ingested_at LIMIT 1"
+    )
+    result = await _query(sql, {"tenant_id": tenant_id, "event_id": event_id})
+    if not result.result_rows:
+        return None
+    ingested_at, batch_id, leaf_idx = result.result_rows[0]
+    return ingested_at, batch_id, leaf_idx
+
+
+async def get_chain_heads_before(
     *,
     tenant_id: str,
-    service: str | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
-    """Fetch merkle_batch rows for integrity verification."""
-    conditions = ["tenant_id = {tenant_id:String}"]
-    params: dict[str, Any] = {"tenant_id": tenant_id}
-    if service:
-        conditions.append("service = {service:String}")
-        params["service"] = service
+    services: list[str],
+    start: ChainPosition,
+    include_start: bool = False,
+) -> dict[str, str]:
+    """service → curr_hash of its chain's last event before a window starting at ``start``.
 
-    where = " AND ".join(conditions)
+    The window holds the events after ``start``, or from it on with ``include_start``
+    (as get_events_for_verification).  Each chain's first event in it must follow
+    that event.  A chain with no event stored before the window is left out.
+    """
+    sql = (
+        "SELECT service, curr_hash FROM audit.events "
+        "WHERE tenant_id = {tenant_id:String} AND service IN {services:Array(String)} "
+        f"AND {_CHAIN_ORDER} {'<' if include_start else '<='} {_AT_POSITION} "
+        "ORDER BY service, ingested_at DESC, merkle_batch_id DESC, merkle_leaf_idx DESC "
+        "LIMIT 1 BY service"
+    )
+    params: dict[str, Any] = {"tenant_id": tenant_id, "services": services}
+    params.update(_position_params(start))
+    result = await _query(sql, params)
+    return dict(result.result_rows)
+
+
+async def get_stored_curr_hashes(
+    *, tenant_id: str, curr_hashes: list[str],
+) -> set[tuple[str, str]]:
+    """The ``curr_hashes`` an event of the tenant holds, as (service, curr_hash)."""
+    sql = (
+        "SELECT service, curr_hash FROM audit.events "
+        "WHERE tenant_id = {tenant_id:String} AND curr_hash IN {curr_hashes:Array(String)}"
+    )
+    result = await _query(sql, {"tenant_id": tenant_id, "curr_hashes": curr_hashes})
+    return {(service, curr_hash) for service, curr_hash in result.result_rows}
+
+
+async def get_batch_leaves(*, tenant_id: str, batch_ids: list[str]) -> dict[str, list[str]]:
+    """batch_id → the curr_hash of each of the tenant's events in that batch, in leaf order."""
+    sql = (
+        "SELECT merkle_batch_id, merkle_leaf_idx, curr_hash FROM audit.events "
+        "WHERE tenant_id = {tenant_id:String} AND merkle_batch_id IN {batch_ids:Array(String)} "
+        "ORDER BY merkle_batch_id, merkle_leaf_idx"
+    )
+    result = await _query(sql, {"tenant_id": tenant_id, "batch_ids": batch_ids})
+    leaves: dict[str, list[str]] = {}
+    for batch_id, _leaf_idx, curr_hash in result.result_rows:
+        leaves.setdefault(batch_id, []).append(curr_hash)
+    return leaves
+
+
+async def get_merkle_batches(*, tenant_id: str, batch_ids: list[str]) -> list[dict[str, Any]]:
+    """The tenant's merkle_batch rows of ``batch_ids``, for integrity verification."""
     sql = (
         f"SELECT {', '.join(MERKLE_BATCH_COLUMNS)} FROM audit.merkle_batch "
-        f"WHERE {where} "
-        f"ORDER BY created_at "
-        f"LIMIT {{limit:UInt32}}"
+        "WHERE tenant_id = {tenant_id:String} AND batch_id IN {batch_ids:Array(String)} "
+        "ORDER BY created_at"
     )
-    params["limit"] = limit
-
-    result = await _query(sql, params)
+    result = await _query(sql, {"tenant_id": tenant_id, "batch_ids": batch_ids})
     out: list[dict[str, Any]] = []
     for row in result.result_rows:
         out.append(dict(zip(MERKLE_BATCH_COLUMNS, row, strict=False)))

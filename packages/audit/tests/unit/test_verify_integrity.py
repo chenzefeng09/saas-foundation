@@ -13,6 +13,7 @@ import itertools
 import json
 import operator
 import re
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -35,8 +36,10 @@ from foundation_audit.api.v1.events import (
 )
 from foundation_audit.config import Settings
 from foundation_audit.domain.base import FoundationContext
+from foundation_audit.errors import EVENT_NOT_FOUND, VALIDATION_FAILED, FoundationError
 from foundation_audit.schemas.event import AuditEvent
 from foundation_audit.services.ingest_service import IngestService
+from foundation_audit.services.pagination import encode_chain_cursor, encode_cursor
 from foundation_audit.worker.batch_processor import BatchProcessor
 
 _SCHEMA_SQL = (
@@ -44,6 +47,7 @@ _SCHEMA_SQL = (
     / "deploy/docker-compose/config/clickhouse/audit-schema.sql"
 )
 _TENANT = "tnt_01J0000000000000000000TNT1"
+_NOON = datetime(2026, 10, 30, 12, tzinfo=UTC)
 _SETTINGS = Settings(tsa_enabled=False, worm_enabled=False)
 
 # clickhouse-connect 0.7.19 reads DateTime64 columns with datetime.utcfromtimestamp.
@@ -79,23 +83,54 @@ class _Body:
 
 
 def _stored(column_type: str, values: list[Any]) -> list[Any]:
-    """``values`` written to a ``column_type`` column and read back by clickhouse-connect."""
+    """``values`` written to a ``column_type`` column and read back by clickhouse-connect.
+
+    The column is followed by a byte, as in a server's response more follows it:
+    clickhouse-connect 0.7.19's C reader crashes on a lone '' that ends its input.
+    """
     ch_type = get_from_name(column_type)
     native = bytearray()
     ch_type.write_column(values, native, InsertContext("t", ["c"], [ch_type]))
-    buffer = ch_ctypes.RespBuffCls(_Body(bytes(native)))
+    buffer = ch_ctypes.RespBuffCls(_Body(bytes(native) + b"\0"))
     return list(ch_type.read_column(buffer, len(values), QueryContext()))
 
+
+def _chained_at(row: dict[str, Any]) -> tuple[datetime, str, int]:
+    """Where the worker chained the event of ``row``."""
+    return row["ingested_at"], row["merkle_batch_id"], row["merkle_leaf_idx"]
+
+
+def _bound_position(p: dict[str, Any]) -> tuple[datetime, str, int]:
+    """The chain position bound in the parameters, as the server reads it.
+
+    The adapter binds a datetime as DateTime64(3, 'UTC') text, which the server
+    compares with the naive UTC values its column holds.
+    """
+    return datetime.fromisoformat(p["at_ingested_at"]), p["at_batch_id"], p["at_leaf_idx"]
+
+
+_CHAIN_ORDER = "(ingested_at, merkle_batch_id, merkle_leaf_idx)"
+_AT = "({at_ingested_at:DateTime64(3, 'UTC')}, {at_batch_id:String}, {at_leaf_idx:UInt32})"
 
 # The WHERE conditions of the adapter's verification queries, as the server applies them.
 _CONDITIONS: dict[str, Callable[[dict[str, Any], dict[str, Any]], bool]] = {
     "tenant_id = {tenant_id:String}": lambda row, p: row["tenant_id"] == p["tenant_id"],
     "service = {service:String}": lambda row, p: row["service"] == p["service"],
-    "event_id >= {from_event_id:String}": lambda row, p: row["event_id"] >= p["from_event_id"],
+    "service IN {services:Array(String)}": lambda row, p: row["service"] in p["services"],
+    "event_id = {event_id:String}": lambda row, p: row["event_id"] == p["event_id"],
+    "curr_hash IN {curr_hashes:Array(String)}": lambda row, p: row["curr_hash"] in p["curr_hashes"],
+    "merkle_batch_id IN {batch_ids:Array(String)}": (
+        lambda row, p: row["merkle_batch_id"] in p["batch_ids"]
+    ),
+    "batch_id IN {batch_ids:Array(String)}": lambda row, p: row["batch_id"] in p["batch_ids"],
+    f"{_CHAIN_ORDER} > {_AT}": lambda row, p: _chained_at(row) > _bound_position(p),
+    f"{_CHAIN_ORDER} >= {_AT}": lambda row, p: _chained_at(row) >= _bound_position(p),
+    f"{_CHAIN_ORDER} < {_AT}": lambda row, p: _chained_at(row) < _bound_position(p),
+    f"{_CHAIN_ORDER} <= {_AT}": lambda row, p: _chained_at(row) <= _bound_position(p),
 }
 _SELECT = re.compile(
-    r"SELECT (?P<columns>.+) FROM (?P<table>\S+) WHERE (?P<where>.+) "
-    r"ORDER BY (?P<order>.+) LIMIT (?P<limit>\d+|\{limit:UInt32\})"
+    r"SELECT (?P<columns>.+) FROM (?P<table>\S+) WHERE (?P<where>.+?)(?: ORDER BY (?P<order>.+?))?"
+    r"(?: LIMIT (?P<limit>\d+|\{limit:UInt32\})(?: BY (?P<by>\w+))?)?"
 )
 
 
@@ -105,7 +140,7 @@ class _ClickHouse:
     insert() keeps every value as clickhouse-connect's codec hands it back for its
     column's type: naive UTC datetimes to the millisecond, '' where a String column
     got '', and None in a column that is not Nullable fails as it does there.
-    query() reads the SELECT list, WHERE conditions, ORDER BY and LIMIT of the SQL.
+    query() reads the SELECT list, WHERE conditions, [ORDER BY] and [LIMIT [BY]] of the SQL.
     Either fails, storing or reading nothing, while ``refuse`` lists it.
     """
 
@@ -141,14 +176,25 @@ class _ClickHouse:
             for row in self.rows[select["table"]]
             if all(_CONDITIONS[c](row, parameters) for c in conditions)
         ]
-        for key in reversed(select["order"].split(", ")):
+        for key in reversed(select["order"].split(", ") if select["order"] else []):
             column, _, direction = key.partition(" ")
             rows.sort(key=operator.itemgetter(column), reverse=direction == "DESC")
-        limit = parameters["limit"] if select["limit"].startswith("{") else int(select["limit"])
+        if select["limit"] is not None:
+            limit = parameters["limit"] if select["limit"].startswith("{") else int(select["limit"])
+            if select["by"] is None:
+                rows = rows[:limit]
+            else:  # LIMIT n BY column: the first n rows of each value of column
+                taken: Counter[Any] = Counter()
+                kept = []
+                for row in rows:
+                    taken[row[select["by"]]] += 1
+                    if taken[row[select["by"]]] <= limit:
+                        kept.append(row)
+                rows = kept
         columns = select["columns"].split(", ")
         return SimpleNamespace(
             column_names=tuple(columns),
-            result_rows=[tuple(row[c] for c in columns) for row in rows[:limit]],
+            result_rows=[tuple(row[c] for c in columns) for row in rows],
         )
 
     def event(self, event_id: str) -> dict[str, Any]:
@@ -233,7 +279,8 @@ async def _deliver(
         return await worker.run_once()
 
 
-async def _verify(clickhouse: _ClickHouse) -> VerifyIntegrityResponse:
+async def _verify(clickhouse: _ClickHouse, **request: Any) -> VerifyIntegrityResponse:
+    """One verify-integrity call for the tenant; ``request`` holds the other body fields."""
     ctx = FoundationContext(
         tenant_id=_TENANT, user_id=None, actor="ADMIN", request_id="req_01J0000000000000000000REQ1",
     )
@@ -242,7 +289,16 @@ async def _verify(clickhouse: _ClickHouse) -> VerifyIntegrityResponse:
         patch("foundation_audit.api.v1.events.crypto_client.verify_signature", _signature_valid),
         _serving(clickhouse),
     ):
-        return await verify_integrity(VerifyIntegrityRequest(tenant_id=_TENANT), ctx=ctx)
+        return await verify_integrity(VerifyIntegrityRequest(tenant_id=_TENANT, **request), ctx=ctx)
+
+
+async def _verify_all(clickhouse: _ClickHouse, **request: Any) -> list[VerifyIntegrityResponse]:
+    """The windows of a run of calls, each resuming at the next_cursor of the one before."""
+    windows = [await _verify(clickhouse, **request)]
+    while windows[-1].next_cursor is not None:
+        assert len(windows) < 100, "the cursor does not move on"
+        windows.append(await _verify(clickhouse, cursor=windows[-1].next_cursor, **request))
+    return windows
 
 
 def _evt(n: int) -> str:
@@ -308,8 +364,57 @@ async def _sealed() -> _ClickHouse:
     return clickhouse
 
 
+async def _three_batches() -> _ClickHouse:
+    """_emitted() delivered as evt1-2, evt3-4 and evt5.
+
+    identity's chain is evt1 → evt3 → evt4, lifecycle's evt2 → evt5.
+    """
+    clickhouse, worker = _ClickHouse(), _worker()
+    outbox = await _outbox(_emitted())
+    for batch in (outbox[:2], outbox[2:4], outbox[4:]):
+        assert await _deliver(worker, batch, clickhouse) == len(batch)
+    return clickhouse
+
+
 def _flip(hex_text: str) -> str:
     return hex_text[:-1] + ("1" if hex_text[-1] == "0" else "0")
+
+
+def _chain(service: str, start: str, first: int, last: int, *, events: int) -> dict[str, Any]:
+    """A VerifiedChain as model_dump() gives it: _evt(first) to _evt(last) of ``service``."""
+    return {
+        "service": service,
+        "start": start,
+        "first_event_id": _evt(first),
+        "last_event_id": _evt(last),
+        "events_checked": events,
+    }
+
+
+def _result(
+    events: int, chains: list[dict[str, Any]], *, signatures: int,
+) -> dict[str, Any]:
+    """An untampered window's result as model_dump() gives it, next_cursor aside."""
+    return {
+        "valid": True,
+        "events_checked": events,
+        "first_break_event_id": None,
+        "signatures_verified": signatures,
+        "signatures_failed": 0,
+        "tsa_present": 0,
+        "message": "OK",
+        "chains": chains,
+    }
+
+
+def _remove_batch(clickhouse: _ClickHouse, batch_id: str) -> None:
+    """Drop a batch's events from audit.events, as the TTL does once they expire."""
+    events = clickhouse.rows["audit.events"]
+    events[:] = [row for row in events if row["merkle_batch_id"] != batch_id]
+
+
+def _batch_of(clickhouse: _ClickHouse, n: int) -> str:
+    return clickhouse.event(_evt(n))["merkle_batch_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +437,11 @@ class TestVerifyIntegrity:
             "signatures_failed": 0,
             "tsa_present": 0,
             "message": "OK",
+            "next_cursor": None,
+            "chains": [
+                _chain("identity", "genesis", 1, 4, events=3),
+                _chain("lifecycle", "genesis", 2, 5, events=2),
+            ],
         }
 
     @pytest.mark.asyncio
@@ -482,3 +592,187 @@ class TestVerifyIntegrity:
         assert not result.valid
         assert result.first_break_event_id is None  # the chain itself holds
         assert (result.signatures_verified, result.signatures_failed) == (1, 1)
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestVerifyIntegrityWindows:
+    """A window: ``limit`` events in chain order, from a cursor or from_event_id."""
+
+    @pytest.mark.asyncio
+    async def test_a_window_resumes_right_after_the_last_one(self) -> None:
+        clickhouse = await _sealed()  # chain order evt1 … evt5, batches evt1-3 and evt4-5
+
+        windows = await _verify_all(clickhouse, limit=2)
+
+        assert [w.model_dump(exclude={"next_cursor"}) for w in windows] == [
+            _result(2, [
+                _chain("identity", "genesis", 1, 1, events=1),
+                _chain("lifecycle", "genesis", 2, 2, events=1),
+            ], signatures=1),  # the first batch, evt3 out of the window
+            _result(2, [_chain("identity", "previous_event", 3, 4, events=2)], signatures=2),
+            _result(1, [_chain("lifecycle", "previous_event", 5, 5, events=1)], signatures=1),
+        ]
+        assert windows[-1].next_cursor is None
+
+    @pytest.mark.parametrize("n", range(1, 6))
+    @pytest.mark.parametrize("limit", range(1, 7))
+    @pytest.mark.asyncio
+    async def test_windows_of_any_size_check_every_event_once(self, limit: int, n: int) -> None:
+        """A tampered event shows in the one window that holds it, at that event."""
+        clickhouse = await _sealed()
+        clickhouse.event(_evt(n))["payload"] = json.dumps({"tampered": True})
+
+        windows = await _verify_all(clickhouse, limit=limit)
+
+        assert len(windows) == -(-5 // limit)
+        assert sum(w.events_checked for w in windows) == 5
+        assert [w.first_break_event_id for w in windows if not w.valid] == [_evt(n)]
+        assert all(w.signatures_failed == 0 for w in windows)  # cut batches too
+
+    @pytest.mark.parametrize(
+        "tamper",
+        [
+            pytest.param({"payload": json.dumps({"changes": {}})}, id="payload"),
+            pytest.param({"prev_hash": "0" * 64}, id="prev_hash_genesis"),
+            pytest.param({"prev_hash": "not a hash"}, id="prev_hash_not_hex"),
+            pytest.param({"curr_hash": "f" * 64}, id="curr_hash"),
+            pytest.param({"curr_hash": "not a hash"}, id="curr_hash_not_hex"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_resumed_window_catches_tampering_at_its_first_event(
+        self, tamper: dict[str, Any],
+    ) -> None:
+        clickhouse = await _sealed()
+        first = (await _verify(clickhouse, limit=2)).next_cursor  # after evt2
+        clickhouse.event(_evt(3)).update(tamper)  # the next window's first event
+
+        result = await _verify(clickhouse, cursor=first, limit=2)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(3)
+
+    @pytest.mark.asyncio
+    async def test_an_event_deleted_just_before_the_window_is_caught_at_its_first_event(
+        self,
+    ) -> None:
+        """evt1 gone, evt3 seems to start the chain; evt1's batch no longer adds up."""
+        clickhouse = await _sealed()
+        first = (await _verify(clickhouse, limit=2)).next_cursor
+        clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(1)))
+
+        result = await _verify(clickhouse, cursor=first, limit=2)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(3)
+        assert (result.signatures_verified, result.signatures_failed) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_window_of_one_service_checks_whole_batches(self) -> None:
+        """Both batches hold lifecycle events too: their roots need those leaves."""
+        clickhouse = await _sealed()
+
+        windows = await _verify_all(clickhouse, service="identity", limit=2)
+
+        assert [w.model_dump(exclude={"next_cursor"}) for w in windows] == [
+            _result(2, [_chain("identity", "genesis", 1, 3, events=2)], signatures=1),
+            _result(1, [_chain("identity", "previous_event", 4, 4, events=1)], signatures=1),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_window_from_an_event_follows_the_chain_before_it(self) -> None:
+        """from_event_id starts the window there in chain order, not at ids from it on."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(9, 7, 8)), clickhouse) == 3
+
+        from_7 = await _verify(clickhouse, from_event_id=_evt(7))
+        from_8 = await _verify(clickhouse, from_event_id=_evt(8))  # not evt9, chained first
+
+        assert from_7.model_dump(exclude={"next_cursor"}) == _result(
+            2, [_chain("identity", "previous_event", 7, 8, events=2)], signatures=1,
+        )
+        assert from_8.model_dump(exclude={"next_cursor"}) == _result(
+            1, [_chain("identity", "previous_event", 8, 8, events=1)], signatures=1,
+        )
+        assert from_7.next_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_from_event_id_must_be_a_stored_event(self) -> None:
+        clickhouse = await _sealed()
+
+        with pytest.raises(FoundationError) as exc:
+            await _verify(clickhouse, from_event_id=_evt(6))
+
+        assert exc.value.error_code is EVENT_NOT_FOUND
+
+    @pytest.mark.parametrize(
+        "request_fields",
+        [
+            pytest.param({"cursor": encode_cursor(_NOON, _evt(1))}, id="query_cursor"),
+            pytest.param({"cursor": _evt(1)}, id="event_id"),
+            pytest.param(
+                {"cursor": encode_chain_cursor(_NOON, "mrk_1", 0), "from_event_id": _evt(1)},
+                id="cursor_and_from_event_id",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_start_verify_cannot_place_is_refused_before_clickhouse(
+        self, request_fields: dict[str, Any],
+    ) -> None:
+        clickhouse = await _sealed()
+        clickhouse.refuse.append(("query", "audit.events"))  # reached, it would be a 503
+
+        with pytest.raises(FoundationError) as exc:
+            await _verify(clickhouse, **request_fields)
+
+        assert exc.value.error_code is VALIDATION_FAILED
+
+    @pytest.mark.asyncio
+    async def test_a_chain_whose_oldest_events_are_gone_verifies_from_the_oldest_kept(
+        self,
+    ) -> None:
+        clickhouse = await _three_batches()
+        _remove_batch(clickhouse, _batch_of(clickhouse, 1))  # evt1 and evt2
+
+        result = await _verify(clickhouse)
+
+        assert result.model_dump() == _result(3, [
+            _chain("identity", "predecessor_not_retained", 3, 4, events=2),
+            _chain("lifecycle", "predecessor_not_retained", 5, 5, events=1),
+        ], signatures=2) | {"next_cursor": None}
+
+    @pytest.mark.parametrize(
+        "tamper",
+        [
+            pytest.param({"payload": json.dumps({"changes": {}})}, id="payload"),
+            pytest.param({"prev_hash": "f" * 64}, id="prev_hash"),
+            pytest.param({"prev_hash": "0" * 64}, id="prev_hash_genesis"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_oldest_kept_event_is_checked_against_its_own_prev_hash(
+        self, tamper: dict[str, Any],
+    ) -> None:
+        clickhouse = await _three_batches()
+        _remove_batch(clickhouse, _batch_of(clickhouse, 1))
+        clickhouse.event(_evt(3)).update(tamper)
+
+        result = await _verify(clickhouse)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(3)
+
+    @pytest.mark.asyncio
+    async def test_a_gap_after_the_oldest_kept_event_still_breaks_the_chain(self) -> None:
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_logins(1, 2, 3, 4, 5, 6))
+        for batch in (outbox[:2], outbox[2:4], outbox[4:]):
+            assert await _deliver(worker, batch, clickhouse) == 2
+        _remove_batch(clickhouse, _batch_of(clickhouse, 1))
+        clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(4)))
+
+        result = await _verify(clickhouse)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(5)  # the event after the gap
