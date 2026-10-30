@@ -325,7 +325,8 @@ async def verify_integrity(
     """Verify hash chain integrity and Merkle batch signatures for a tenant.
 
     Steps:
-    1. Fetch events from ClickHouse ordered by ingested_at (same order worker used).
+    1. Fetch events from ClickHouse in the order the worker chained them
+       (ingested_at, then Merkle leaf; ch.get_events_for_verification).
     2. Recompute prev_hash / curr_hash for each event from the canonical form the
        worker hashed (hash_chain.canonical_event); compare with stored values.
     3. For each merkle_batch: recompute Merkle root from stored leaf curr_hashes,

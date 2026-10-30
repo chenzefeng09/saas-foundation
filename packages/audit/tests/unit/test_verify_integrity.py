@@ -4,17 +4,18 @@ Events take the real path: AuditEvent → IngestService's outbox JSON (through J
 text, as Postgres JSONB keeps it) → BatchProcessor (hash chain, Merkle batch) →
 the adapter's inserts → clickhouse-connect's own codec for each column's type in
 audit-schema.sql → the adapter's verification queries → verify_integrity.  Only
-Postgres, the ClickHouse server and crypto-service are stand-ins.
+Postgres, the ClickHouse server, crypto-service and the worker's clock are stand-ins.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import operator
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -172,6 +173,22 @@ async def _no_database() -> AsyncIterator[MagicMock]:
     yield MagicMock()
 
 
+class _WorkerClock(datetime):
+    """The worker host's clock: now() is a second on at every reading.
+
+    A chain's batches follow each other in ingested_at, to the millisecond.  A real
+    worker spends round trips to Postgres, ClickHouse and crypto-service on every
+    batch; the stand-ins here can seal two in one millisecond.
+    """
+
+    _seconds = itertools.count(1)
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+        start = datetime(2026, 10, 30, 12, 1, tzinfo=UTC)
+        return (start + timedelta(seconds=next(cls._seconds))).astimezone(tz)
+
+
 async def _outbox(events: list[AuditEvent]) -> list[tuple[int, dict[str, Any]]]:
     """``events`` as IngestService writes them to the outbox: (id, event_json)."""
     session = MagicMock(flush=AsyncMock())
@@ -195,6 +212,7 @@ async def _deliver(
     fetched = [(row_id, json.loads(json.dumps(event_json))) for row_id, event_json in pending]
     with (
         patch("foundation_audit.worker.batch_processor.system_session_scope", _no_database),
+        patch("foundation_audit.worker.batch_processor.datetime", _WorkerClock),
         patch.object(worker._ingest, "fetch_pending", AsyncMock(return_value=fetched)),
         patch.object(worker._ingest, "mark_delivered", AsyncMock()),
         patch.object(worker._ingest, "record_attempts", AsyncMock()),
@@ -259,6 +277,17 @@ def _emitted() -> list[AuditEvent]:
     ]
 
 
+def _logins(*ns: int) -> list[AuditEvent]:
+    """identity events with ids _evt(n), emitted a second apart in the order given."""
+    return [
+        AuditEvent(
+            event_id=_evt(n), occurred_at=datetime(2026, 10, 30, 12, 0, i), tenant_id=_TENANT,
+            service="identity", event_type="user.login", actor_kind="USER", payload={"n": n},
+        )
+        for i, n in enumerate(ns)
+    ]
+
+
 async def _sealed() -> _ClickHouse:
     """The tables once a worker delivered _emitted() in two batches (3 and 2 events)."""
     clickhouse, worker = _ClickHouse(), _worker()
@@ -293,6 +322,29 @@ class TestVerifyIntegrity:
             "tsa_present": 0,
             "message": "OK",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_chain_verifies_in_the_order_it_was_chained(self) -> None:
+        """Event ids need not follow the order events reach the outbox in."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(9, 7, 8)), clickhouse) == 3
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
+
+    @pytest.mark.asyncio
+    async def test_a_restarted_worker_carries_the_chain_on_from_its_last_event(self) -> None:
+        """A new worker process reads the chain's head back from ClickHouse."""
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_logins(6, 2, 9, 7, 8, 1))
+        assert await _deliver(worker, outbox[:2], clickhouse) == 2
+        assert await _deliver(worker, outbox[2:4], clickhouse) == 2
+        assert await _deliver(_worker(), outbox[4:], clickhouse) == 2
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
 
     @pytest.mark.asyncio
     async def test_rows_come_back_unlike_the_outbox_json(self) -> None:
@@ -344,6 +396,19 @@ class TestVerifyIntegrity:
 
         assert not result.valid
         assert result.first_break_event_id == _evt(4)
+
+    @pytest.mark.asyncio
+    async def test_events_swapped_within_their_batch_break_the_chain(self) -> None:
+        clickhouse = await _sealed()
+        first, third = clickhouse.event(_evt(1)), clickhouse.event(_evt(3))
+        first["merkle_leaf_idx"], third["merkle_leaf_idx"] = (
+            third["merkle_leaf_idx"], first["merkle_leaf_idx"],
+        )
+
+        result = await _verify(clickhouse)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(3)  # now first in its chain
 
     @pytest.mark.asyncio
     async def test_a_deleted_event_breaks_the_chain_at_the_next_one(self) -> None:

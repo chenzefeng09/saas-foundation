@@ -250,14 +250,15 @@ async def insert_merkle_batch(batch: dict[str, Any]) -> None:
 
 
 async def get_chain_head(tenant_id: str, service: str) -> str | None:
-    """Return the curr_hash of the most-recently ingested event for (tenant, service).
+    """Return the curr_hash of the last event chained for (tenant, service).
 
-    Returns None if no events exist yet (genesis).
+    That is the last leaf of its latest batch, in the order of
+    get_events_for_verification.  Returns None if no events exist yet (genesis).
     """
     query = (
         "SELECT curr_hash FROM audit.events "
         "WHERE tenant_id = {tenant_id:String} AND service = {service:String} "
-        "ORDER BY ingested_at DESC, event_id DESC LIMIT 1"
+        "ORDER BY ingested_at DESC, merkle_batch_id DESC, merkle_leaf_idx DESC LIMIT 1"
     )
     result = await _query(query, {"tenant_id": tenant_id, "service": service})
     rows = result.result_rows
@@ -368,7 +369,13 @@ async def get_events_for_verification(
     from_event_id: str | None = None,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
-    """Fetch events ordered by ingested_at for hash-chain verification."""
+    """Fetch events for hash-chain verification, in the order the worker chained them.
+
+    The worker chains a batch's events in leaf order and stamps them all with the
+    batch's ingested_at, so that order is ingested_at, then merkle_leaf_idx;
+    event_id need not follow it.  It holds while ingested_at moves on from batch
+    to batch, as it does for one worker on a clock that does not step back.
+    """
     conditions = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if service:
@@ -390,7 +397,7 @@ async def get_events_for_verification(
     sql = (
         f"SELECT {cols}{extra_cols} FROM audit.events "
         f"WHERE {where} "
-        f"ORDER BY tenant_id, ingested_at, event_id "
+        f"ORDER BY tenant_id, ingested_at, merkle_batch_id, merkle_leaf_idx "
         f"LIMIT {{limit:UInt32}}"
     )
     params["limit"] = limit
