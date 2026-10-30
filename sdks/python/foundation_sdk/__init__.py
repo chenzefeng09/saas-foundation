@@ -24,11 +24,10 @@ from ._signing import (
     SignatureExpiredError,
     SignatureInvalid,
 )
-from ._version import __version__
+from ._version import __version__ as __version__
 from .client import FoundationClient, FoundationClientSettings
 
 __all__ = [
-    "__version__",
     "FoundationClient",
     "FoundationClientSettings",
     "FoundationContext",
