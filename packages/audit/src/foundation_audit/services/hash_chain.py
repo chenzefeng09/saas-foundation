@@ -22,6 +22,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+# The prev_hash of a chain's first event.
+GENESIS_HASH = "0" * 64
+
 # Every AuditEvent field that audit.events keeps: what an event's chain hash covers.
 # sensitive_fields is not kept, so it is not covered.
 CHAINED_FIELDS: tuple[str, ...] = (
@@ -130,7 +133,7 @@ def compute_chain_hash(
     canon = _canonical_bytes(event_data)
 
     if prev_hash is None:
-        prev_hash = "0" * 64  # genesis block
+        prev_hash = GENESIS_HASH
 
     h = _make_hasher(hash_algorithm)
     h.update(bytes.fromhex(prev_hash))

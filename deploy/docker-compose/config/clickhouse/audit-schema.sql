@@ -83,7 +83,13 @@ CREATE TABLE IF NOT EXISTS audit.events
 ENGINE = MergeTree
 PARTITION BY (toYYYYMM(occurred_at), tenant_id)
 ORDER BY (tenant_id, occurred_at, event_id)
-TTL toDateTime(occurred_at) + INTERVAL 90 DAY DELETE
+-- Rows expire by ingested_at, the order the worker chains events in (occurred_at
+-- comes from emitters, in any order), so the TTL takes each chain's oldest events
+-- first and verify-integrity checks a chain from its oldest kept event.  Keep the
+-- 90 days in step with audit-service's AUDIT_EVENTS_TTL_DAYS.  A table created
+-- with the TTL on occurred_at takes this one with
+--   ALTER TABLE audit.events MODIFY TTL toDateTime(ingested_at) + INTERVAL 90 DAY DELETE
+TTL toDateTime(ingested_at) + INTERVAL 90 DAY DELETE
 SETTINGS index_granularity = 8192;
 
 -- ---------------------------------------------------------------------------
