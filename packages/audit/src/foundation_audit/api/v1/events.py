@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,14 +17,21 @@ from foundation_audit.adapters import clickhouse as ch
 from foundation_audit.adapters import crypto_client
 from foundation_audit.api.dependencies import current_context, current_request_id, db_session, ingest_service
 from foundation_audit.domain.base import FoundationContext
+from foundation_audit.errors import EVENT_NOT_FOUND, VALIDATION_FAILED, FoundationError
 from foundation_audit.schemas.event import AuditEvent, AuditQuery, AuditQueryResult, AuditEventStored
 from foundation_audit.services.hash_chain import (
+    GENESIS_HASH,
     canonical_event,
     compute_chain_hash,
     compute_merkle_root,
 )
 from foundation_audit.services.ingest_service import IngestService
-from foundation_audit.services.pagination import decode_cursor, encode_cursor
+from foundation_audit.services.pagination import (
+    decode_chain_cursor,
+    decode_cursor,
+    encode_chain_cursor,
+    encode_cursor,
+)
 
 router = APIRouter()
 
@@ -303,8 +310,35 @@ async def export_events(
 class VerifyIntegrityRequest(BaseModel):
     tenant_id: str
     service: str | None = None
+    # The next_cursor of the previous call: the window resumes right after it.
+    cursor: str | None = None
+    # Deprecated, for old clients: the window starts at this event, in chain order.
     from_event_id: str | None = None
     limit: int = Field(default=1000, ge=1, le=10000)
+
+
+ChainStart = Literal["genesis", "previous_event", "predecessor_not_retained"]
+
+
+class VerifiedChain(BaseModel):
+    """A (tenant, service) chain's events in the window, and what the first one follows.
+
+    ``start`` is
+    - ``previous_event``: first_event_id must follow the chain's last event before
+      the window, and was checked against it;
+    - ``genesis``: no event of the chain is stored before first_event_id, which
+      must be the chain's first event;
+    - ``predecessor_not_retained``: no event of the chain is stored before
+      first_event_id, nor the one it follows (the chain's earlier events expired,
+      or were removed), so first_event_id is checked against its own prev_hash.
+    Events a day or less from expiry count as not stored.
+    """
+
+    service: str
+    start: ChainStart
+    first_event_id: str
+    last_event_id: str
+    events_checked: int
 
 
 class VerifyIntegrityResponse(BaseModel):
@@ -313,8 +347,53 @@ class VerifyIntegrityResponse(BaseModel):
     first_break_event_id: str | None = None
     signatures_verified: int
     signatures_failed: int
+    # Batches the tenant's events cannot verify: proven neither intact nor tampered
+    signatures_unverifiable: int = 0
     tsa_present: int
     message: str
+    # Send as cursor to check the events after this window; None once none are left.
+    next_cursor: str | None = None
+    chains: list[VerifiedChain] = Field(default_factory=list)
+
+
+async def _window_start(
+    body: VerifyIntegrityRequest, tenant_id: str,
+) -> tuple[ch.ChainPosition | None, bool]:
+    """Where the window starts, and whether the event there is in it.
+
+    A cursor verify did not hand out is a 422, and an unknown from_event_id a 404,
+    before the window is read.
+    """
+    if body.cursor and body.from_event_id:
+        raise FoundationError(VALIDATION_FAILED, detail="send cursor or from_event_id, not both")
+    if body.cursor:
+        return decode_chain_cursor(body.cursor), False
+    if not body.from_event_id:
+        return None, False
+    try:
+        position = await ch.get_chain_position(tenant_id=tenant_id, event_id=body.from_event_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"ClickHouse unavailable: {exc}") from exc
+    if position is None:
+        raise FoundationError(
+            EVENT_NOT_FOUND, detail="from_event_id is not a stored event of this tenant",
+        )
+    return position, True
+
+
+def _chain_hashes(
+    prev_hash: str, event: dict[str, Any], hash_algorithm: str,
+) -> tuple[str, str] | None:
+    """The (prev_hash, curr_hash) the worker stores for ``event`` after ``prev_hash``.
+
+    None when ``prev_hash`` (a stored value) is not hex: no stored pair can match.
+    """
+    try:
+        return compute_chain_hash(
+            prev_hash=prev_hash, event_data=canonical_event(event), hash_algorithm=hash_algorithm,
+        )
+    except ValueError:
+        return None
 
 
 @router.post("/events:verify-integrity", operation_id="verifyIntegrity")
@@ -324,18 +403,44 @@ async def verify_integrity(
 ) -> VerifyIntegrityResponse:
     """Verify hash chain integrity and Merkle batch signatures for a tenant.
 
+    A call checks a window of up to ``limit`` events of the tenant's chains (one
+    per service) in the order the worker chained them; ``next_cursor`` resumes
+    right after it, so a run of calls checks every event once.
+
     Steps:
-    1. Fetch events from ClickHouse in the order the worker chained them
-       (ingested_at, then Merkle leaf; ch.get_events_for_verification).
+    1. Fetch the window from ClickHouse in chain order (ingested_at, then Merkle
+       leaf; ch.get_events_for_verification), and the last event before it of
+       each chain in it (ch.get_chain_heads_before).
     2. Recompute prev_hash / curr_hash for each event from the canonical form the
-       worker hashed (hash_chain.canonical_event); compare with stored values.
-    3. For each merkle_batch: recompute Merkle root from stored leaf curr_hashes,
-       call crypto-service /verify to check Ed25519 signature.
-    4. Report first break event_id, signatures_verified/failed counts.
+       worker hashed (hash_chain.canonical_event); compare with stored values.  A
+       chain's first event in the window must follow that last event; with none
+       stored, it is the chain's first event or its earlier events are gone
+       (``chains`` says which).
+    3. For each Merkle batch the window touches: read its merkle_batch row and
+       every leaf the tenant has in it, those the limit, the cursor, from_event_id
+       or the service filter left out of the window too; recompute its Merkle root
+       from their curr_hashes, call crypto-service /verify to check its Ed25519
+       signature.
+    4. Report first break event_id, signatures_verified/failed/unverifiable counts.
+
+    A batch is checked only whole: its leaves 0 to event_count - 1 and its
+    merkle_batch row, all under this tenant, the row under the service filter's
+    service if there is one.  The worker seals one batch per chain (tenant, service),
+    so its batches are whole unless an event or a row is missing.  Before that, a
+    batch held every chain its run delivered and its row went under the tenant and
+    service of its first event: a tenant holds such a batch whole only if the run
+    delivered no other tenant's events, and under a service filter only if that
+    event is of the filter's service.  A batch not held whole is unverifiable,
+    counted apart from signatures_failed: nothing shows it was tampered with, nor
+    that it is intact, so the result is not valid.
 
     Note: Cross-tenant verification is blocked (must match ctx.tenant_id).
     Events hashed before canonical_event existed cannot be rebuilt from their
-    rows, so they show as a break.
+    rows, so they show as a break.  The chain alone cannot tell events that
+    expired from events removed: a chain stored from some event on verifies from
+    there, as ``predecessor_not_retained``.  Events a day or less from expiry
+    (``events_ttl_days`` after ingested_at) are left out: the TTL removes expired
+    events part by part, so some of them may be gone while others are still there.
     """
     if body.tenant_id != ctx.tenant_id:
         raise HTTPException(
@@ -343,13 +448,55 @@ async def verify_integrity(
             detail="verify tenant_id must match authenticated tenant context",
         )
 
+    start, include_start = await _window_start(body, ctx.tenant_id)
+
+    from foundation_audit.config import get_settings
+    settings = get_settings()
+    # Events ingested from retained_from on are a day or more from expiry: no TTL
+    # has touched them.
+    retained_from = datetime.now(UTC) - timedelta(days=settings.events_ttl_days - 1)
+
     # --- Fetch events ---
     try:
-        events = await ch.get_events_for_verification(
+        rows = await ch.get_events_for_verification(
             tenant_id=ctx.tenant_id,
             service=body.service,
-            from_event_id=body.from_event_id,
-            limit=body.limit,
+            start=start,
+            include_start=include_start,
+            retained_from=retained_from,
+            limit=body.limit + 1,  # one row more than the window: is there a next one?
+        )
+        events = rows[: body.limit]
+        # service → its chain's first event in the window
+        first_events: dict[str, dict[str, Any]] = {}
+        for ev in events:
+            first_events.setdefault(ev.get("service", ""), ev)
+        # The event each chain's first event in the window must follow.  A window
+        # from the start has nothing before it.
+        heads_before = (
+            await ch.get_chain_heads_before(
+                tenant_id=ctx.tenant_id,
+                services=sorted(first_events),
+                start=start,
+                include_start=include_start,
+                retained_from=retained_from,
+            )
+            if start is not None and first_events
+            else {}
+        )
+        # A first event that follows nothing stored before it, yet not genesis:
+        # is the event it names stored at all (out of place, then)?
+        claimed = sorted({
+            ev.get("prev_hash", "")
+            for service, ev in first_events.items()
+            if service not in heads_before and ev.get("prev_hash", "") != GENESIS_HASH
+        })
+        claims_stored = (
+            await ch.get_stored_curr_hashes(
+                tenant_id=ctx.tenant_id, curr_hashes=claimed, retained_from=retained_from,
+            )
+            if claimed
+            else set()
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"ClickHouse unavailable: {exc}") from exc
@@ -366,79 +513,124 @@ async def verify_integrity(
 
     # --- Phase 1: Recompute hash chain ---
     first_break_event_id: str | None = None
-    prev_hashes: dict[tuple[str, str], str] = {}  # (tenant, service) → last curr_hash
-
-    from foundation_audit.config import get_settings
-    settings = get_settings()
+    chains: dict[str, VerifiedChain] = {}  # service → its events in the window
+    prev_hashes: dict[str, str] = {}  # service → last curr_hash
 
     for ev in events:
-        key = (ev.get("tenant_id", ""), ev.get("service", ""))
-
-        # Recompute over the event as the worker hashed it, rebuilt from its row
-        expected_prev, expected_curr = compute_chain_hash(
-            prev_hash=prev_hashes.get(key),
-            event_data=canonical_event(ev),
-            hash_algorithm=settings.hash_algorithm,
-        )
-
+        service = ev.get("service", "")
         stored_curr = ev.get("curr_hash", "")
         stored_prev = ev.get("prev_hash", "")
 
-        if stored_curr != expected_curr or stored_prev != expected_prev:
+        chain = chains.get(service)
+        if chain is None:
+            # The chain's first event in the window
+            chain_start: ChainStart
+            if service in heads_before:
+                chain_start, prev_hash = "previous_event", heads_before[service]
+            elif stored_prev != GENESIS_HASH and (service, stored_prev) not in claims_stored:
+                # Its predecessor is gone: its own prev_hash is all there is to check
+                chain_start, prev_hash = "predecessor_not_retained", stored_prev
+            else:
+                chain_start, prev_hash = "genesis", GENESIS_HASH
+            chain = chains[service] = VerifiedChain(
+                service=service,
+                start=chain_start,
+                first_event_id=ev.get("event_id", ""),
+                last_event_id=ev.get("event_id", ""),
+                events_checked=0,
+            )
+        else:
+            prev_hash = prev_hashes[service]
+        chain.last_event_id = ev.get("event_id", "")
+        chain.events_checked += 1
+
+        # Recompute over the event as the worker hashed it, rebuilt from its row
+        expected = _chain_hashes(prev_hash, ev, settings.hash_algorithm)
+        if expected != (stored_prev, stored_curr):
             if first_break_event_id is None:
                 first_break_event_id = ev.get("event_id")
 
         # Advance chain (use STORED curr_hash so downstream errors don't cascade)
-        prev_hashes[key] = stored_curr
+        prev_hashes[service] = stored_curr
 
     # --- Phase 2: Verify Merkle batch signatures ---
-    # Group events by batch_id to recompute Merkle root per batch
+    # The batches the window touches: each one's leaves in the window, and its
+    # first event there (a batch's events come in leaf order).  A limit, a cursor
+    # or a service filter can leave some of a batch's leaves out of the window.
     from collections import defaultdict
     batch_leaves: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
+    batch_first_event: dict[str, str] = {}
+    batch_ingested_at: list[datetime] = []
     for ev in events:
         bid = ev.get("merkle_batch_id")
         leaf_idx = ev.get("merkle_leaf_idx")
         curr_hash = ev.get("curr_hash", "")
         if bid and leaf_idx is not None and curr_hash:
             batch_leaves[bid].append((leaf_idx, curr_hash, ev.get("event_id", "")))
+            batch_first_event.setdefault(bid, ev.get("event_id", ""))
+            batch_ingested_at.append(ev["ingested_at"])
 
-    # Fetch merkle_batch metadata for signature verification
-    try:
-        batches = await ch.get_merkle_batches(
-            tenant_id=ctx.tenant_id,
-            service=body.service,
-            limit=body.limit,
-        )
-    except Exception as exc:
-        batches = []
-        # Non-fatal for hash chain check; just can't verify signatures
-        _ = exc
+    # Fetch merkle_batch metadata for signature verification, and the leaves of
+    # batches the window holds only part of
+    batch_meta: dict[str, dict[str, Any]] = {}
+    if batch_leaves:
+        try:
+            # The worker creates a batch at the ingested_at of its events, under
+            # their service
+            batches = await ch.get_merkle_batches(
+                tenant_id=ctx.tenant_id,
+                created_from=min(batch_ingested_at),
+                created_to=max(batch_ingested_at),
+                service=body.service,
+            )
+            batch_meta = {b["batch_id"]: b for b in batches if b["batch_id"] in batch_leaves}
+            cut = [
+                bid for bid, leaves in batch_leaves.items()
+                if bid in batch_meta and len(leaves) < batch_meta[bid]["event_count"]
+            ]
+            if cut:
+                for bid in cut:
+                    batch_leaves[bid] = []
+                for leaf in await ch.get_merkle_leaves(tenant_id=ctx.tenant_id, batch_ids=cut):
+                    if leaf["merkle_leaf_idx"] is None:  # in no place of the batch
+                        continue
+                    batch_leaves[leaf["merkle_batch_id"]].append(
+                        (leaf["merkle_leaf_idx"], leaf["curr_hash"], leaf["event_id"]),
+                    )
+        except Exception:
+            # Non-fatal for hash chain check; just can't verify signatures
+            batch_meta = {}
 
-    batch_meta = {b["batch_id"]: b for b in batches}
     sigs_verified = 0
     sigs_failed = 0
+    sigs_unverifiable = 0
     tsa_count = 0
 
     for bid, leaf_list in batch_leaves.items():
         # Sort by leaf index, then build ordered hash list
         leaf_list.sort(key=lambda x: x[0])
-        leaf_hashes = [h for _, h, _ in leaf_list]
-        recomputed_root = compute_merkle_root(leaf_hashes, hash_algorithm=settings.hash_algorithm)
-
         meta = batch_meta.get(bid)
-        if meta is None:
-            sigs_failed += 1
+        if meta is None or [idx for idx, _, _ in leaf_list] != list(range(meta["event_count"])):
+            # Not held whole: the tenant lacks its row, or leaves its root covers
+            sigs_unverifiable += 1
             continue
 
+        recomputed_root: str | None
+        try:
+            recomputed_root = compute_merkle_root(
+                [h for _, h, _ in leaf_list], hash_algorithm=settings.hash_algorithm,
+            )
+        except ValueError:  # a leaf that is not hex: no root to match
+            recomputed_root = None
         stored_root = meta.get("merkle_root", "")
         sig_b64 = meta.get("signature", "")
         key_id = meta.get("signature_key_id", "")
 
-        if stored_root != recomputed_root:
+        if recomputed_root is None or stored_root != recomputed_root:
             # Merkle root mismatch — tampered
             sigs_failed += 1
-            if first_break_event_id is None and leaf_list:
-                first_break_event_id = leaf_list[0][2]  # the batch's first event
+            if first_break_event_id is None:
+                first_break_event_id = batch_first_event[bid]  # its first in the window
             continue
 
         if not sig_b64 or not key_id:
@@ -463,13 +655,31 @@ async def verify_integrity(
 
     chain_valid = first_break_event_id is None
     all_sigs_ok = sigs_failed == 0
+    if not (chain_valid and all_sigs_ok):
+        message = "Integrity violation detected"
+    elif sigs_unverifiable:
+        message = (
+            f"Integrity not proven: {sigs_unverifiable} Merkle batch(es) could not be verified"
+        )
+    else:
+        message = "OK"
+    last = events[-1]
 
     return VerifyIntegrityResponse(
-        valid=chain_valid and all_sigs_ok,
+        valid=chain_valid and all_sigs_ok and sigs_unverifiable == 0,
         events_checked=len(events),
         first_break_event_id=first_break_event_id,
         signatures_verified=sigs_verified,
         signatures_failed=sigs_failed,
+        signatures_unverifiable=sigs_unverifiable,
         tsa_present=tsa_count,
-        message="OK" if (chain_valid and all_sigs_ok) else "Integrity violation detected",
+        message=message,
+        next_cursor=(
+            encode_chain_cursor(
+                last["ingested_at"], last["merkle_batch_id"], last["merkle_leaf_idx"],
+            )
+            if len(rows) > body.limit
+            else None
+        ),
+        chains=list(chains.values()),
     )

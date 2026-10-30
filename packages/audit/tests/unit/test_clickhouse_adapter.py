@@ -19,8 +19,10 @@ from foundation_audit.adapters.clickhouse import (
     _event_to_row,
     _insert,
     get_events_for_verification,
+    get_merkle_batches,
+    get_merkle_leaves,
     insert_events,
-    insert_merkle_batch,
+    insert_merkle_batches,
     query_events,
 )
 
@@ -321,6 +323,71 @@ class TestQueryEventsTimeBounds:
         assert params["occurred_to"] == "2026-10-30 12:00:00.250"
 
 
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestMerkleBatchReads:
+    @pytest.mark.asyncio
+    async def test_batches_are_read_over_a_range_of_the_sort_key(self) -> None:
+        """The batches of some events are those created over their ingested_at."""
+        result = MagicMock()
+        result.result_rows = []
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+        stored = datetime(2026, 10, 30, 12, 0, 0, 250000)  # naive UTC, as CH hands it back
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await get_merkle_batches(
+                tenant_id=_TENANT, created_from=stored, created_to=stored + timedelta(seconds=1),
+            )
+
+        (sql,), call_kwargs = client.query.call_args
+        assert sql.endswith(
+            "FROM audit.merkle_batch WHERE tenant_id = {tenant_id:String} "
+            "AND created_at >= {created_from:DateTime64(3, 'UTC')} "
+            "AND created_at <= {created_to:DateTime64(3, 'UTC')} ORDER BY created_at"
+        )
+        assert call_kwargs["parameters"] == {
+            "tenant_id": _TENANT,
+            "created_from": "2026-10-30 12:00:00.250",
+            "created_to": "2026-10-30 12:00:01.250",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_service_s_batches_are_read_under_it(self) -> None:
+        """The span of a quiet service's events can take in any number of a busy one's batches."""
+        result = MagicMock()
+        result.result_rows = []
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+        stored = datetime(2026, 10, 30, 12, 0, 0, 250000)
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await get_merkle_batches(
+                tenant_id=_TENANT, created_from=stored, created_to=stored, service="identity",
+            )
+
+        (sql,), call_kwargs = client.query.call_args
+        assert sql.endswith(
+            "AND created_at <= {created_to:DateTime64(3, 'UTC')} "
+            "AND service = {service:String} ORDER BY created_at"
+        )
+        assert call_kwargs["parameters"]["service"] == "identity"
+
+    @pytest.mark.asyncio
+    async def test_no_batches_have_no_leaves_to_read(self) -> None:
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            assert await get_merkle_leaves(tenant_id=_TENANT, batch_ids=[]) == []
+
+        client.query.assert_not_called()
+
+
 def _stored_ms(value: datetime) -> int:
     """Epoch ms that clickhouse-connect sends for ``value`` in a DateTime64(3, 'UTC') column."""
     ch_type = get_from_name("DateTime64(3, 'UTC')")
@@ -390,7 +457,7 @@ class TestInsertedInstants:
     async def test_merkle_batch_times(self, value: datetime | str) -> None:
         times = {"created_at": value, "sealed_at": value, "tsa_timestamp": value}
 
-        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1", **times}))
+        (row,) = await _inserted(lambda: insert_merkle_batches([{"batch_id": "mrk_1", **times}]))
 
         assert _stored_ms(row["created_at"]) == _epoch_ms(_INSTANT)
         assert _stored_ms(row["sealed_at"]) == _epoch_ms(_INSTANT)
@@ -398,7 +465,7 @@ class TestInsertedInstants:
 
     @pytest.mark.asyncio
     async def test_merkle_batch_without_tsa(self) -> None:
-        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1"}))
+        (row,) = await _inserted(lambda: insert_merkle_batches([{"batch_id": "mrk_1"}]))
 
         assert row["tsa_timestamp"] is None
         now = _epoch_ms(datetime.now(UTC))
@@ -413,6 +480,34 @@ class TestInsertedInstants:
         (row,) = await _inserted(lambda: _insert("audit.events", [[naive]], ["occurred_at"]))
 
         assert _stored_ms(row["occurred_at"]) == _epoch_ms(_INSTANT)
+
+
+class TestInsertMerkleBatches:
+    @pytest.mark.asyncio
+    async def test_a_run_s_batches_go_in_one_insert(self) -> None:
+        """One insert is one part for ClickHouse to merge, however many chains a run seals."""
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await insert_merkle_batches([{"batch_id": "mrk_1"}, {"batch_id": "mrk_2"}])
+
+        client.insert.assert_called_once()
+        (table, data), _ = client.insert.call_args
+        assert table == "audit.merkle_batch"
+        assert [row[MERKLE_BATCH_COLUMNS.index("batch_id")] for row in data] == ["mrk_1", "mrk_2"]
+
+    @pytest.mark.asyncio
+    async def test_no_batches_insert_nothing(self) -> None:
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await insert_merkle_batches([])
+
+        client.insert.assert_not_called()
 
 
 class TestMerkleBatchColumns:
