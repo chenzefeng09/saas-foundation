@@ -1,7 +1,7 @@
 # =============================================================================
 # Spectral ruleset — saas-foundation OpenAPI 强制规则
 # =============================================================================
-# 跑法：make openapi-lint （或 npx spectral lint contracts/openapi/*.yaml）
+# 跑法：make lint（或 make lint-one SVC=<service>）
 # CI 强制：任何规则触发 error → 阻断合并
 # =============================================================================
 
@@ -66,12 +66,13 @@ rules:
 
   # --------------------------------------------------------------------------
   # 所有 path 必须有 operationId（SDK 生成必需）
+  # Built-in rules are re-levelled with a bare severity. An object such as
+  # `{severity: error}` declares a new rule instead, which needs given/then,
+  # and Spectral then refuses to load the whole ruleset.
   # --------------------------------------------------------------------------
-  operation-operationId:
-    severity: error
+  operation-operationId: error
 
-  operation-operationId-unique:
-    severity: error
+  operation-operationId-unique: error
 
   # --------------------------------------------------------------------------
   # operationId 必须 camelCase（生成 SDK 方法名）
@@ -141,18 +142,13 @@ rules:
   # --------------------------------------------------------------------------
   # info 块必填
   # --------------------------------------------------------------------------
-  info-contact:
-    severity: warn
-  info-description:
-    severity: error
-  info-license:
-    severity: warn
+  info-contact: warn
+  info-description: error
+  info-license: warn
 
   # --------------------------------------------------------------------------
   # 标准 spectral 规则保留
   # --------------------------------------------------------------------------
-  no-$ref-siblings:
-    severity: error
+  no-$ref-siblings: error
 
-  oas3-server-not-example.com:
-    severity: hint    # 模板里用 example.com 是有意的
+  oas3-server-not-example.com: hint    # 模板里用 example.com 是有意的
