@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from foundation_lifecycle.domain.models import (
     DestructionCertificate,
@@ -16,8 +18,15 @@ from foundation_lifecycle.domain.models import (
     ResourceType,
     RetentionPolicyOverride,
 )
-from foundation_lifecycle.errors import LEGAL_HOLD_ACTIVE, RESOURCE_NOT_IN_BIN, RESOURCE_TYPE_NOT_FOUND, FoundationError
+from foundation_lifecycle.errors import (
+    LEGAL_HOLD_ACTIVE,
+    RESOURCE_NOT_IN_BIN,
+    RESOURCE_TYPE_NOT_FOUND,
+    VALIDATION_FAILED,
+    FoundationError,
+)
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
+from foundation_lifecycle.services.pagination import decode_cursor, encode_cursor
 from foundation_storage.errors import (
     OBJECT_LOCKED,
     STORAGE_UNAVAILABLE,
@@ -385,20 +394,74 @@ class TestSweep:
         assert jobs[0].resources_destroyed == 1
 
 
+_T0 = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+_TICK = timedelta(seconds=1)
+_ORDER_BY = "ORDER BY lifecycle.recycle_bin.deleted_at DESC, lifecycle.recycle_bin.id DESC"
+_AFTER = "(lifecycle.recycle_bin.deleted_at, lifecycle.recycle_bin.id) < "
+
+
+def _sql(stmt: Any) -> str:
+    """Render a recorded SELECT as Postgres SQL, values inlined."""
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    return " ".join(str(compiled).split())
+
+
+def _db_answer(entries: list[RecycleBin], cursor: str | None, limit: int) -> list[RecycleBin]:
+    """What list_recycle_bin's query returns: newest first, after ``cursor``, limit+1 rows."""
+    ordered = sorted(entries, key=lambda e: (e.deleted_at, e.id), reverse=True)
+    if cursor is not None:
+        after = decode_cursor(cursor, id_prefix="bin_")
+        ordered = [e for e in ordered if (e.deleted_at, e.id) < after]
+    return ordered[: limit + 1]
+
+
 class TestListRecycleBin:
-    async def test_list_recycle_bin_paginates(
+    async def test_list_recycle_bin_pages_through_every_entry_once(
         self, svc: LifecycleService, fake_session, tenant_id: str,
     ) -> None:
-        first = make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_1")
-        second = make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_2")
-        fake_session.queue_scalars([first, second])
+        # Entries deleted in one transaction share now(), and ids (ULIDs minted by the
+        # app) need not sort like deleted_at: paging must neither skip nor repeat one.
+        entries = [
+            make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_5", deleted_at=_T0),
+            make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_1", deleted_at=_T0 + _TICK),
+            make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_4", deleted_at=_T0 + _TICK),
+            make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_2", deleted_at=_T0 + _TICK),
+            make_recycle_bin_entry(tenant_id=tenant_id, bin_id="bin_3", deleted_at=_T0 + 2 * _TICK),
+        ]
 
-        rows, cursor = await svc.list_recycle_bin(
-            fake_session,
-            tenant_id=tenant_id,
-            cursor="bin_0",
-            limit=1,
-        )
+        pages: list[list[RecycleBin]] = []
+        cursor = None
+        for _ in entries:  # a cursor that never runs out fails below instead of looping
+            fake_session.queue_scalars(_db_answer(entries, cursor, limit=2))
+            page, cursor = await svc.list_recycle_bin(
+                fake_session, tenant_id=tenant_id, cursor=cursor, limit=2,
+            )
+            pages.append(page)
+            if cursor is None:
+                break
 
-        assert rows == [first]
-        assert cursor == second.id
+        assert cursor is None
+        assert [[e.id for e in page] for page in pages] == [
+            ["bin_3", "bin_4"], ["bin_2", "bin_1"], ["bin_5"],
+        ]
+        first, *later = (_sql(s) for s in fake_session.statements)
+        assert _ORDER_BY in first
+        assert _AFTER not in first
+        for previous, sql in zip(pages[:-1], later, strict=True):
+            last = previous[-1]  # each page resumes right after the last entry shown
+            assert _ORDER_BY in sql
+            assert f"{_AFTER}('{last.deleted_at}', '{last.id}')" in sql
+
+    @pytest.mark.parametrize("cursor", [
+        "bin_01J0000000000000000000BIN1",  # a bare id, what this list used to hand out
+        encode_cursor(_T0, "lhd_01J0000000000000000000HLD1"),  # the legal holds' cursor
+        "%%%",
+    ])
+    async def test_list_recycle_bin_rejects_a_cursor_it_did_not_issue(
+        self, svc: LifecycleService, fake_session, tenant_id: str, cursor: str,
+    ) -> None:
+        with pytest.raises(FoundationError) as exc:
+            await svc.list_recycle_bin(fake_session, tenant_id=tenant_id, cursor=cursor)
+
+        assert exc.value.error_code is VALIDATION_FAILED
+        assert fake_session.statements == []

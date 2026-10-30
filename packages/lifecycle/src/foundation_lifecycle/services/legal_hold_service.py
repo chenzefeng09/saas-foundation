@@ -6,11 +6,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 import ulid
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.domain.models import LegalHold, Outbox
 from foundation_lifecycle.errors import LEGAL_HOLD_NOT_FOUND, FoundationError
+from foundation_lifecycle.services.pagination import decode_cursor, encode_cursor
 
 _HOLD_ID_PREFIX = "lhd_"
 
@@ -75,16 +76,20 @@ class LegalHoldService:
         self, session: AsyncSession, *, tenant_id: str,
         cursor: str | None = None, limit: int = 50,
     ) -> tuple[list[LegalHold], str | None]:
+        """Active holds, newest first, keyset-paged on (placed_at, id); see services.pagination."""
         stmt = select(LegalHold).where(
             LegalHold.tenant_id == tenant_id,
             LegalHold.released_at.is_(None),
-        ).order_by(LegalHold.placed_at.desc())
+        )
         if cursor:
-            stmt = stmt.where(LegalHold.id > cursor)
-        stmt = stmt.limit(limit + 1)
+            placed_at, hold_id = decode_cursor(cursor, id_prefix=_HOLD_ID_PREFIX)
+            stmt = stmt.where(tuple_(LegalHold.placed_at, LegalHold.id) < (placed_at, hold_id))
+        stmt = stmt.order_by(LegalHold.placed_at.desc(), LegalHold.id.desc()).limit(limit + 1)
         rows = list((await session.scalars(stmt)).all())
-        next_cursor = rows[-1].id if len(rows) > limit else None
-        return rows[:limit], next_cursor
+        page = rows[:limit]
+        # The cursor is the sort key of the last row *returned*, never the lookahead row's.
+        next_cursor = encode_cursor(page[-1].placed_at, page[-1].id) if len(rows) > limit else None
+        return page, next_cursor
 
     def _emit(self, session: AsyncSession, tenant_id: str, event_type: str,
               payload: dict[str, Any], request_id: str) -> None:
