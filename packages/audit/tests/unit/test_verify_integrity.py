@@ -48,6 +48,9 @@ _SCHEMA_SQL = (
 )
 _TENANT = "tnt_01J0000000000000000000TNT1"
 _NOON = datetime(2026, 10, 30, 12, tzinfo=UTC)
+# verify's clock, unless a test sets it: a day after the worker delivered, when no
+# event is near expiry
+_VERIFIED_AT = _NOON + timedelta(days=1)
 _SETTINGS = Settings(tsa_enabled=False, worm_enabled=False)
 
 # clickhouse-connect 0.7.19 reads DateTime64 columns with datetime.utcfromtimestamp.
@@ -127,6 +130,9 @@ _CONDITIONS: dict[str, Callable[[dict[str, Any], dict[str, Any]], bool]] = {
     f"{_CHAIN_ORDER} >= {_AT}": lambda row, p: _chained_at(row) >= _bound_position(p),
     f"{_CHAIN_ORDER} < {_AT}": lambda row, p: _chained_at(row) < _bound_position(p),
     f"{_CHAIN_ORDER} <= {_AT}": lambda row, p: _chained_at(row) <= _bound_position(p),
+    "ingested_at >= {retained_from:DateTime64(3, 'UTC')}": (
+        lambda row, p: row["ingested_at"] >= datetime.fromisoformat(p["retained_from"])
+    ),
 }
 _SELECT = re.compile(
     r"SELECT (?P<columns>.+) FROM (?P<table>\S+) WHERE (?P<where>.+?)(?: ORDER BY (?P<order>.+?))?"
@@ -279,13 +285,31 @@ async def _deliver(
         return await worker.run_once()
 
 
-async def _verify(clickhouse: _ClickHouse, **request: Any) -> VerifyIntegrityResponse:
-    """One verify-integrity call for the tenant; ``request`` holds the other body fields."""
+def _clock(now: datetime) -> type[datetime]:
+    """A host clock standing at ``now``."""
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+            return now.astimezone(tz)
+
+    return _Clock
+
+
+async def _verify(
+    clickhouse: _ClickHouse,
+    *,
+    now: datetime = _VERIFIED_AT,
+    settings: Settings = _SETTINGS,
+    **request: Any,
+) -> VerifyIntegrityResponse:
+    """verify-integrity for the tenant, run at ``now``; ``request`` holds the other body fields."""
     ctx = FoundationContext(
         tenant_id=_TENANT, user_id=None, actor="ADMIN", request_id="req_01J0000000000000000000REQ1",
     )
     with (
-        patch("foundation_audit.config.get_settings", return_value=_SETTINGS),
+        patch("foundation_audit.config.get_settings", return_value=settings),
+        patch("foundation_audit.api.v1.events.datetime", _clock(now)),
         patch("foundation_audit.api.v1.events.crypto_client.verify_signature", _signature_valid),
         _serving(clickhouse),
     ):
@@ -415,6 +439,20 @@ def _remove_batch(clickhouse: _ClickHouse, batch_id: str) -> None:
 
 def _batch_of(clickhouse: _ClickHouse, n: int) -> str:
     return clickhouse.event(_evt(n))["merkle_batch_id"]
+
+
+def _ingested(clickhouse: _ClickHouse, n: int) -> datetime:
+    """When the worker stamped _evt(n)'s batch."""
+    return clickhouse.event(_evt(n))["ingested_at"].replace(tzinfo=UTC)
+
+
+async def _six_logins() -> _ClickHouse:
+    """identity's chain evt1 → … → evt6, delivered as evt1-2, evt3-4 and evt5-6."""
+    clickhouse, worker = _ClickHouse(), _worker()
+    outbox = await _outbox(_logins(1, 2, 3, 4, 5, 6))
+    for batch in (outbox[:2], outbox[2:4], outbox[4:]):
+        assert await _deliver(worker, batch, clickhouse) == 2
+    return clickhouse
 
 
 # ---------------------------------------------------------------------------
@@ -765,10 +803,7 @@ class TestVerifyIntegrityWindows:
 
     @pytest.mark.asyncio
     async def test_a_gap_after_the_oldest_kept_event_still_breaks_the_chain(self) -> None:
-        clickhouse, worker = _ClickHouse(), _worker()
-        outbox = await _outbox(_logins(1, 2, 3, 4, 5, 6))
-        for batch in (outbox[:2], outbox[2:4], outbox[4:]):
-            assert await _deliver(worker, batch, clickhouse) == 2
+        clickhouse = await _six_logins()
         _remove_batch(clickhouse, _batch_of(clickhouse, 1))
         clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(4)))
 
@@ -776,3 +811,76 @@ class TestVerifyIntegrityWindows:
 
         assert not result.valid
         assert result.first_break_event_id == _evt(5)  # the event after the gap
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestVerifyIntegrityExpiry:
+    """Rows expire events_ttl_days after ingested_at; verify leaves out the last day.
+
+    The TTL removes expired rows part by part, as it merges each part, so at any
+    time a chain's expired events may be gone, all there, or some of each.
+    """
+
+    @pytest.mark.parametrize("ttl_days", [2, 90])
+    @pytest.mark.asyncio
+    async def test_events_a_day_from_expiry_are_left_out_though_still_stored(
+        self, ttl_days: int,
+    ) -> None:
+        clickhouse = await _three_batches()  # evt1-2, evt3-4, evt5
+        settings = _SETTINGS.model_copy(update={"events_ttl_days": ttl_days})
+        # evt3-4 expire in a day, evt1-2 a second or so before them
+        now = _ingested(clickhouse, 3) + timedelta(days=ttl_days - 1)
+
+        result = await _verify(clickhouse, now=now, settings=settings)
+        a_moment_later = await _verify(
+            clickhouse, now=now + timedelta(milliseconds=1), settings=settings,
+        )
+
+        assert result.model_dump() == _result(3, [
+            _chain("identity", "predecessor_not_retained", 3, 4, events=2),
+            _chain("lifecycle", "predecessor_not_retained", 5, 5, events=1),
+        ], signatures=2) | {"next_cursor": None}
+        assert a_moment_later.model_dump() == _result(1, [
+            _chain("lifecycle", "predecessor_not_retained", 5, 5, events=1),
+        ], signatures=1) | {"next_cursor": None}
+
+    @pytest.mark.asyncio
+    async def test_expired_events_the_ttl_has_not_reached_are_not_taken_for_the_chain(
+        self,
+    ) -> None:
+        """The TTL took evt3-4's part, and not yet evt1-2's."""
+        clickhouse = await _six_logins()
+        _remove_batch(clickhouse, _batch_of(clickhouse, 3))
+
+        result = await _verify(clickhouse, now=_ingested(clickhouse, 5) + timedelta(days=89))
+
+        assert result.model_dump() == _result(
+            2, [_chain("identity", "predecessor_not_retained", 5, 6, events=2)], signatures=1,
+        ) | {"next_cursor": None}
+
+    @pytest.mark.asyncio
+    async def test_a_window_resumes_once_the_events_before_it_expired(self) -> None:
+        """The run's first window ended at evt2; evt1-4 expired before the next call."""
+        clickhouse = await _six_logins()
+        first = await _verify(clickhouse, limit=2)
+        _remove_batch(clickhouse, _batch_of(clickhouse, 3))
+
+        result = await _verify(
+            clickhouse, cursor=first.next_cursor, limit=2,
+            now=_ingested(clickhouse, 5) + timedelta(days=89),
+        )
+
+        assert result.model_dump() == _result(
+            2, [_chain("identity", "predecessor_not_retained", 5, 6, events=2)], signatures=1,
+        ) | {"next_cursor": None}
+
+    @pytest.mark.asyncio
+    async def test_an_event_removed_before_it_expires_breaks_the_chain(self) -> None:
+        clickhouse = await _six_logins()
+        clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(4)))  # a day from expiry
+
+        result = await _verify(clickhouse, now=_ingested(clickhouse, 3) + timedelta(days=89))
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(5)
+        assert (result.signatures_verified, result.signatures_failed) == (1, 1)

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
 
     # Retention (default; per-tenant override in compliance)
     retention_days_default: int = 365  # 1 year default
+    # audit.events rows expire this many days after ingested_at: the TTL in
+    # audit-schema.sql, which this must match.  verify-integrity leaves out events
+    # a day or less from expiry.
+    events_ttl_days: int = Field(default=90, ge=2)
 
     # OTel
     otel_enabled: bool = True

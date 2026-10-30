@@ -373,6 +373,8 @@ _CHAIN_ORDER = "(ingested_at, merkle_batch_id, merkle_leaf_idx)"
 _AT_POSITION = (
     "({at_ingested_at:DateTime64(3, 'UTC')}, {at_batch_id:String}, {at_leaf_idx:UInt32})"
 )
+# Events ingested before retained_from are left out: the TTL may be removing them.
+_RETAINED = "ingested_at >= {retained_from:DateTime64(3, 'UTC')}"
 
 
 def _position_params(position: ChainPosition) -> dict[str, Any]:
@@ -386,6 +388,7 @@ async def get_events_for_verification(
     service: str | None = None,
     start: ChainPosition | None = None,
     include_start: bool = False,
+    retained_from: datetime | None = None,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     """Fetch events for hash-chain verification, in the order the worker chained them.
@@ -395,13 +398,17 @@ async def get_events_for_verification(
     event_id need not follow it.  It holds while ingested_at moves on from batch
     to batch, as it does for one worker on a clock that does not step back.
 
-    The events come after ``start``, or from it on with ``include_start``.
+    The events come after ``start``, or from it on with ``include_start``, and
+    none ingested before ``retained_from``.
     """
     conditions = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if service:
         conditions.append("service = {service:String}")
         params["service"] = service
+    if retained_from is not None:
+        conditions.append(_RETAINED)
+        params["retained_from"] = retained_from
     if start is not None:
         conditions.append(f"{_CHAIN_ORDER} {'>=' if include_start else '>'} {_AT_POSITION}")
         params.update(_position_params(start))
@@ -452,35 +459,44 @@ async def get_chain_heads_before(
     services: list[str],
     start: ChainPosition,
     include_start: bool = False,
+    retained_from: datetime,
 ) -> dict[str, str]:
     """service → curr_hash of its chain's last event before a window starting at ``start``.
 
     The window holds the events after ``start``, or from it on with ``include_start``
     (as get_events_for_verification).  Each chain's first event in it must follow
-    that event.  A chain with no event stored before the window is left out.
+    that event.  A chain with no event stored before the window, from
+    ``retained_from`` on, is left out.
     """
     sql = (
         "SELECT service, curr_hash FROM audit.events "
         "WHERE tenant_id = {tenant_id:String} AND service IN {services:Array(String)} "
-        f"AND {_CHAIN_ORDER} {'<' if include_start else '<='} {_AT_POSITION} "
+        f"AND {_RETAINED} AND {_CHAIN_ORDER} {'<' if include_start else '<='} {_AT_POSITION} "
         "ORDER BY service, ingested_at DESC, merkle_batch_id DESC, merkle_leaf_idx DESC "
         "LIMIT 1 BY service"
     )
-    params: dict[str, Any] = {"tenant_id": tenant_id, "services": services}
+    params: dict[str, Any] = {
+        "tenant_id": tenant_id, "services": services, "retained_from": retained_from,
+    }
     params.update(_position_params(start))
     result = await _query(sql, params)
     return dict(result.result_rows)
 
 
 async def get_stored_curr_hashes(
-    *, tenant_id: str, curr_hashes: list[str],
+    *, tenant_id: str, curr_hashes: list[str], retained_from: datetime,
 ) -> set[tuple[str, str]]:
-    """The ``curr_hashes`` an event of the tenant holds, as (service, curr_hash)."""
+    """(service, curr_hash) for each of ``curr_hashes`` that an event of the tenant holds.
+
+    Only events ingested from ``retained_from`` on count.
+    """
     sql = (
         "SELECT service, curr_hash FROM audit.events "
-        "WHERE tenant_id = {tenant_id:String} AND curr_hash IN {curr_hashes:Array(String)}"
+        "WHERE tenant_id = {tenant_id:String} AND curr_hash IN {curr_hashes:Array(String)} "
+        f"AND {_RETAINED}"
     )
-    result = await _query(sql, {"tenant_id": tenant_id, "curr_hashes": curr_hashes})
+    params = {"tenant_id": tenant_id, "curr_hashes": curr_hashes, "retained_from": retained_from}
+    result = await _query(sql, params)
     return {(service, curr_hash) for service, curr_hash in result.result_rows}
 
 

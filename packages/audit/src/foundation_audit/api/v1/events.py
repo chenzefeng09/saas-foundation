@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -331,6 +331,7 @@ class VerifiedChain(BaseModel):
     - ``predecessor_not_retained``: no event of the chain is stored before
       first_event_id, nor the one it follows (the chain's earlier events expired,
       or were removed), so first_event_id is checked against its own prev_hash.
+    Events a day or less from expiry count as not stored.
     """
 
     service: str
@@ -422,7 +423,9 @@ async def verify_integrity(
     Events hashed before canonical_event existed cannot be rebuilt from their
     rows, so they show as a break.  The chain alone cannot tell events that
     expired from events removed: a chain stored from some event on verifies from
-    there, as ``predecessor_not_retained``.
+    there, as ``predecessor_not_retained``.  Events a day or less from expiry
+    (``events_ttl_days`` after ingested_at) are left out: the TTL removes expired
+    events part by part, so some of them may be gone while others are still there.
     """
     if body.tenant_id != ctx.tenant_id:
         raise HTTPException(
@@ -432,6 +435,12 @@ async def verify_integrity(
 
     start, include_start = await _window_start(body, ctx.tenant_id)
 
+    from foundation_audit.config import get_settings
+    settings = get_settings()
+    # Events ingested from retained_from on are a day or more from expiry: no TTL
+    # has touched them.
+    retained_from = datetime.now(UTC) - timedelta(days=settings.events_ttl_days - 1)
+
     # --- Fetch events ---
     try:
         rows = await ch.get_events_for_verification(
@@ -439,6 +448,7 @@ async def verify_integrity(
             service=body.service,
             start=start,
             include_start=include_start,
+            retained_from=retained_from,
             limit=body.limit + 1,  # one row more than the window: is there a next one?
         )
         events = rows[: body.limit]
@@ -454,6 +464,7 @@ async def verify_integrity(
                 services=sorted(first_events),
                 start=start,
                 include_start=include_start,
+                retained_from=retained_from,
             )
             if start is not None and first_events
             else {}
@@ -466,7 +477,9 @@ async def verify_integrity(
             if service not in heads_before and ev.get("prev_hash", "") != GENESIS_HASH
         })
         claims_stored = (
-            await ch.get_stored_curr_hashes(tenant_id=ctx.tenant_id, curr_hashes=claimed)
+            await ch.get_stored_curr_hashes(
+                tenant_id=ctx.tenant_id, curr_hashes=claimed, retained_from=retained_from,
+            )
             if claimed
             else set()
         )
@@ -487,9 +500,6 @@ async def verify_integrity(
     first_break_event_id: str | None = None
     chains: dict[str, VerifiedChain] = {}  # service → its events in the window
     prev_hashes: dict[str, str] = {}  # service → last curr_hash
-
-    from foundation_audit.config import get_settings
-    settings = get_settings()
 
     for ev in events:
         service = ev.get("service", "")
