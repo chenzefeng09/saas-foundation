@@ -77,8 +77,11 @@ class TeamService:
             stmt = stmt.where(Team.id > cursor)
         stmt = stmt.order_by(Team.id).limit(limit + 1)
         rows = list((await session.scalars(stmt)).all())
-        next_cursor = rows[-1].id if len(rows) > limit else None
-        return rows[:limit], next_cursor
+        page = rows[:limit]
+        # The cursor is the last id *returned*: the next page selects id > cursor,
+        # so handing out the (limit+1)-th id would silently skip that row.
+        next_cursor = page[-1].id if len(rows) > limit else None
+        return page, next_cursor
 
     # ------------------------------------------------------------------ create
     async def create(

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import ulid
 from foundation_storage import ObjectKey
 from foundation_storage.errors import ObjectLockedError, StorageError
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.domain.models import (
@@ -28,6 +28,7 @@ from foundation_lifecycle.errors import (
     FoundationError,
 )
 from foundation_lifecycle.observability import get_logger
+from foundation_lifecycle.services.pagination import decode_cursor, encode_cursor
 from foundation_lifecycle.services.storage_location import (
     encode_locations,
     parse_s3_location,
@@ -232,17 +233,21 @@ class LifecycleService:
         self, session: AsyncSession, *, tenant_id: str,
         cursor: str | None = None, limit: int = 50,
     ) -> tuple[list[RecycleBin], str | None]:
+        """Bin entries, newest first, keyset-paged on (deleted_at, id); see services.pagination."""
         stmt = select(RecycleBin).where(
             RecycleBin.tenant_id == tenant_id,
             RecycleBin.restored_at.is_(None),
             RecycleBin.hard_deleted_at.is_(None),
         )
         if cursor:
-            stmt = stmt.where(RecycleBin.id > cursor)
-        stmt = stmt.order_by(RecycleBin.deleted_at.desc()).limit(limit + 1)
+            deleted_at, bin_id = decode_cursor(cursor, id_prefix=_BIN_ID_PREFIX)
+            stmt = stmt.where(tuple_(RecycleBin.deleted_at, RecycleBin.id) < (deleted_at, bin_id))
+        stmt = stmt.order_by(RecycleBin.deleted_at.desc(), RecycleBin.id.desc()).limit(limit + 1)
         rows = list((await session.scalars(stmt)).all())
-        next_cursor = rows[-1].id if len(rows) > limit else None
-        return rows[:limit], next_cursor
+        page = rows[:limit]
+        # The cursor is the sort key of the last row *returned*, never the lookahead row's.
+        next_cursor = encode_cursor(page[-1].deleted_at, page[-1].id) if len(rows) > limit else None
+        return page, next_cursor
 
     # ------------------------------------------------------------------ Helpers
     def _emit(self, session: AsyncSession, tenant_id: str, event_type: str,

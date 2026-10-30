@@ -88,9 +88,12 @@ class UserService:
             stmt = stmt.where(User.id > cursor)
         stmt = stmt.order_by(User.id).limit(limit + 1)
 
-        rows = (await session.scalars(stmt)).all()
-        next_cursor = rows[-1].id if len(rows) > limit else None
-        return list(rows[:limit]), next_cursor
+        rows = list((await session.scalars(stmt)).all())
+        page = rows[:limit]
+        # The cursor is the last id *returned*: the next page selects id > cursor,
+        # so handing out the (limit+1)-th id would silently skip that row.
+        next_cursor = page[-1].id if len(rows) > limit else None
+        return page, next_cursor
 
     async def get_user(self, session: AsyncSession, *, tenant_id: str, user_id: str) -> User:
         user = await session.get(User, user_id)

@@ -175,10 +175,13 @@ async def list_tenants(
         q += " ORDER BY id LIMIT :limit"
         rows = (await session.execute(text(q), params)).fetchall()
 
-    next_cursor = rows[-1][0] if len(rows) > limit else None
+    page = rows[:limit]
+    # The cursor is the last id *returned*: the next page selects id > cursor,
+    # so handing out the (limit+1)-th id would silently skip that row.
+    next_cursor = page[-1][0] if len(rows) > limit else None
     items = [
         {"id": r[0], "name": r[1], "tier": r[2], "status": r[3], "created_at": str(r[4])}
-        for r in rows[:limit]
+        for r in page
     ]
     return {"items": items, "next_cursor": next_cursor}
 
@@ -325,12 +328,14 @@ async def list_users_cross_tenant(
     async with admin_session_scope(tenant_id=tenant_id or "", user_id=actor_user_id) as session:
         rows = (await session.execute(text(q), params)).fetchall()  # nosemgrep: avoid-sqlalchemy-text  # where_clauses are hardcoded literals; values use :param binds
 
-    next_cursor = rows[-1][0] if len(rows) > limit else None
+    page = rows[:limit]
+    # Cursor = last id returned (next page selects id > cursor); see list_tenants.
+    next_cursor = page[-1][0] if len(rows) > limit else None
     items = [
         {
             "id": r[0], "tenant_id": r[1], "email": r[2],
             "display_name": r[3], "status": r[4], "created_at": str(r[5]),
         }
-        for r in rows[:limit]
+        for r in page
     ]
     return {"items": items, "next_cursor": next_cursor}

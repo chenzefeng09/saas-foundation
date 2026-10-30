@@ -6,7 +6,9 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
+from foundation_org.domain.models import Team
 from foundation_org.errors import (
     MEMBER_ALREADY_IN_TEAM,
     MEMBER_NOT_IN_TEAM,
@@ -38,6 +40,18 @@ def _capture_statement(fake_session: Any) -> list[Any]:
 
     fake_session.scalars = _spy
     return captured
+
+
+def _sql(stmt: Any) -> str:
+    """Render a recorded SELECT as Postgres SQL, values inlined."""
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    return " ".join(str(compiled).split())
+
+
+def _db_answer(teams: list[Team], cursor: str | None, limit: int) -> list[Team]:
+    """What ``WHERE id > :cursor ORDER BY id LIMIT :limit + 1`` returns from ``teams``."""
+    ordered = sorted(teams, key=lambda t: t.id)
+    return [t for t in ordered if cursor is None or t.id > cursor][: limit + 1]
 
 
 def _compiled_where(captured: list[Any]) -> str:
@@ -131,23 +145,33 @@ class TestCreate:
 
 
 class TestList:
-    async def test_list_returns_page_and_next_cursor(
+    async def test_list_pages_through_every_team_once(
         self, svc: TeamService, fake_session, tenant_id: str,
     ) -> None:
-        first = make_team(team_id="tm_01J00000000000000000000A1", tenant_id=tenant_id)
-        second = make_team(team_id="tm_01J00000000000000000000A2", tenant_id=tenant_id)
-        fake_session.queue_scalars([first, second])
+        teams = [
+            make_team(team_id=f"tm_01J00000000000000000000A{i}", tenant_id=tenant_id)
+            for i in range(1, 6)
+        ]
 
-        rows, cursor = await svc.list(
-            fake_session,
-            tenant_id=tenant_id,
-            org_unit_id=first.org_unit_id,
-            cursor="tm_01J0000000000000000000000",
-            limit=1,
-        )
+        pages: list[list[Team]] = []
+        cursor = None
+        for _ in teams:  # a cursor that never runs out fails below instead of looping
+            fake_session.queue_scalars(_db_answer(teams, cursor, limit=2))
+            page, cursor = await svc.list(
+                fake_session, tenant_id=tenant_id, cursor=cursor, limit=2,
+            )
+            pages.append(page)
+            if cursor is None:
+                break
 
-        assert rows == [first]
-        assert cursor == second.id
+        assert cursor is None
+        assert pages == [teams[0:2], teams[2:4], teams[4:5]]
+        first, *later = (_sql(s) for s in fake_session.statements)
+        assert "ORDER BY org.team.id LIMIT 3" in first
+        assert "org.team.id >" not in first
+        for previous, sql in zip(pages[:-1], later, strict=True):
+            # Each page resumes right after the last team the previous one showed.
+            assert f"org.team.id > '{previous[-1].id}' ORDER BY org.team.id LIMIT 3" in sql
 
 
 class TestUpdate:
