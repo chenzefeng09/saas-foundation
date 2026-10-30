@@ -92,7 +92,8 @@ class DLPRule(Base):
         comment="Minimum sensitivity triggered when this rule matches")
     description: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(30))
 
 
@@ -136,7 +137,5 @@ class Outbox(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(64))
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
