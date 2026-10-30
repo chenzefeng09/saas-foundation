@@ -1,18 +1,13 @@
 /**
  * Lifecycle resource — recycle bin and legal holds.
  * Mirrors Python SDK foundation_sdk/resources/lifecycle.py
+ *
+ * Restore, hard delete and release are recorded against the caller: the service takes
+ * who acted from the authenticated context (X-User-Id), never from the request, so
+ * these methods take no actor.
  */
 
 import type { Transport } from "../transport.js";
-
-/** `explicit`, else the context user: the routes record who acted from the body. */
-function actor(t: Transport, explicit: string | undefined, field: string): string {
-  const id = explicit || t.resolveContext()?.userId;
-  if (!id) {
-    throw new Error(`${field} is required when the FoundationContext has no userId`);
-  }
-  return id;
-}
 
 export class LifecycleResource {
   constructor(private readonly t: Transport) {}
@@ -35,14 +30,9 @@ export class LifecycleResource {
     return this.t.request("POST", "/api/lifecycle/v1/legal-holds", { json: body });
   }
 
-  /** Release a hold; `releasedBy` defaults to the context user. */
-  async releaseLegalHold(
-    holdId: string,
-    params?: { releasedBy?: string },
-  ): Promise<Record<string, unknown>> {
-    return this.t.request("POST", `/api/lifecycle/v1/legal-holds/${holdId}:release`, {
-      json: { released_by: actor(this.t, params?.releasedBy, "releasedBy") },
-    });
+  /** Release a hold; the service records the context user as the releaser. */
+  async releaseLegalHold(holdId: string): Promise<Record<string, unknown>> {
+    return this.t.request("POST", `/api/lifecycle/v1/legal-holds/${holdId}:release`);
   }
 
   async listLegalHolds(params?: { resourceId?: string }): Promise<Record<string, unknown>> {
@@ -59,27 +49,17 @@ export class LifecycleResource {
 
   /**
    * Restore a recycle-bin entry (`binId` from `listRecycleBin`, not the resource id).
-   * Without `restoredBy` the service records the caller.
+   * The service records the context user as the restorer.
    */
-  async restoreFromBin(
-    binId: string,
-    params?: { restoredBy?: string },
-  ): Promise<Record<string, unknown>> {
-    const json = params?.restoredBy != null ? { restored_by: params.restoredBy } : undefined;
-    return this.t.request("POST", `/api/lifecycle/v1/recycle-bin/${binId}:restore`, { json });
+  async restoreFromBin(binId: string): Promise<Record<string, unknown>> {
+    return this.t.request("POST", `/api/lifecycle/v1/recycle-bin/${binId}:restore`);
   }
 
-  /** Hard-delete a recycle-bin entry; `destroyedBy` defaults to the context user. */
-  async purgeFromBin(
-    binId: string,
-    params?: { destroyedBy?: string; witnessUserId?: string },
-  ): Promise<Record<string, unknown>> {
-    const body: Record<string, unknown> = {
-      destroyed_by: actor(this.t, params?.destroyedBy, "destroyedBy"),
-    };
-    if (params?.witnessUserId != null) body["witness_user_id"] = params.witnessUserId;
-    return this.t.request("POST", `/api/lifecycle/v1/recycle-bin/${binId}:hard-delete`, {
-      json: body,
-    });
+  /**
+   * Hard-delete a recycle-bin entry; the service records the context user as the one
+   * who destroyed it. A destruction certificate names no witness.
+   */
+  async purgeFromBin(binId: string): Promise<Record<string, unknown>> {
+    return this.t.request("POST", `/api/lifecycle/v1/recycle-bin/${binId}:hard-delete`);
   }
 }

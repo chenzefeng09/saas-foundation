@@ -155,41 +155,6 @@
           "args": [
             "rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
           ],
-          "kwargs": {
-            "destroyed_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3",
-            "witness_user_id": "usr_01J9Z8Y7X6W5V4T3S2R4Q4P4N4"
-          }
-        }
-      ],
-      "typescript": [
-        {
-          "method": "purgeFromBin",
-          "args": [
-            "rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
-            {
-              "destroyedBy": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3",
-              "witnessUserId": "usr_01J9Z8Y7X6W5V4T3S2R4Q4P4N4"
-            }
-          ]
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "path": "/api/lifecycle/v1/recycle-bin/rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:hard-delete",
-        "json": {
-          "destroyed_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3",
-          "witness_user_id": "usr_01J9Z8Y7X6W5V4T3S2R4Q4P4N4"
-        }
-      }
-    },
-    {
-      "id": "purge_from_bin:defaults",
-      "python": [
-        {
-          "method": "purge_from_bin",
-          "args": [
-            "rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
-          ],
           "kwargs": {}
         }
       ],
@@ -203,10 +168,7 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/api/lifecycle/v1/recycle-bin/rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:hard-delete",
-        "json": {
-          "destroyed_by": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
-        }
+        "path": "/api/lifecycle/v1/recycle-bin/rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:hard-delete"
       }
     },
     {
@@ -217,38 +179,6 @@
           "args": [
             "lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
           ],
-          "kwargs": {
-            "released_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-          }
-        }
-      ],
-      "typescript": [
-        {
-          "method": "releaseLegalHold",
-          "args": [
-            "lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
-            {
-              "releasedBy": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-            }
-          ]
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "path": "/api/lifecycle/v1/legal-holds/lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:release",
-        "json": {
-          "released_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-        }
-      }
-    },
-    {
-      "id": "release_legal_hold:defaults",
-      "python": [
-        {
-          "method": "release_legal_hold",
-          "args": [
-            "lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
-          ],
           "kwargs": {}
         }
       ],
@@ -262,46 +192,11 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/api/lifecycle/v1/legal-holds/lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:release",
-        "json": {
-          "released_by": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
-        }
+        "path": "/api/lifecycle/v1/legal-holds/lh_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:release"
       }
     },
     {
       "id": "restore_from_bin",
-      "python": [
-        {
-          "method": "restore_from_bin",
-          "args": [
-            "rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
-          ],
-          "kwargs": {
-            "restored_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-          }
-        }
-      ],
-      "typescript": [
-        {
-          "method": "restoreFromBin",
-          "args": [
-            "rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
-            {
-              "restoredBy": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-            }
-          ]
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "path": "/api/lifecycle/v1/recycle-bin/rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:restore",
-        "json": {
-          "restored_by": "usr_01J9Z8Y7X6W5V4T3S2R3Q3P3N3"
-        }
-      }
-    },
-    {
-      "id": "restore_from_bin:defaults",
       "python": [
         {
           "method": "restore_from_bin",
