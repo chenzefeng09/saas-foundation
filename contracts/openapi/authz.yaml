@@ -63,7 +63,18 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CheckRequest' }
+            schema:
+              type: object
+              required: [user_id, action, resource_type]
+              properties:
+                user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
+                action: { type: string, example: document:read }
+                resource_type: { type: string, example: document }
+                resource_id: { type: string, nullable: true }
+                context:
+                  type: object
+                  additionalProperties: true
+                  description: ABAC 上下文（ip / time / device）；安全等级由服务端权威解析
       responses:
         '200':
           description: 检查结果
@@ -234,6 +245,10 @@ paths:
       tags: [permissions]
       summary: 列底座 + 业务层注册的权限定义
       operationId: listPermissions
+      parameters:
+        - name: filter.service
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: ok
@@ -446,11 +461,11 @@ components:
 
     CreateRoleRequest:
       type: object
-      required: [name, scope, permissions]
+      required: [name, display_name]
       properties:
-        name: { type: string, pattern: '^[A-Z][A-Z0-9_]*$' }
-        description: { type: string }
-        scope: { type: string, enum: [TENANT, ORG_UNIT, TEAM, RESOURCE] }
+        name: { type: string, pattern: '^[a-z][a-z0-9_]{1,99}$' }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, nullable: true }
         permissions:
           type: array
           items: { type: string }

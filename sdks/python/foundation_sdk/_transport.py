@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import httpx
 
 from foundation_sdk._context import current_context
 from foundation_sdk._retry import DEFAULT_RETRY, RetryPolicy
+from foundation_sdk._version import __version__
 from foundation_sdk.errors import FoundationError, from_problem
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class Transport:
@@ -26,7 +29,7 @@ class Transport:
         *,
         timeout: float = 30.0,
         retry: RetryPolicy = DEFAULT_RETRY,
-        user_agent: str = "foundation-sdk-python/0.1.0",
+        user_agent: str = f"foundation-sdk-python/{__version__}",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_token = api_token
@@ -41,10 +44,24 @@ class Transport:
         json: Any | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        return self._retrying(method, path, json=json, params=params,
+                              parse=self._handle_response)
+
+    def request_text(
+        self, method: str, path: str, *,
+        json: Any | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> str:
+        """``request`` for routes that answer with a file (CSV, NDJSON) instead of JSON."""
+        return self._retrying(method, path, json=json, params=params,
+                              parse=self._handle_text)
+
+    def _retrying(self, method: str, path: str, *, json: Any | None,
+                  params: dict[str, Any] | None, parse: Callable[[httpx.Response], _T]) -> _T:
         attempt = 0
         while True:
             try:
-                return self._do_sync(method, path, json=json, params=params)
+                return parse(self._do_sync(method, path, json=json, params=params))
             except Exception as exc:
                 if not self._retry.should_retry(exc, attempt):
                     raise
@@ -58,12 +75,26 @@ class Transport:
         json: Any | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        return await self._retrying_async(method, path, json=json, params=params,
+                                          parse=self._handle_response)
+
+    async def request_text_async(
+        self, method: str, path: str, *,
+        json: Any | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> str:
+        return await self._retrying_async(method, path, json=json, params=params,
+                                          parse=self._handle_text)
+
+    async def _retrying_async(self, method: str, path: str, *, json: Any | None,
+                              params: dict[str, Any] | None,
+                              parse: Callable[[httpx.Response], _T]) -> _T:
         if self._async is None:
             self._async = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
         attempt = 0
         while True:
             try:
-                return await self._do_async(method, path, json=json, params=params)
+                return parse(await self._do_async(method, path, json=json, params=params))
             except Exception as exc:
                 if not self._retry.should_retry(exc, attempt):
                     raise
@@ -93,24 +124,32 @@ class Transport:
         return headers
 
     def _do_sync(self, method: str, path: str, *,
-                  json: Any | None, params: dict[str, Any] | None) -> dict[str, Any]:
-        resp = self._sync.request(method=method, url=path, json=json,
-                                   params=params, headers=self._headers())
-        return self._handle_response(resp)
+                  json: Any | None, params: dict[str, Any] | None) -> httpx.Response:
+        return self._sync.request(method=method, url=path, json=json,
+                                  params=params, headers=self._headers())
 
     async def _do_async(self, method: str, path: str, *,
-                         json: Any | None, params: dict[str, Any] | None) -> dict[str, Any]:
+                         json: Any | None, params: dict[str, Any] | None) -> httpx.Response:
         assert self._async is not None
-        resp = await self._async.request(method=method, url=path, json=json,
-                                          params=params, headers=self._headers())
-        return self._handle_response(resp)
+        return await self._async.request(method=method, url=path, json=json,
+                                         params=params, headers=self._headers())
+
+    @classmethod
+    def _handle_response(cls, resp: httpx.Response) -> dict[str, Any]:
+        cls._raise_for_problem(resp)
+        if resp.status_code == 204 or not resp.content:
+            return {}
+        return resp.json()
+
+    @classmethod
+    def _handle_text(cls, resp: httpx.Response) -> str:
+        cls._raise_for_problem(resp)
+        return resp.text
 
     @staticmethod
-    def _handle_response(resp: httpx.Response) -> dict[str, Any]:
+    def _raise_for_problem(resp: httpx.Response) -> None:
         if 200 <= resp.status_code < 300:
-            if resp.status_code == 204 or not resp.content:
-                return {}
-            return resp.json()
+            return
         try:
             body = resp.json()
         except ValueError:

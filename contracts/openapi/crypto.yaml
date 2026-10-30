@@ -35,6 +35,8 @@ tags:
     description: 签名 / 验签
   - name: algorithms
     description: 算法套件
+  - name: passwords
+    description: Password hashing (Argon2id) and verification
   - name: health
 
 paths:
@@ -63,9 +65,6 @@ paths:
         - name: filter.purpose
           in: query
           schema: { type: string, example: pii }
-        - name: filter.algorithm
-          in: query
-          schema: { type: string }
         - name: filter.status
           in: query
           schema: { type: string, enum: [ACTIVE, ROTATING, MARKED_FOR_DESTRUCTION, DESTROYED] }
@@ -129,6 +128,14 @@ paths:
       tags: [keys]
       summary: 轮换 KEK（生成新 version，旧 version 仍可解密旧 DEK）
       operationId: rotateKek
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500, nullable: true }
+              additionalProperties: false
       responses:
         '200':
           description: ok
@@ -323,6 +330,100 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Algorithm' }
 
+  /password-hash:
+    post:
+      tags: [passwords]
+      summary: Hash Password
+      operationId: hashPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 1, maxLength: 1024 }
+                memory_kib: { type: integer, minimum: 8192, maximum: 1048576, nullable: true }
+                time_cost: { type: integer, minimum: 1, maximum: 20, nullable: true }
+                parallelism: { type: integer, minimum: 1, maximum: 16, nullable: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [encoded]
+                properties:
+                  encoded: { type: string }
+                  algorithm: { type: string, default: argon2id }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /password-verify:
+    post:
+      tags: [passwords]
+      summary: Verify Password
+      operationId: verifyPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, encoded]
+              properties:
+                password: { type: string, minLength: 1, maxLength: 1024 }
+                encoded: { type: string, minLength: 1, maxLength: 512 }
+              additionalProperties: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid: { type: boolean }
+                  needs_rehash: { type: boolean, default: false }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /rewrap:
+    post:
+      tags: [data]
+      summary: Rewrap
+      operationId: rewrapData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [envelope]
+              properties:
+                envelope: { $ref: '#/components/schemas/Envelope' }
+                target_kek_version: { type: integer, minimum: 1, nullable: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [envelope]
+                properties:
+                  envelope: { $ref: '#/components/schemas/Envelope' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -360,31 +461,20 @@ components:
 
     CreateKekRequest:
       type: object
-      required: [purpose, algorithm]
+      required: [label, purpose, algorithm_id]
       properties:
+        label: { type: string, pattern: '^[a-z][a-z0-9._-]{1,119}$' }
         purpose: { type: string }
-        algorithm:
-          type: string
-          enum: [AES_256_GCM, SM4_GCM, RSA_4096, ECDSA_P256, SM2, ED25519]
-        backend:
-          type: string
-          enum: [VAULT, TASS_HSM, JNTA_HSM, AWS_KMS, ALIYUN_KMS]
-          description: 缺省按租户合规模式 + 部署 profile 自动选
-        rotation_period_days: { type: integer, default: 90 }
+        algorithm_id: { type: string, pattern: '^[A-Za-z][A-Za-z0-9._-]{1,59}$' }
+        auto_rotate_days: { type: integer, minimum: 1, maximum: 730, default: 90 }
 
     EncryptRequest:
       type: object
-      required: [kek_id, plaintext_b64]
+      required: [key_label, plaintext_b64]
       properties:
-        kek_id: { type: string }
-        plaintext_b64:
-          type: string
-          format: byte
-          description: 单次最大 4MiB；大数据走 stream 接口（v1.1）
-        aad_b64:
-          type: string
-          format: byte
-          description: Additional Authenticated Data（GCM 模式）
+        key_label: { type: string, pattern: '^[a-z][a-z0-9._-]{1,119}$' }
+        plaintext_b64: { type: string, format: byte, description: 单次最大 4MiB；大数据走 stream 接口（v1.1） }
+        context: { type: object, additionalProperties: true }
 
     EncryptResponse:
       type: object
@@ -398,15 +488,10 @@ components:
 
     DecryptRequest:
       type: object
-      required: [ciphertext_b64, kek_id]
+      required: [envelope]
       properties:
-        ciphertext_b64: { type: string, format: byte }
-        kek_id: { type: string }
-        kek_version:
-          type: integer
-          nullable: true
-          description: 不指定则用密文头里记录的版本
-        aad_b64: { type: string, format: byte }
+        envelope: { $ref: '#/components/schemas/Envelope' }
+        expected_context: { type: object, additionalProperties: true, nullable: true }
 
     DecryptResponse:
       type: object
@@ -417,14 +502,12 @@ components:
 
     SignRequest:
       type: object
-      required: [kek_id, payload_b64]
+      required: [key_label, data_b64]
       properties:
-        kek_id: { type: string }
-        payload_b64: { type: string, format: byte }
-        algorithm:
-          type: string
-          enum: [ECDSA_P256_SHA256, SM2_SM3, RSA_PSS_SHA256, ED25519]
-          description: 缺省按 KEK algorithm 决定
+        key_label: { type: string, pattern: '^[a-z][a-z0-9._-]{1,119}$' }
+        data_b64: { type: string, minLength: 1, maxLength: 8388608 }
+        detached: { type: boolean, default: true }
+        prehash: { type: boolean, default: true }
 
     SignResponse:
       type: object
@@ -438,14 +521,13 @@ components:
 
     VerifyRequest:
       type: object
-      required: [kek_id, payload_b64, signature_b64]
+      required: [key_label, data_b64, signature_b64]
       properties:
-        kek_id: { type: string }
-        payload_b64: { type: string, format: byte }
+        key_label: { type: string, pattern: '^[a-z][a-z0-9._-]{1,119}$' }
+        data_b64: { type: string }
         signature_b64: { type: string, format: byte }
-        algorithm:
-          type: string
-          enum: [ECDSA_P256_SHA256, SM2_SM3, RSA_PSS_SHA256, ED25519]
+        kek_version: { type: integer, nullable: true }
+        prehash: { type: boolean, default: true }
 
     Algorithm:
       type: object
@@ -465,3 +547,25 @@ components:
           type: array
           items: { $ref: './_common.yaml#/components/schemas/ComplianceMode' }
           description: 在哪些合规模式下被推荐 / 强制
+
+    Envelope:
+      type: object
+      required:
+        - schema_version
+        - algorithm
+        - kek_id
+        - kek_version
+        - wrapped_dek_b64
+        - nonce_b64
+        - ciphertext_b64
+      properties:
+        schema_version: { type: integer, minimum: 1 }
+        algorithm: { type: string }
+        kek_id: { type: string }
+        kek_version: { type: integer }
+        wrapped_dek_b64: { type: string }
+        nonce_b64: { type: string }
+        ciphertext_b64: { type: string }
+        aad: { type: object, additionalProperties: true }
+      additionalProperties: false
+      description: Wire format for an encrypted value (b64-encoded blobs).

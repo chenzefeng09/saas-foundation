@@ -44,24 +44,6 @@ paths:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
   /messages:
-    post:
-      tags: [messages]
-      summary: 发送通知（异步）
-      operationId: sendNotification
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SendRequest' }
-      responses:
-        '202':
-          description: 已入队
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Message' }
-        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
     get:
       tags: [messages]
       operationId: listMessages
@@ -90,6 +72,26 @@ paths:
                       items:
                         type: array
                         items: { $ref: '#/components/schemas/Message' }
+
+  /send:
+    post:
+      tags: [messages]
+      summary: 发送通知（异步）
+      operationId: sendNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /messages/{message_id}:
     parameters:
@@ -262,6 +264,32 @@ paths:
         '202': { description: 已重投 }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
+  /send-batch:
+    post:
+      tags: [messages]
+      summary: Send Batch
+      operationId: sendNotificationBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notifications]
+              properties:
+                notifications:
+                  type: array
+                  items: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -280,20 +308,15 @@ components:
           example: foundation.identity.user.frozen
         recipients:
           type: array
-          items:
-            type: object
-            properties:
-              kind: { type: string, enum: [USER, TEAM, ROLE, EXPLICIT] }
-              id: { type: string }
-              channel_override:
-                type: string
-                enum: [EMAIL, WEBHOOK, WEBSOCKET, DINGTALK, FEISHU, WECOM, SMS, IN_APP]
-        context:
-          type: object
-          additionalProperties: true
-          description: 模板渲染变量
-        priority: { type: string, enum: [P1, P2, P3, P4], default: P3 }
-        locale_hint: { type: string }
+          items: { type: string }
+        channel: { type: string, default: email }
+        template: { type: string, nullable: true }
+        context: { type: object, additionalProperties: true, description: 模板渲染变量 }
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+          description: 'notification-v1 §2: urgent bypasses quiet hours'
 
     Message:
       type: object

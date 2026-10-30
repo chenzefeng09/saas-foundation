@@ -1,0 +1,381 @@
+{
+  "service": "compliance",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "assess_dpia",
+      "python": [
+        {
+          "method": "assess_dpia",
+          "args": [],
+          "kwargs": {
+            "project_name": "v_project_name",
+            "description": "Payments engineering",
+            "data_categories": [
+              "v_data_categories[]"
+            ],
+            "risks": [
+              {
+                "k": "v"
+              }
+            ],
+            "mitigations": [
+              {
+                "k": "v"
+              }
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "assessDpia",
+          "args": [
+            {
+              "projectName": "v_project_name",
+              "description": "Payments engineering",
+              "dataCategories": [
+                "v_data_categories[]"
+              ],
+              "risks": [
+                {
+                  "k": "v"
+                }
+              ],
+              "mitigations": [
+                {
+                  "k": "v"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/dpia",
+        "json": {
+          "project_name": "v_project_name",
+          "description": "Payments engineering",
+          "data_categories": [
+            "v_data_categories[]"
+          ],
+          "risks": [
+            {
+              "k": "v"
+            }
+          ],
+          "mitigations": [
+            {
+              "k": "v"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "complete_dpia",
+      "python": [
+        {
+          "method": "complete_dpia",
+          "args": [],
+          "kwargs": {
+            "dpia_id": "v_dpia_id",
+            "conclusion": "v_conclusion",
+            "residual_risks": "v_residual_risks"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "completeDpia",
+          "args": [
+            {
+              "dpiaId": "v_dpia_id",
+              "conclusion": "v_conclusion",
+              "residualRisks": "v_residual_risks"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/dpia/v_dpia_id/complete",
+        "json": {
+          "conclusion": "v_conclusion",
+          "residual_risks": "v_residual_risks"
+        }
+      }
+    },
+    {
+      "id": "generate_report",
+      "python": [
+        {
+          "method": "generate_report",
+          "args": [],
+          "kwargs": {
+            "report_type": "v_report_type",
+            "compliance_modes": [
+              "gdpr"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "generateReport",
+          "args": [
+            {
+              "reportType": "v_report_type",
+              "complianceModes": [
+                "gdpr"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/reports",
+        "json": {
+          "report_type": "v_report_type",
+          "compliance_modes": [
+            "gdpr"
+          ]
+        }
+      }
+    },
+    {
+      "id": "get_dsar_status",
+      "python": [
+        {
+          "method": "get_dsar_status",
+          "args": [
+            "v_dsar_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getDsarStatus",
+          "args": [
+            "v_dsar_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/compliance/v1/dsar/v_dsar_id"
+      }
+    },
+    {
+      "id": "list_reports",
+      "python": [
+        {
+          "method": "list_reports",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listReports",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/compliance/v1/reports"
+      }
+    },
+    {
+      "id": "list_ropa",
+      "python": [
+        {
+          "method": "list_ropa",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listRopa",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/compliance/v1/ropa"
+      }
+    },
+    {
+      "id": "record_processing",
+      "python": [
+        {
+          "method": "record_processing",
+          "args": [],
+          "kwargs": {
+            "service": "identity",
+            "data_category": "v_data_category",
+            "purpose": "FIELD_ENCRYPT",
+            "legal_basis": "CONTRACT",
+            "data_subjects": [
+              "v_data_subjects[]"
+            ],
+            "recipients": [
+              "v_recipients[]"
+            ],
+            "retention_days": 7,
+            "cross_border": true,
+            "destination_countries": [
+              "v_destination_countries[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "recordProcessing",
+          "args": [
+            {
+              "service": "identity",
+              "dataCategory": "v_data_category",
+              "purpose": "FIELD_ENCRYPT",
+              "legalBasis": "CONTRACT",
+              "dataSubjects": [
+                "v_data_subjects[]"
+              ],
+              "recipients": [
+                "v_recipients[]"
+              ],
+              "retentionDays": 7,
+              "crossBorder": true,
+              "destinationCountries": [
+                "v_destination_countries[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/ropa",
+        "json": {
+          "service": "identity",
+          "data_category": "v_data_category",
+          "purpose": "FIELD_ENCRYPT",
+          "legal_basis": "CONTRACT",
+          "data_subjects": [
+            "v_data_subjects[]"
+          ],
+          "recipients": [
+            "v_recipients[]"
+          ],
+          "retention_days": 7,
+          "cross_border": true,
+          "destination_countries": [
+            "v_destination_countries[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "record_processing:defaults",
+      "python": [
+        {
+          "method": "record_processing",
+          "args": [],
+          "kwargs": {
+            "service": "identity",
+            "data_category": "v_data_category",
+            "purpose": "FIELD_ENCRYPT",
+            "legal_basis": "CONTRACT",
+            "data_subjects": [
+              "v_data_subjects[]"
+            ],
+            "recipients": [
+              "v_recipients[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "recordProcessing",
+          "args": [
+            {
+              "service": "identity",
+              "dataCategory": "v_data_category",
+              "purpose": "FIELD_ENCRYPT",
+              "legalBasis": "CONTRACT",
+              "dataSubjects": [
+                "v_data_subjects[]"
+              ],
+              "recipients": [
+                "v_recipients[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/ropa",
+        "json": {
+          "service": "identity",
+          "data_category": "v_data_category",
+          "purpose": "FIELD_ENCRYPT",
+          "legal_basis": "CONTRACT",
+          "data_subjects": [
+            "v_data_subjects[]"
+          ],
+          "recipients": [
+            "v_recipients[]"
+          ],
+          "retention_days": 365,
+          "cross_border": false,
+          "destination_countries": []
+        }
+      }
+    },
+    {
+      "id": "request_dsar",
+      "python": [
+        {
+          "method": "request_dsar",
+          "args": [],
+          "kwargs": {
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "request_type": "ACCESS",
+            "details": "v_details"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestDsar",
+          "args": [
+            {
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "requestType": "ACCESS",
+              "details": "v_details"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/compliance/v1/dsar",
+        "json": {
+          "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "request_type": "ACCESS",
+          "details": "v_details"
+        }
+      }
+    }
+  ]
+}

@@ -27,39 +27,33 @@ class IdentityResource:
             params["cursor"] = cursor
         return self._t.request("GET", "/api/identity/v1/users", params=params)
 
-    def create_user(self, *, email: str, display_name: str, password: str | None = None,
+    def create_user(self, *, email: str, display_name: str,
                     roles: list[str] | None = None) -> dict[str, Any]:
+        """Invite a user. No password goes through this call; identity emails an invite."""
         body: dict[str, Any] = {"email": email, "display_name": display_name}
-        if password:
-            body["password"] = password
         if roles:
             body["roles"] = roles
         return self._t.request("POST", "/api/identity/v1/users", json=body)
 
-    def disable_user(self, user_id: str) -> dict[str, Any]:
-        return self._t.request("POST", f"/api/identity/v1/users/{user_id}/disable")
-
-    def freeze_user(self, user_id: str) -> dict[str, Any]:
-        """Emergency freeze — invalidates all tokens immediately."""
-        return self._t.request("POST", f"/api/identity/v1/users/{user_id}/freeze")
+    def freeze_user(self, user_id: str, *, reason: str) -> dict[str, Any]:
+        """Emergency freeze — invalidates all tokens immediately. ``reason``: 5 to 500 chars."""
+        return self._t.request("POST", f"/api/identity/v1/users/{user_id}/freeze",
+                                json={"reason": reason})
 
     # --- Password Policy ---
 
     def get_password_policy(self) -> dict[str, Any]:
-        return self._t.request("GET", "/api/identity/v1/password-policy")
-
-    def validate_password(self, password: str) -> dict[str, Any]:
-        return self._t.request("POST", "/api/identity/v1/password-policy/validate",
-                                json={"password": password})
+        return self._t.request("GET", "/api/identity/v1/policies/password")
 
     # --- Sessions ---
 
-    def list_sessions(self, user_id: str) -> dict[str, Any]:
-        return self._t.request("GET", f"/api/identity/v1/users/{user_id}/sessions")
+    def list_sessions(self) -> dict[str, Any]:
+        """The caller's own sessions."""
+        return self._t.request("GET", "/api/identity/v1/sessions")
 
-    def revoke_session(self, user_id: str, session_id: str) -> dict[str, Any]:
-        return self._t.request("DELETE",
-            f"/api/identity/v1/users/{user_id}/sessions/{session_id}")
+    def revoke_session(self, session_id: str) -> dict[str, Any]:
+        """Revoke one of the caller's own sessions."""
+        return self._t.request("DELETE", f"/api/identity/v1/sessions/{session_id}")
 
     def me(self) -> dict[str, Any]:
         """Resolve caller identity from the current bearer token.

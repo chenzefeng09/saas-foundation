@@ -32,6 +32,8 @@ tags:
     description: 跨境传输检查
   - name: consents
     description: 同意管理
+  - name: destruction
+    description: Data destruction requests (approval workflow)
   - name: health
 
 paths:
@@ -259,16 +261,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [data_categories, destination_country, lawful_basis]
+              required: [destination_country, data_categories]
               properties:
+                destination_country: { type: string, example: SG }
                 data_categories:
                   type: array
-                  items: { type: string, enum: [PII, SENSITIVE_PII, FINANCIAL, HEALTH, BIOMETRIC, CHILDREN] }
-                destination_country: { type: string, example: SG }
-                lawful_basis:
-                  type: string
-                  enum: [STANDARD_CONTRACT, SECURITY_ASSESSMENT, CERTIFICATION, CONSENT, EXEMPTION]
-                volume_estimate: { type: integer }
+                  items:
+                    type: string
+                    enum: [PII, SENSITIVE_PII, FINANCIAL, HEALTH, BIOMETRIC, CHILDREN]
       responses:
         '200':
           description: ok
@@ -355,6 +355,107 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Consent' }
 
+  /data-residency:
+    get:
+      tags: [cross-border]
+      summary: Get Data Residency
+      operationId: getDataResidency
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /destruction:
+    post:
+      tags: [destruction]
+      summary: Request Destruction
+      operationId: requestDestruction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_ids]
+              properties:
+                resource_ids:
+                  type: array
+                  items: { type: string }
+                method: { type: string, default: crypto_shred }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /destruction/{request_id}:
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [destruction]
+      summary: Get Destruction Status
+      operationId: getDestructionStatus
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /mask-field:
+    post:
+      tags: [masking]
+      summary: Mask Field
+      operationId: maskField
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field_name, value]
+              properties:
+                field_name: { type: string }
+                value: { type: string }
+                mask_type: { type: string, default: default }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /masking-rules:
+    get:
+      tags: [masking]
+      summary: Get Masking Rules
+      operationId: listMaskingRules
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -367,24 +468,21 @@ components:
       type: object
       required: [data, rules]
       properties:
-        data:
-          type: object
-          additionalProperties: true
-          description: 待脱敏数据（嵌套对象 / 数组都支持）
+        data: { type: object, additionalProperties: true, description: 待脱敏数据（嵌套对象 / 数组都支持） }
         rules:
           type: array
           items:
             type: object
-            required: [field, method]
+            required: [field]
             properties:
-              field: { type: string, description: JSON Pointer }
-              method: { type: string, enum: [MASK, TRUNCATE, HASH, PSEUDONYMIZE, TOKENIZE, SYNTHESIZE, GENERALIZE, SUPPRESS, NOISE] }
-              params:
-                type: object
-                additionalProperties: true
-        purpose:
-          type: string
-          description: 影响假名化一致性
+              field: { type: string, description: Top-level key of `data` to mask }
+              method:
+                type: string
+                enum: [mask, truncate, hash, pseudonymize, suppress, tokenize, noise]
+                default: mask
+            additionalProperties:
+              type: string
+              description: Parameters of the method (e.g. `pattern`, `purpose`, `prefix`)
 
     MaskResponse:
       type: object

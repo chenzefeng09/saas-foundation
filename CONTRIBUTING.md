@@ -186,6 +186,13 @@ them, and FastAPI implementations must conform to the spec — never the reverse
    `operationId`/examples aligned with the spec). Commit the regenerated SDK
    alongside the spec change so they never drift.
 
+5. **Update the SDK golden requests.** The hand-written resources in
+   `sdks/python/foundation_sdk/resources/` and `sdks/typescript/src/resources/`
+   are not regenerated. Every request they send is pinned in
+   [`contracts/sdk/<service>.json`](./contracts/sdk/README.md), which both SDK
+   suites and each service's `tests/unit/test_sdk_requests.py` check. Change
+   those cases in the same PR as the spec, the route or the method.
+
 > The Go SDK target (`make sdk-go`) is referenced for the future but not yet
 > wired up — `sdks/go/` is currently a stub.
 

@@ -290,8 +290,8 @@ The OpenAPI specs drive three client SDKs from a single source of truth:
 
 | SDK | Status | Package | Notes |
 |---|---|---|---|
-| **Python** | shipping (v0.1.0) | `foundation_sdk` (`sdks/python`) | `FoundationClient.from_env()` aggregating 17 resource groups; async; optional `[fastapi]` extra adds `RequestContextMiddleware` + RFC 7807 problem-details registration. |
-| **TypeScript** | shipping (v0.1.0) | `@foundation/sdk` (`sdks/typescript`) | Mirrors the Python surface 1:1 (same 17 resources, error taxonomy, context helpers); zero runtime deps, fetch-based, dual ESM/CJS (tsup), tested with vitest. |
+| **Python** | shipping (v1.0.0) | `foundation_sdk` (`sdks/python`) | `FoundationClient.from_env()` aggregating 17 resource groups; async; optional `[fastapi]` extra adds `RequestContextMiddleware` + RFC 7807 problem-details registration. |
+| **TypeScript** | shipping (v1.0.0) | `@foundation/sdk` (`sdks/typescript`) | Mirrors the Python surface 1:1 (same 17 resources, error taxonomy, context helpers); zero runtime deps, fetch-based, dual ESM/CJS (tsup), tested with vitest. |
 | **Go** | **planned** | `sdks/go/` | A stub — only a `.gitkeep`, no `go.mod` or code. The README / Makefile reference a future `make sdk-go`, but it is not yet generated. |
 
 Business systems depend on the generated `foundation_*` SDK packages and are **not** allowed to call a service URL directly or import a Foundation engine's internal package. For private-cloud customers, offline SDK tarballs (`sdks/python-1.0.0.tar.gz`, `sdks/typescript-1.0.0.tgz`) ship alongside the Helm chart.

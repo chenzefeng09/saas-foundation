@@ -106,13 +106,13 @@ describe("AuthzResource — check", () => {
     client = new FoundationClient({
       apiUrl: "http://api.test",
       apiToken: "tok",
-      context: createContext({ tenantId: "tnt_001" }),
+      context: createContext({ tenantId: "tnt_001", userId: "usr_001" }),
     });
   });
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("calls POST /api/authz/v1/check with correct body", async () => {
+  it("calls POST /api/authz/v1/check for the context user", async () => {
     fetchMock.mockResolvedValue(makeResponse(200, { allowed: true }));
 
     await client.authz.check({
@@ -125,10 +125,27 @@ describe("AuthzResource — check", () => {
     expect(url).toBe("http://api.test/api/authz/v1/check");
     expect(init.method).toBe("POST");
 
+    // The route takes the subject from the body: without user_id it answers 422.
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body["action"]).toBe("session.read");
-    expect(body["resource_type"]).toBe("Agent");
-    expect(body["resource_id"]).toBe("agent_001");
+    expect(body).toEqual({
+      user_id: "usr_001",
+      action: "session.read",
+      resource_type: "Agent",
+      resource_id: "agent_001",
+    });
+  });
+
+  it("refuses to check without a user instead of sending a request the route rejects", async () => {
+    const anonymous = new FoundationClient({
+      apiUrl: "http://api.test",
+      apiToken: "tok",
+      context: createContext({ tenantId: "tnt_001" }),
+    });
+
+    await expect(
+      anonymous.authz.check({ action: "session.read", resourceType: "Agent" }),
+    ).rejects.toThrow("userId is required");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -252,15 +269,20 @@ describe("AuditResource — query", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("calls GET /api/audit/v1/events with limit", async () => {
+  it("POSTs an AuditQuery for the context tenant to /api/audit/v1/events:query", async () => {
     fetchMock.mockResolvedValue(makeResponse(200, { items: [] }));
 
     await client.audit.query({ limit: 50, eventType: "user.login" });
 
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/api/audit/v1/events");
-    expect(url).toContain("limit=50");
-    expect(url).toContain("event_type=user.login");
+    // There is no GET /events: the filters travel in the body, scoped to one tenant.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/audit/v1/events:query");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      tenant_id: "tnt_001",
+      event_type: "user.login",
+      limit: 50,
+    });
   });
 });
 

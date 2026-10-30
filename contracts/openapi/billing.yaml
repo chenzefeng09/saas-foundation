@@ -66,7 +66,16 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Plan' }
+            schema:
+              type: object
+              required: [name, tier, quotas, price_monthly_usd]
+              properties:
+                name: { type: string }
+                tier: { type: string }
+                quotas:
+                  type: object
+                  additionalProperties: { type: integer }
+                price_monthly_usd: { type: number }
       responses:
         '201':
           description: ok
@@ -222,6 +231,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Subscription' }
 
+  /subscriptions/current:
+    get:
+      tags: [subscriptions]
+      summary: Get the current tenant's active subscription
+      operationId: getCurrentSubscription
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
   # --------------------------- Quotas ---------------------------------------
   /quotas:
     get:
@@ -236,15 +259,10 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/Quota' }
 
-  /quotas/{dimension}/check:
-    parameters:
-      - name: dimension
-        in: path
-        required: true
-        schema: { type: string, example: llm_tokens }
+  /quota/check:
     post:
       tags: [quotas]
-      summary: 配额检查（业务用 SDK，本端点用于调试）
+      summary: Check whether the current tenant may use more of a quota dimension
       operationId: checkQuota
       requestBody:
         required: true
@@ -252,56 +270,22 @@ paths:
           application/json:
             schema:
               type: object
-              required: [amount]
-              properties:
-                amount: { type: integer }
-      responses:
-        '200':
-          description: 允许
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [allowed, remaining]
-                properties:
-                  allowed: { type: boolean }
-                  remaining: { type: integer }
-                  hard_limit: { type: integer }
-                  soft_limit: { type: integer }
-        '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
-
-  # --------------------------- Usage ----------------------------------------
-  /usage:
-    post:
-      tags: [usage]
-      summary: 上报用量（业务用 SDK 异步批量）
-      operationId: reportUsage
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [dimension, amount]
+              required: [dimension]
               properties:
                 dimension: { type: string }
-                amount: { type: integer }
-                resource_id: { type: string }
-                occurred_at: { type: string, format: date-time }
-                metadata:
-                  type: object
-                  additionalProperties: true
+                requested: { type: integer, default: 1 }
       responses:
-        '202':
+        '200':
           description: ok
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  usage_record_id: { type: string }
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Usage ----------------------------------------
+  /usage:
     get:
       tags: [usage]
       summary: 查询用量
@@ -336,16 +320,37 @@ paths:
                         amount: { type: integer }
                   total: { type: integer }
 
+  /quota/usage:
+    post:
+      tags: [usage]
+      summary: Record usage of a quota dimension for the current tenant
+      operationId: reportUsage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dimension, amount]
+              properties:
+                dimension: { type: string }
+                amount: { type: number }
+                description: { type: string, default: '' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
   # --------------------------- Invoices -------------------------------------
   /invoices:
     get:
       tags: [invoices]
       operationId: listInvoices
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - name: filter.status
-          in: query
-          schema: { type: string, enum: [DRAFT, OPEN, PAID, VOID, UNCOLLECTIBLE] }
       responses:
         '200':
           description: ok
@@ -359,6 +364,31 @@ paths:
                       items:
                         type: array
                         items: { $ref: '#/components/schemas/Invoice' }
+    post:
+      tags: [invoices]
+      summary: Generate Invoice
+      operationId: generateInvoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items: { type: object, additionalProperties: true }
+                due_days: { type: integer, default: 30 }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /invoices/{invoice_id}:
     parameters:
@@ -472,8 +502,7 @@ components:
       required: [plan_id]
       properties:
         plan_id: { type: string }
-        payment_method_id: { type: string }
-        trial_days: { type: integer }
+        mode: { type: string, default: private }
 
     Quota:
       type: object

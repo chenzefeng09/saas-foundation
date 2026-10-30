@@ -80,6 +80,45 @@ def test_list_with_a_cursor_it_did_not_issue_is_422_not_500(path: str, stale_cur
     assert response.json()["code"] == "FOUNDATION.LIFECYCLE.INPUT.VALIDATION_FAILED"
 
 
+class _RecordingRestore:
+    def __init__(self) -> None:
+        self.restored_by: list[str] = []
+
+    async def restore(self, session: Any, *, restored_by: str, **_: Any) -> None:
+        self.restored_by.append(restored_by)
+
+
+_CALLER, _OTHER_USER = "usr_01J0000000000000000000USR1", "usr_01J0000000000000000000USR2"
+
+
+@pytest.mark.parametrize(("body", "expected"), [
+    pytest.param(None, _CALLER, id="no-body"),
+    pytest.param({}, _CALLER, id="empty-body"),
+    pytest.param({"restored_by": None}, _CALLER, id="null-restorer"),
+    pytest.param({"restored_by": _OTHER_USER}, _OTHER_USER, id="explicit-restorer"),
+])
+def test_restore_records_the_caller_unless_a_restorer_is_given(
+    body: dict[str, Any] | None, expected: str,
+) -> None:
+    app = create_app()
+    svc = _RecordingRestore()
+
+    async def _no_db() -> AsyncIterator[None]:
+        yield None
+
+    app.dependency_overrides[dependencies.db_session] = _no_db
+    app.dependency_overrides[dependencies.lifecycle_service] = lambda: svc
+
+    response = TestClient(app).post(
+        "/api/lifecycle/v1/recycle-bin/bin_01J0000000000000000000BIN1:restore",
+        json=body,
+        headers={"X-Tenant-Id": "tnt_01J0000000000000000000TNT1", "X-User-Id": _CALLER},
+    )
+
+    assert response.status_code == 200, response.text
+    assert svc.restored_by == [expected]
+
+
 def test_list_legal_holds_hands_the_resource_filters_to_the_query(fake_session: Any) -> None:
     app = create_app()
 

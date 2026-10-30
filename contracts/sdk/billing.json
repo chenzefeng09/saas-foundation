@@ -1,0 +1,406 @@
+{
+  "service": "billing",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "check_quota",
+      "python": [
+        {
+          "method": "check_quota",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension",
+            "requested": 7
+          }
+        },
+        {
+          "method": "check_quota_async",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension",
+            "requested": 7
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "checkQuota",
+          "args": [
+            {
+              "dimension": "v_dimension",
+              "requested": 7
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/quota/check",
+        "json": {
+          "dimension": "v_dimension",
+          "requested": 7
+        }
+      }
+    },
+    {
+      "id": "check_quota:defaults",
+      "python": [
+        {
+          "method": "check_quota",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension"
+          }
+        },
+        {
+          "method": "check_quota_async",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "checkQuota",
+          "args": [
+            {
+              "dimension": "v_dimension"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/quota/check",
+        "json": {
+          "dimension": "v_dimension",
+          "requested": 1
+        }
+      }
+    },
+    {
+      "id": "create_plan",
+      "python": [
+        {
+          "method": "create_plan",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "tier": "v_tier",
+            "quotas": {
+              "user_seats": 50
+            },
+            "price_monthly_usd": 49.5
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createPlan",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "tier": "v_tier",
+              "quotas": {
+                "user_seats": 50
+              },
+              "priceMonthlyUsd": 49.5
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/plans",
+        "json": {
+          "name": "invoice_reader",
+          "tier": "v_tier",
+          "quotas": {
+            "user_seats": 50
+          },
+          "price_monthly_usd": 49.5
+        }
+      }
+    },
+    {
+      "id": "generate_invoice",
+      "python": [
+        {
+          "method": "generate_invoice",
+          "args": [],
+          "kwargs": {
+            "items": [
+              {
+                "k": "v"
+              }
+            ],
+            "due_days": 7
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "generateInvoice",
+          "args": [
+            {
+              "items": [
+                {
+                  "k": "v"
+                }
+              ],
+              "dueDays": 7
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/invoices",
+        "json": {
+          "items": [
+            {
+              "k": "v"
+            }
+          ],
+          "due_days": 7
+        }
+      }
+    },
+    {
+      "id": "generate_invoice:defaults",
+      "python": [
+        {
+          "method": "generate_invoice",
+          "args": [],
+          "kwargs": {
+            "items": [
+              {
+                "k": "v"
+              }
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "generateInvoice",
+          "args": [
+            {
+              "items": [
+                {
+                  "k": "v"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/invoices",
+        "json": {
+          "items": [
+            {
+              "k": "v"
+            }
+          ],
+          "due_days": 30
+        }
+      }
+    },
+    {
+      "id": "get_subscription",
+      "python": [
+        {
+          "method": "get_subscription",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getSubscription",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/billing/v1/subscriptions/current"
+      }
+    },
+    {
+      "id": "list_invoices",
+      "python": [
+        {
+          "method": "list_invoices",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listInvoices",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/billing/v1/invoices"
+      }
+    },
+    {
+      "id": "list_plans",
+      "python": [
+        {
+          "method": "list_plans",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listPlans",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/billing/v1/plans"
+      }
+    },
+    {
+      "id": "record_usage",
+      "python": [
+        {
+          "method": "record_usage",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension",
+            "amount": 2.5,
+            "description": "Payments engineering"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "recordUsage",
+          "args": [
+            {
+              "dimension": "v_dimension",
+              "amount": 2.5,
+              "description": "Payments engineering"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/quota/usage",
+        "json": {
+          "dimension": "v_dimension",
+          "amount": 2.5,
+          "description": "Payments engineering"
+        }
+      }
+    },
+    {
+      "id": "record_usage:defaults",
+      "python": [
+        {
+          "method": "record_usage",
+          "args": [],
+          "kwargs": {
+            "dimension": "v_dimension",
+            "amount": 2.5
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "recordUsage",
+          "args": [
+            {
+              "dimension": "v_dimension",
+              "amount": 2.5
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/quota/usage",
+        "json": {
+          "dimension": "v_dimension",
+          "amount": 2.5,
+          "description": ""
+        }
+      }
+    },
+    {
+      "id": "subscribe",
+      "python": [
+        {
+          "method": "subscribe",
+          "args": [],
+          "kwargs": {
+            "plan_id": "v_plan_id",
+            "mode": "v_mode"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "subscribe",
+          "args": [
+            {
+              "planId": "v_plan_id",
+              "mode": "v_mode"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/subscriptions",
+        "json": {
+          "plan_id": "v_plan_id",
+          "mode": "v_mode"
+        }
+      }
+    },
+    {
+      "id": "subscribe:defaults",
+      "python": [
+        {
+          "method": "subscribe",
+          "args": [],
+          "kwargs": {
+            "plan_id": "v_plan_id"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "subscribe",
+          "args": [
+            {
+              "planId": "v_plan_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/billing/v1/subscriptions",
+        "json": {
+          "plan_id": "v_plan_id",
+          "mode": "private"
+        }
+      }
+    }
+  ]
+}

@@ -44,38 +44,11 @@ paths:
             application/json:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
-  # --------------------------- API Keys -------------------------------------
-  /api-keys:
-    get:
-      tags: [api-keys]
-      operationId: listApiKeys
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - name: filter.tier
-          in: query
-          schema: { type: string, enum: [TENANT, USER, APP] }
-        - name: filter.status
-          in: query
-          schema: { type: string, enum: [ACTIVE, REVOKED, EXPIRED] }
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: './_common.yaml#/components/schemas/CursorPage'
-                  - type: object
-                    properties:
-                      items:
-                        type: array
-                        items: { $ref: '#/components/schemas/ApiKey' }
+  /keys:
     post:
       tags: [api-keys]
       summary: 创建 API Key（返回明文 1 次，之后只能看哈希）
       operationId: createApiKey
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -83,12 +56,52 @@ paths:
             schema: { $ref: '#/components/schemas/CreateApiKeyRequest' }
       responses:
         '201':
-          description: 已创建（明文 token 仅在本次响应可见）
+          description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CreateApiKeyResponse' }
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+    get:
+      tags: [api-keys]
+      summary: List Api Keys
+      operationId: listApiKeys
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /keys/validate:
+    post:
+      tags: [api-keys]
+      summary: Validate Api Key
+      operationId: validateApiKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key_hash]
+              properties:
+                key_hash: { type: string }
+                required_scope: { type: string, nullable: true }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
+  # --------------------------- API Keys -------------------------------------
   /api-keys/{key_id}:
     parameters:
       - name: key_id
@@ -105,12 +118,25 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ApiKey' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
-    delete:
+
+  /keys/{key_id}/revoke:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
       tags: [api-keys]
-      summary: Revoke
+      summary: Revoke an API key
       operationId: revokeApiKey
       responses:
-        '204': { description: ok }
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
   # --------------------------- OAuth Apps -----------------------------------
@@ -348,28 +374,18 @@ components:
 
     CreateApiKeyRequest:
       type: object
-      required: [tier, scopes]
+      required: [name, scopes]
       properties:
-        tier: { type: string, enum: [TENANT, USER, APP] }
-        owner_id: { type: string }
+        name: { type: string }
         scopes:
           type: array
           items: { type: string }
-        ip_allowlist:
+        ip_whitelist:
           type: array
           items: { type: string }
-        expires_at: { type: string, format: date-time }
-        description: { type: string }
-
-    CreateApiKeyResponse:
-      allOf:
-        - $ref: '#/components/schemas/ApiKey'
-        - type: object
-          required: [token]
-          properties:
-            token:
-              type: string
-              description: 明文 token，仅本响应可见
+          nullable: true
+        rate_limit_rpm: { type: integer, default: 60 }
+        expires_in_days: { type: integer, nullable: true }
 
     OauthApp:
       type: object
@@ -395,20 +411,15 @@ components:
 
     CreateOauthAppRequest:
       type: object
-      required: [name, grant_types, redirect_uris]
+      required: [name, redirect_uris, scopes]
       properties:
         name: { type: string }
-        description: { type: string }
-        grant_types:
-          type: array
-          items: { type: string, enum: [authorization_code, client_credentials, refresh_token] }
         redirect_uris:
           type: array
           items: { type: string, format: uri }
-        allowed_scopes:
+        scopes:
           type: array
           items: { type: string }
-        pkce_required: { type: boolean, default: true }
 
     CreateOauthAppResponse:
       allOf:
@@ -445,8 +456,7 @@ components:
         event_types:
           type: array
           items: { type: string }
-        timeout_seconds: { type: integer, default: 10 }
-        description: { type: string }
+        secret: { type: string, nullable: true }
 
     WebhookDelivery:
       type: object

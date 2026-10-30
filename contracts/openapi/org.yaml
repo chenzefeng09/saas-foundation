@@ -125,11 +125,16 @@ paths:
         - name: filter.parent_id
           in: query
           schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
-        - name: filter.path_prefix
-          in: query
-          schema: { type: string, example: '/eng' }
         - $ref: './_common.yaml#/components/parameters/Cursor'
         - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: parent_id
+          in: query
+          deprecated: true
+          description: Deprecated alias of filter.parent_id (CONVENTIONS §2.5).
+          schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        - name: include_archived
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: ok
@@ -247,6 +252,14 @@ paths:
           schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
         - $ref: './_common.yaml#/components/parameters/Cursor'
         - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: org_unit_id
+          in: query
+          deprecated: true
+          description: Deprecated alias of filter.org_unit_id (CONVENTIONS §2.5).
+          schema: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        - name: include_archived
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: ok
@@ -285,8 +298,9 @@ paths:
       tags: [memberships]
       operationId: listTeamMembers
       parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - $ref: './_common.yaml#/components/parameters/Limit'
+        - name: include_left
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: ok
@@ -313,10 +327,7 @@ paths:
               required: [user_id]
               properties:
                 user_id: { $ref: './_common.yaml#/components/schemas/UserId' }
-                role:
-                  type: string
-                  enum: [OWNER, MAINTAINER, MEMBER, VIEWER]
-                  default: MEMBER
+                role_in_team: { type: string, enum: [MEMBER, LEAD, OBSERVER], default: MEMBER }
       responses:
         '201':
           description: ok
@@ -558,8 +569,18 @@ components:
       type: object
       required: [name]
       properties:
+        parent_id:
+          allOf:
+            - $ref: './_common.yaml#/components/schemas/OrgUnitId'
+          nullable: true
+        code: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$', nullable: true }
         name: { type: string }
-        parent_id: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
+        name_en: { type: string, maxLength: 200, nullable: true }
+        description: { type: string, nullable: true }
+        manager_user_id: { $ref: './_common.yaml#/components/schemas/UserId', nullable: true }
+        kind: { type: string, enum: [BU, DEPARTMENT, CENTER, OFFICE, VIRTUAL], default: DEPARTMENT }
+        sort_order: { type: integer, default: 0 }
+        metadata: { type: object, additionalProperties: true }
 
     UpdateOrgUnitRequest:
       type: object
@@ -583,11 +604,15 @@ components:
 
     CreateTeamRequest:
       type: object
-      required: [name]
+      required: [org_unit_id, code, name]
       properties:
-        name: { type: string }
         org_unit_id: { $ref: './_common.yaml#/components/schemas/OrgUnitId' }
-        description: { type: string }
+        code: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$' }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        lead_user_id: { $ref: './_common.yaml#/components/schemas/UserId', nullable: true }
+        kind: { type: string, enum: [PROJECT, SQUAD, GUILD, VIRTUAL], default: PROJECT }
+        metadata: { type: object, additionalProperties: true }
 
     Membership:
       type: object

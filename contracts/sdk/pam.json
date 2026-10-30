@@ -1,0 +1,224 @@
+{
+  "service": "pam",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "approve_elevation",
+      "python": [
+        {
+          "method": "approve_elevation",
+          "args": [
+            "v_elevation_id"
+          ],
+          "kwargs": {
+            "justification": "v_justification"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "approveElevation",
+          "args": [
+            "v_elevation_id",
+            {
+              "justification": "v_justification"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/pam/v1/elevations/v_elevation_id/approve",
+        "json": {
+          "justification": "v_justification"
+        }
+      }
+    },
+    {
+      "id": "approve_elevation:defaults",
+      "python": [
+        {
+          "method": "approve_elevation",
+          "args": [
+            "v_elevation_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "approveElevation",
+          "args": [
+            "v_elevation_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/pam/v1/elevations/v_elevation_id/approve",
+        "json": {
+          "justification": ""
+        }
+      }
+    },
+    {
+      "id": "get_elevation_history",
+      "python": [
+        {
+          "method": "get_elevation_history",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getElevationHistory",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/pam/v1/elevations/history"
+      }
+    },
+    {
+      "id": "list_active_sessions",
+      "python": [
+        {
+          "method": "list_active_sessions",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listActiveSessions",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/pam/v1/sessions"
+      }
+    },
+    {
+      "id": "list_pending_elevations",
+      "python": [
+        {
+          "method": "list_pending_elevations",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listPendingElevations",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/pam/v1/elevations/pending"
+      }
+    },
+    {
+      "id": "request_elevation",
+      "python": [
+        {
+          "method": "request_elevation",
+          "args": [],
+          "kwargs": {
+            "reason": "litigation hold for case 2026-17",
+            "duration_minutes": 60,
+            "target_resources": [
+              "v_target_resources[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestElevation",
+          "args": [
+            {
+              "reason": "litigation hold for case 2026-17",
+              "durationMinutes": 60,
+              "targetResources": [
+                "v_target_resources[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/pam/v1/elevations",
+        "json": {
+          "reason": "litigation hold for case 2026-17",
+          "duration_minutes": 60,
+          "target_resources": [
+            "v_target_resources[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "request_elevation:defaults",
+      "python": [
+        {
+          "method": "request_elevation",
+          "args": [],
+          "kwargs": {
+            "reason": "litigation hold for case 2026-17"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestElevation",
+          "args": [
+            {
+              "reason": "litigation hold for case 2026-17"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/pam/v1/elevations",
+        "json": {
+          "reason": "litigation hold for case 2026-17",
+          "duration_minutes": 60,
+          "target_resources": []
+        }
+      }
+    },
+    {
+      "id": "revoke_elevation",
+      "python": [
+        {
+          "method": "revoke_elevation",
+          "args": [
+            "v_elevation_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "revokeElevation",
+          "args": [
+            "v_elevation_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/pam/v1/elevations/v_elevation_id/revoke"
+      }
+    }
+  ]
+}

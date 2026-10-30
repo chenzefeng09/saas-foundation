@@ -447,7 +447,7 @@ components:
 
     TeamId:
       type: string
-      pattern: '^team_[0-9A-Z]{26}$'
+      pattern: '^tm_[0-9A-Z]{26}$'
 
     RoleId:
       type: string

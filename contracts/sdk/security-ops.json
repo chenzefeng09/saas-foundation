@@ -1,0 +1,875 @@
+{
+  "service": "security-ops",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "generate_sbom",
+      "python": [
+        {
+          "method": "generate_sbom",
+          "args": [
+            "v_image_ref"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "generateSbom",
+          "args": [
+            "v_image_ref"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/sbom/images/v_image_ref"
+      }
+    },
+    {
+      "id": "get_vulnerability_status",
+      "python": [
+        {
+          "method": "get_vulnerability_status",
+          "args": [
+            "v_vuln_id"
+          ],
+          "kwargs": {
+            "severity": "v_severity",
+            "status": "v_status",
+            "source": "v_source"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getVulnerabilityStatus",
+          "args": [
+            "v_vuln_id",
+            {
+              "severity": "v_severity",
+              "status": "v_status",
+              "source": "v_source"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/vulnerabilities/v_vuln_id"
+      }
+    },
+    {
+      "id": "get_vulnerability_status:defaults",
+      "python": [
+        {
+          "method": "get_vulnerability_status",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getVulnerabilityStatus",
+          "args": [
+            null
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/vulnerabilities"
+      }
+    },
+    {
+      "id": "list_drills",
+      "python": [
+        {
+          "method": "list_drills",
+          "args": [],
+          "kwargs": {
+            "kind": "TABLETOP"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listDrills",
+          "args": [
+            {
+              "kind": "TABLETOP"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/drills",
+        "query": {
+          "filter.kind": "TABLETOP"
+        }
+      }
+    },
+    {
+      "id": "list_drills:defaults",
+      "python": [
+        {
+          "method": "list_drills",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listDrills",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/drills"
+      }
+    },
+    {
+      "id": "list_incidents",
+      "python": [
+        {
+          "method": "list_incidents",
+          "args": [],
+          "kwargs": {
+            "severity": "HIGH",
+            "status": "DETECTED"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listIncidents",
+          "args": [
+            {
+              "severity": "HIGH",
+              "status": "DETECTED"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/incidents",
+        "query": {
+          "filter.severity": "HIGH",
+          "filter.status": "DETECTED"
+        }
+      }
+    },
+    {
+      "id": "list_incidents:defaults",
+      "python": [
+        {
+          "method": "list_incidents",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listIncidents",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/incidents"
+      }
+    },
+    {
+      "id": "list_sbom_watches",
+      "python": [
+        {
+          "method": "list_sbom_watches",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listSbomWatches",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/sbom/watch"
+      }
+    },
+    {
+      "id": "list_scan_runs",
+      "python": [
+        {
+          "method": "list_scan_runs",
+          "args": [],
+          "kwargs": {
+            "type": "SAST",
+            "status": "PASSED"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listScanRuns",
+          "args": [
+            {
+              "type": "SAST",
+              "status": "PASSED"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/scans/runs",
+        "query": {
+          "filter.type": "SAST",
+          "filter.status": "PASSED"
+        }
+      }
+    },
+    {
+      "id": "list_scan_runs:defaults",
+      "python": [
+        {
+          "method": "list_scan_runs",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listScanRuns",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/scans/runs"
+      }
+    },
+    {
+      "id": "register_sbom_watch",
+      "python": [
+        {
+          "method": "register_sbom_watch",
+          "args": [
+            "v_image_ref"
+          ],
+          "kwargs": {
+            "notify": [
+              "v_notify[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "registerSbomWatch",
+          "args": [
+            {
+              "imageRef": "v_image_ref",
+              "notify": [
+                "v_notify[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/sbom/watch",
+        "json": {
+          "image_ref": "v_image_ref",
+          "notify": [
+            "v_notify[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "register_sbom_watch:defaults",
+      "python": [
+        {
+          "method": "register_sbom_watch",
+          "args": [
+            "v_image_ref"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "registerSbomWatch",
+          "args": [
+            {
+              "imageRef": "v_image_ref"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/sbom/watch",
+        "json": {
+          "image_ref": "v_image_ref",
+          "notify": []
+        }
+      }
+    },
+    {
+      "id": "report_incident",
+      "python": [
+        {
+          "method": "report_incident",
+          "args": [],
+          "kwargs": {
+            "severity": "HIGH",
+            "category": "DATA_BREACH",
+            "title": "v_title",
+            "ic": "v_ic",
+            "affected_tenants": [
+              "v_affected_tenants[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "reportIncident",
+          "args": [
+            {
+              "severity": "HIGH",
+              "category": "DATA_BREACH",
+              "title": "v_title",
+              "ic": "v_ic",
+              "affectedTenants": [
+                "v_affected_tenants[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/incidents",
+        "json": {
+          "severity": "HIGH",
+          "category": "DATA_BREACH",
+          "title": "v_title",
+          "ic": "v_ic",
+          "affected_tenants": [
+            "v_affected_tenants[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "report_incident:defaults",
+      "python": [
+        {
+          "method": "report_incident",
+          "args": [],
+          "kwargs": {
+            "severity": "HIGH",
+            "category": "DATA_BREACH",
+            "title": "v_title"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "reportIncident",
+          "args": [
+            {
+              "severity": "HIGH",
+              "category": "DATA_BREACH",
+              "title": "v_title"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/incidents",
+        "json": {
+          "severity": "HIGH",
+          "category": "DATA_BREACH",
+          "title": "v_title",
+          "ic": null,
+          "affected_tenants": []
+        }
+      }
+    },
+    {
+      "id": "report_scan_run",
+      "python": [
+        {
+          "method": "report_scan_run",
+          "args": [],
+          "kwargs": {
+            "type": "SAST",
+            "tool": "v_tool",
+            "target": "v_target",
+            "started_at": "2026-10-30T08:00:00Z",
+            "status": "PASSED",
+            "findings_count": {
+              "HIGH": 2
+            },
+            "commit_sha": "v_commit_sha",
+            "pipeline_id": "v_pipeline_id",
+            "finished_at": "2026-10-30T08:05:00Z",
+            "sarif_s3_key": "v_sarif_s3_key"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "reportScanRun",
+          "args": [
+            {
+              "type": "SAST",
+              "tool": "v_tool",
+              "target": "v_target",
+              "startedAt": "2026-10-30T08:00:00Z",
+              "status": "PASSED",
+              "findingsCount": {
+                "HIGH": 2
+              },
+              "commitSha": "v_commit_sha",
+              "pipelineId": "v_pipeline_id",
+              "finishedAt": "2026-10-30T08:05:00Z",
+              "sarifS3Key": "v_sarif_s3_key"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/scans/runs",
+        "json": {
+          "type": "SAST",
+          "tool": "v_tool",
+          "target": "v_target",
+          "started_at": "2026-10-30T08:00:00Z",
+          "status": "PASSED",
+          "findings_count": {
+            "HIGH": 2
+          },
+          "commit_sha": "v_commit_sha",
+          "pipeline_id": "v_pipeline_id",
+          "finished_at": "2026-10-30T08:05:00Z",
+          "sarif_s3_key": "v_sarif_s3_key"
+        }
+      }
+    },
+    {
+      "id": "report_scan_run:defaults",
+      "python": [
+        {
+          "method": "report_scan_run",
+          "args": [],
+          "kwargs": {
+            "type": "SAST",
+            "tool": "v_tool",
+            "target": "v_target",
+            "started_at": "2026-10-30T08:00:00Z",
+            "status": "PASSED"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "reportScanRun",
+          "args": [
+            {
+              "type": "SAST",
+              "tool": "v_tool",
+              "target": "v_target",
+              "startedAt": "2026-10-30T08:00:00Z",
+              "status": "PASSED"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/scans/runs",
+        "json": {
+          "type": "SAST",
+          "tool": "v_tool",
+          "target": "v_target",
+          "started_at": "2026-10-30T08:00:00Z",
+          "status": "PASSED",
+          "findings_count": {},
+          "commit_sha": null,
+          "pipeline_id": null,
+          "finished_at": null,
+          "sarif_s3_key": null
+        }
+      }
+    },
+    {
+      "id": "request_risk_acceptance",
+      "python": [
+        {
+          "method": "request_risk_acceptance",
+          "args": [
+            "v_vuln_id"
+          ],
+          "kwargs": {
+            "rationale": "Compensating WAF rule blocks the vulnerable path",
+            "mitigations": [
+              "v_mitigations[]"
+            ],
+            "expires_at": "2027-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestRiskAcceptance",
+          "args": [
+            "v_vuln_id",
+            {
+              "rationale": "Compensating WAF rule blocks the vulnerable path",
+              "mitigations": [
+                "v_mitigations[]"
+              ],
+              "expiresAt": "2027-01-01T00:00:00Z"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/vulnerabilities/v_vuln_id/risk-accept",
+        "json": {
+          "rationale": "Compensating WAF rule blocks the vulnerable path",
+          "mitigations": [
+            "v_mitigations[]"
+          ],
+          "expires_at": "2027-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "request_risk_acceptance:defaults",
+      "python": [
+        {
+          "method": "request_risk_acceptance",
+          "args": [
+            "v_vuln_id"
+          ],
+          "kwargs": {
+            "rationale": "Compensating WAF rule blocks the vulnerable path",
+            "mitigations": [
+              "v_mitigations[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestRiskAcceptance",
+          "args": [
+            "v_vuln_id",
+            {
+              "rationale": "Compensating WAF rule blocks the vulnerable path",
+              "mitigations": [
+                "v_mitigations[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/vulnerabilities/v_vuln_id/risk-accept",
+        "json": {
+          "rationale": "Compensating WAF rule blocks the vulnerable path",
+          "mitigations": [
+            "v_mitigations[]"
+          ],
+          "expires_at": null
+        }
+      }
+    },
+    {
+      "id": "resolve_incident",
+      "python": [
+        {
+          "method": "resolve_incident",
+          "args": [
+            "v_inc_id"
+          ],
+          "kwargs": {
+            "root_cause": "Expired TLS certificate on the edge load balancer",
+            "pir_s3_key": "v_pir_s3_key"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "resolveIncident",
+          "args": [
+            "v_inc_id",
+            {
+              "rootCause": "Expired TLS certificate on the edge load balancer",
+              "pirS3Key": "v_pir_s3_key"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/incidents/v_inc_id/resolve",
+        "json": {
+          "root_cause": "Expired TLS certificate on the edge load balancer",
+          "pir_s3_key": "v_pir_s3_key"
+        }
+      }
+    },
+    {
+      "id": "schedule_drill",
+      "python": [
+        {
+          "method": "schedule_drill",
+          "args": [],
+          "kwargs": {
+            "kind": "TABLETOP",
+            "scheduled_at": "2026-11-15T09:00:00Z",
+            "participants": [
+              "v_participants[]"
+            ],
+            "scenario_runbook": "v_scenario_runbook"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "scheduleDrill",
+          "args": [
+            {
+              "kind": "TABLETOP",
+              "scheduledAt": "2026-11-15T09:00:00Z",
+              "participants": [
+                "v_participants[]"
+              ],
+              "scenarioRunbook": "v_scenario_runbook"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/drills",
+        "json": {
+          "kind": "TABLETOP",
+          "scheduled_at": "2026-11-15T09:00:00Z",
+          "participants": [
+            "v_participants[]"
+          ],
+          "scenario_runbook": "v_scenario_runbook"
+        }
+      }
+    },
+    {
+      "id": "schedule_drill:defaults",
+      "python": [
+        {
+          "method": "schedule_drill",
+          "args": [],
+          "kwargs": {
+            "kind": "TABLETOP",
+            "scheduled_at": "2026-11-15T09:00:00Z"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "scheduleDrill",
+          "args": [
+            {
+              "kind": "TABLETOP",
+              "scheduledAt": "2026-11-15T09:00:00Z"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/security-ops/v1/drills",
+        "json": {
+          "kind": "TABLETOP",
+          "scheduled_at": "2026-11-15T09:00:00Z",
+          "participants": [],
+          "scenario_runbook": null
+        }
+      }
+    },
+    {
+      "id": "sla_dashboard",
+      "python": [
+        {
+          "method": "sla_dashboard",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "slaDashboard",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/security-ops/v1/vulnerabilities/sla-dashboard"
+      }
+    },
+    {
+      "id": "update_incident",
+      "python": [
+        {
+          "method": "update_incident",
+          "args": [
+            "v_inc_id"
+          ],
+          "kwargs": {
+            "status": "v_status",
+            "ic": "v_ic",
+            "customers_notified": true,
+            "regulators_notified": true
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "updateIncident",
+          "args": [
+            "v_inc_id",
+            {
+              "status": "v_status",
+              "ic": "v_ic",
+              "customersNotified": true,
+              "regulatorsNotified": true
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "path": "/api/security-ops/v1/incidents/v_inc_id",
+        "json": {
+          "status": "v_status",
+          "ic": "v_ic",
+          "customers_notified": true,
+          "regulators_notified": true
+        }
+      }
+    },
+    {
+      "id": "update_incident:defaults",
+      "python": [
+        {
+          "method": "update_incident",
+          "args": [
+            "v_inc_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "updateIncident",
+          "args": [
+            "v_inc_id",
+            {}
+          ]
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "path": "/api/security-ops/v1/incidents/v_inc_id",
+        "json": {}
+      }
+    },
+    {
+      "id": "update_vulnerability",
+      "python": [
+        {
+          "method": "update_vulnerability",
+          "args": [
+            "v_vuln_id"
+          ],
+          "kwargs": {
+            "status": "v_status",
+            "assignee": "v_assignee",
+            "fix_pr_url": "v_fix_pr_url",
+            "notes_md": "v_notes_md"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "updateVulnerability",
+          "args": [
+            "v_vuln_id",
+            {
+              "status": "v_status",
+              "assignee": "v_assignee",
+              "fixPrUrl": "v_fix_pr_url",
+              "notesMd": "v_notes_md"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "path": "/api/security-ops/v1/vulnerabilities/v_vuln_id",
+        "json": {
+          "status": "v_status",
+          "assignee": "v_assignee",
+          "fix_pr_url": "v_fix_pr_url",
+          "notes_md": "v_notes_md"
+        }
+      }
+    },
+    {
+      "id": "update_vulnerability:defaults",
+      "python": [
+        {
+          "method": "update_vulnerability",
+          "args": [
+            "v_vuln_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "updateVulnerability",
+          "args": [
+            "v_vuln_id",
+            {}
+          ]
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "path": "/api/security-ops/v1/vulnerabilities/v_vuln_id",
+        "json": {}
+      }
+    }
+  ]
+}

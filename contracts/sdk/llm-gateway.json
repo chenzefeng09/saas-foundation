@@ -1,0 +1,326 @@
+{
+  "service": "llm-gateway",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "chat",
+      "python": [
+        {
+          "method": "chat",
+          "args": [],
+          "kwargs": {
+            "model": "v_model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarise invoice 2026-17"
+              }
+            ],
+            "temperature": 0.2,
+            "max_tokens": 7,
+            "stream": true
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "chat",
+          "args": [
+            {
+              "model": "v_model",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Summarise invoice 2026-17"
+                }
+              ],
+              "temperature": 0.2,
+              "maxTokens": 7,
+              "stream": true
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/chat",
+        "json": {
+          "model": "v_model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Summarise invoice 2026-17"
+            }
+          ],
+          "temperature": 0.2,
+          "max_tokens": 7,
+          "stream": true
+        }
+      }
+    },
+    {
+      "id": "chat:defaults",
+      "python": [
+        {
+          "method": "chat",
+          "args": [],
+          "kwargs": {
+            "model": "v_model",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Summarise invoice 2026-17"
+              }
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "chat",
+          "args": [
+            {
+              "model": "v_model",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Summarise invoice 2026-17"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/chat",
+        "json": {
+          "model": "v_model",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Summarise invoice 2026-17"
+            }
+          ],
+          "temperature": 0.7,
+          "max_tokens": null,
+          "stream": false
+        }
+      }
+    },
+    {
+      "id": "get_model_pricing",
+      "python": [
+        {
+          "method": "get_model_pricing",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getModelPricing",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/llm-gateway/v1/pricing"
+      }
+    },
+    {
+      "id": "list_providers",
+      "python": [
+        {
+          "method": "list_providers",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listProviders",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/llm-gateway/v1/providers"
+      }
+    },
+    {
+      "id": "probe_endpoint",
+      "python": [
+        {
+          "method": "probe_endpoint",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "api_key": "v_api_key",
+            "provider_type": "v_provider_type"
+          }
+        },
+        {
+          "method": "probe_endpoint_async",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "api_key": "v_api_key",
+            "provider_type": "v_provider_type"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "probeEndpoint",
+          "args": [
+            {
+              "url": "v_url",
+              "apiKey": "v_api_key",
+              "providerType": "v_provider_type"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/probe",
+        "json": {
+          "url": "v_url",
+          "api_key": "v_api_key",
+          "provider_type": "v_provider_type"
+        }
+      }
+    },
+    {
+      "id": "probe_endpoint:defaults",
+      "python": [
+        {
+          "method": "probe_endpoint",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "api_key": "v_api_key"
+          }
+        },
+        {
+          "method": "probe_endpoint_async",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "api_key": "v_api_key"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "probeEndpoint",
+          "args": [
+            {
+              "url": "v_url",
+              "apiKey": "v_api_key"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/probe",
+        "json": {
+          "url": "v_url",
+          "api_key": "v_api_key",
+          "provider_type": "openai_compatible"
+        }
+      }
+    },
+    {
+      "id": "register_provider",
+      "python": [
+        {
+          "method": "register_provider",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "api_base": "v_api_base",
+            "api_key": "v_api_key",
+            "provider_type": "v_provider_type",
+            "models": [
+              "v_models[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "registerProvider",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "apiBase": "v_api_base",
+              "apiKey": "v_api_key",
+              "providerType": "v_provider_type",
+              "models": [
+                "v_models[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/providers",
+        "json": {
+          "name": "invoice_reader",
+          "api_base": "v_api_base",
+          "api_key": "v_api_key",
+          "provider_type": "v_provider_type",
+          "models": [
+            "v_models[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "register_provider:defaults",
+      "python": [
+        {
+          "method": "register_provider",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "api_base": "v_api_base",
+            "api_key": "v_api_key",
+            "provider_type": "v_provider_type"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "registerProvider",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "apiBase": "v_api_base",
+              "apiKey": "v_api_key",
+              "providerType": "v_provider_type"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/llm-gateway/v1/providers",
+        "json": {
+          "name": "invoice_reader",
+          "api_base": "v_api_base",
+          "api_key": "v_api_key",
+          "provider_type": "v_provider_type",
+          "models": []
+        }
+      }
+    }
+  ]
+}

@@ -24,13 +24,15 @@ class NotificationResource:
 
     async def send_async(self, *, event_type: str, recipients: list[str],
                           channel: str = "email", template: str | None = None,
-                          context: dict[str, Any] | None = None) -> dict[str, Any]:
+                          context: dict[str, Any] | None = None,
+                          priority: str = "normal") -> dict[str, Any]:
         return await self._t.request_async("POST", "/api/notification/v1/send",
                                             json={"event_type": event_type,
                                                   "recipients": recipients,
                                                   "channel": channel,
                                                   "template": template,
-                                                  "context": context or {}})
+                                                  "context": context or {},
+                                                  "priority": priority})
 
     def send_batch(self, *, notifications: list[dict[str, Any]]) -> dict[str, Any]:
         return self._t.request("POST", "/api/notification/v1/send-batch",

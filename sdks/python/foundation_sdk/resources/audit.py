@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
+from foundation_sdk._context import current_context
 from foundation_sdk._transport import Transport
+
+
+def _query_body(*, event_type: str | None, user_id: str | None, resource_id: str | None,
+                since: str | None, until: str | None) -> dict[str, Any]:
+    """An ``AuditQuery`` for the context tenant (the routes reject any other tenant)."""
+    body: dict[str, Any] = {"tenant_id": current_context().tenant_id}
+    for key, value in (("event_type", event_type), ("actor_user_id", user_id),
+                       ("resource_id", resource_id), ("occurred_from", since),
+                       ("occurred_to", until)):
+        if value:
+            body[key] = value
+    return body
 
 
 class AuditResource:
@@ -17,36 +30,35 @@ class AuditResource:
               resource_id: str | None = None, since: str | None = None,
               until: str | None = None, limit: int = 100, cursor: str | None = None,
               ) -> dict[str, Any]:
-        params: dict[str, Any] = {"limit": limit}
-        if event_type:
-            params["event_type"] = event_type
-        if user_id:
-            params["user_id"] = user_id
-        if resource_id:
-            params["resource_id"] = resource_id
-        if since:
-            params["since"] = since
-        if until:
-            params["until"] = until
+        """Events of the context tenant. ``user_id`` filters by actor;
+        ``since`` / ``until`` are ISO-8601 bounds on ``occurred_at``.
+
+        Returns ``{items, next_cursor, total_estimate}``.
+        """
+        body = _query_body(event_type=event_type, user_id=user_id, resource_id=resource_id,
+                           since=since, until=until)
+        body["limit"] = limit
         if cursor:
-            params["cursor"] = cursor
-        return self._t.request("GET", "/api/audit/v1/events", params=params)
+            body["cursor"] = cursor
+        return self._t.request("POST", "/api/audit/v1/events:query", json=body)
 
-    def get_event(self, event_id: str) -> dict[str, Any]:
-        return self._t.request("GET", f"/api/audit/v1/events/{event_id}")
+    def verify_chain(self, *, service: str | None = None, from_event_id: str | None = None,
+                     limit: int = 1000) -> dict[str, Any]:
+        """Re-verify the hash chain and Merkle roots of the context tenant's events,
+        oldest first from ``from_event_id`` (or the start), at most ``limit`` (≤ 10000).
+        """
+        body: dict[str, Any] = {"tenant_id": current_context().tenant_id, "limit": limit}
+        if service:
+            body["service"] = service
+        if from_event_id:
+            body["from_event_id"] = from_event_id
+        return self._t.request("POST", "/api/audit/v1/events:verify-integrity", json=body)
 
-    def verify_chain(self, *, event_ids: list[str]) -> dict[str, Any]:
-        """Verify the hash chain and Merkle root for a set of events."""
-        return self._t.request("POST", "/api/audit/v1/verify",
-                                json={"event_ids": event_ids})
-
-    def export(self, *, format: str = "csv", event_type: str | None = None,
-               since: str | None = None, until: str | None = None) -> dict[str, Any]:
-        body: dict[str, Any] = {"format": format}
-        if event_type:
-            body["event_type"] = event_type
-        if since:
-            body["since"] = since
-        if until:
-            body["until"] = until
-        return self._t.request("POST", "/api/audit/v1/export", json=body)
+    def export(self, *, format: Literal["csv", "json"] = "csv", event_type: str | None = None,
+               user_id: str | None = None, resource_id: str | None = None,
+               since: str | None = None, until: str | None = None) -> str:
+        """The matching events (at most 10000) as the content of a CSV or JSON file."""
+        body = _query_body(event_type=event_type, user_id=user_id, resource_id=resource_id,
+                           since=since, until=until)
+        return self._t.request_text("POST", "/api/audit/v1/events:export",
+                                     params={"format": format}, json=body)
