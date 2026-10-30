@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
+from foundation_audit.services.hash_chain import (
+    canonical_event,
+    compute_chain_hash,
+    compute_merkle_root,
+)
 from foundation_audit.worker.batch_processor import BatchProcessor
 
 
@@ -71,7 +75,7 @@ class TestHashChainContinuity:
         event = _make_event()
         # Compute expected BEFORE run_once (processor will mutate event dict)
         _, expected_curr = compute_chain_hash(
-            prev_hash=existing_head, event_data=event, hash_algorithm="SHA-256",
+            prev_hash=existing_head, event_data=canonical_event(event), hash_algorithm="SHA-256",
         )
 
         rows = [(1, event)]
@@ -103,7 +107,7 @@ class TestHashChainContinuity:
         event = _make_event()
         # Compute expected BEFORE run_once (processor will mutate event dict)
         _, expected_curr = compute_chain_hash(
-            prev_hash=None, event_data=event, hash_algorithm="SHA-256",
+            prev_hash=None, event_data=canonical_event(event), hash_algorithm="SHA-256",
         )
 
         rows = [(1, event)]

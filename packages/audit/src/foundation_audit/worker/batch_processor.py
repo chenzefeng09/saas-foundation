@@ -26,7 +26,11 @@ from foundation_audit.adapters import crypto_client, tsa, worm
 from foundation_audit.config import get_settings
 from foundation_audit.domain.db import system_session_scope
 from foundation_audit.observability import get_logger
-from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
+from foundation_audit.services.hash_chain import (
+    canonical_event,
+    compute_chain_hash,
+    compute_merkle_root,
+)
 from foundation_audit.services.ingest_service import IngestService
 
 log = get_logger(__name__)
@@ -84,9 +88,10 @@ class BatchProcessor:
                 # Restart-safe: load chain head from CH if not in memory yet
                 prev = await self._get_chain_head(tenant_id, service)
 
+                # Hash the form verify-integrity can rebuild from the stored row.
                 prev_hash, curr_hash = compute_chain_hash(
                     prev_hash=prev,
-                    event_data=event_json,
+                    event_data=canonical_event(event_json),
                     hash_algorithm=self._settings.hash_algorithm,
                 )
                 self._chain_heads[tenant_service] = curr_hash

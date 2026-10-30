@@ -2,7 +2,7 @@
 
 Produces:
   - prev_hash: hash of the previous event in the chain (per tenant × service).
-  - curr_hash: H(prev_hash || canonical_json(event)).
+  - curr_hash: H(prev_hash || canonical_json(canonical_event(event))).
 
 Hash algorithm is configurable (settings.hash_algorithm):
   - "SHA-256" (default, FIPS 140-2): uses hashlib.sha256.
@@ -18,7 +18,83 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
+
+# Every AuditEvent field that audit.events keeps: what an event's chain hash covers.
+# sensitive_fields is not kept, so it is not covered.
+CHAINED_FIELDS: tuple[str, ...] = (
+    "event_id",
+    "schema_version",
+    "occurred_at",
+    "tenant_id",
+    "service",
+    "service_version",
+    "event_type",
+    "severity",
+    "outcome",
+    "actor_kind",
+    "actor_user_id",
+    "actor_api_key_id",
+    "resource_type",
+    "resource_id",
+    "resource_path",
+    "request_id",
+    "trace_id",
+    "span_id",
+    "session_id",
+    "parent_event_id",
+    "ip",
+    "user_agent",
+    "country",
+    "payload",
+)
+
+
+def canonical_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of ``event`` its chain hash covers, in the one form both ends derive.
+
+    The worker hashes an event from its outbox JSON; verify-integrity rebuilds it
+    from its audit.events row.  So each field takes a form both can produce:
+
+    - only CHAINED_FIELDS, no server bookkeeping (ingested_at, hashes, batch);
+    - a field that is None or '' is left out: ClickHouse hands an absent text
+      field back as '' from a String column and as None from a Nullable one;
+    - occurred_at is the UTC instant cut to the millisecond, as DateTime64(3, 'UTC')
+      keeps it, written ``2026-10-30T12:00:00.250Z``; a naive value is UTC;
+    - payload is the JSON value.  The row keeps it as text; text that is not
+      JSON stays text, so it cannot pass for the object it replaced.
+
+    Whatever changes a stored field (masking a payload, say) must therefore run
+    before the worker hashes the event, and a field added later must come back
+    as None or '' from rows written before it, or their hashes stop verifying.
+
+    Chains hashed before this form covered the whole outbox JSON, with
+    sensitive_fields and occurred_at as the emitter spelt it, neither of which
+    audit.events keeps: their events cannot be verified and show as a break.
+    """
+    canonical: dict[str, Any] = {}
+    for field in CHAINED_FIELDS:
+        value = event.get(field)
+        if value is None or value == "":
+            continue
+        if field == "occurred_at":
+            value = _utc_millis(value)
+        elif field == "payload" and isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass  # not JSON: hashed as the text it is
+        canonical[field] = value
+    return canonical
+
+
+def _utc_millis(value: datetime | str) -> str:
+    """``value`` (a datetime or ISO 8601 text; naive is UTC) as UTC text to the millisecond."""
+    ts = datetime.fromisoformat(value) if isinstance(value, str) else value
+    utc = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+    return utc.replace(tzinfo=None).isoformat(timespec="milliseconds") + "Z"
 
 
 def _make_hasher(hash_algorithm: str):

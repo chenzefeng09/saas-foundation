@@ -18,7 +18,11 @@ from foundation_audit.adapters import crypto_client
 from foundation_audit.api.dependencies import current_context, current_request_id, db_session, ingest_service
 from foundation_audit.domain.base import FoundationContext
 from foundation_audit.schemas.event import AuditEvent, AuditQuery, AuditQueryResult, AuditEventStored
-from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
+from foundation_audit.services.hash_chain import (
+    canonical_event,
+    compute_chain_hash,
+    compute_merkle_root,
+)
 from foundation_audit.services.ingest_service import IngestService
 from foundation_audit.services.pagination import decode_cursor, encode_cursor
 
@@ -322,12 +326,15 @@ async def verify_integrity(
 
     Steps:
     1. Fetch events from ClickHouse ordered by ingested_at (same order worker used).
-    2. Recompute prev_hash / curr_hash for each event; compare with stored values.
+    2. Recompute prev_hash / curr_hash for each event from the canonical form the
+       worker hashed (hash_chain.canonical_event); compare with stored values.
     3. For each merkle_batch: recompute Merkle root from stored leaf curr_hashes,
        call crypto-service /verify to check Ed25519 signature.
     4. Report first break event_id, signatures_verified/failed counts.
 
     Note: Cross-tenant verification is blocked (must match ctx.tenant_id).
+    Events hashed before canonical_event existed cannot be rebuilt from their
+    rows, so they show as a break.
     """
     if body.tenant_id != ctx.tenant_id:
         raise HTTPException(
@@ -365,35 +372,11 @@ async def verify_integrity(
 
     for ev in events:
         key = (ev.get("tenant_id", ""), ev.get("service", ""))
-        prev = prev_hashes.get(key)
 
-        # Build the event dict as the worker would have seen it (strip server-added fields)
-        event_data: dict[str, Any] = {}
-        _skip = frozenset({
-            "prev_hash", "curr_hash", "merkle_batch_id", "merkle_leaf_idx",
-            "batch_signature", "ingested_at", "tsa_timestamp",
-            "worm_written", "worm_uri",
-        })
-        for k, v in ev.items():
-            if k in _skip or v is None:
-                continue
-            # CH returns datetimes as datetime objects; canonical JSON needs strings
-            if isinstance(v, datetime):
-                event_data[k] = v.isoformat()
-            else:
-                event_data[k] = v
-
-        # payload comes back as string from CH; convert for canonical hashing
-        if "payload" in event_data and isinstance(event_data["payload"], str):
-            try:
-                event_data["payload"] = json.loads(event_data["payload"])
-            except (json.JSONDecodeError, ValueError):
-                event_data["payload"] = {}
-
-        # Recompute
+        # Recompute over the event as the worker hashed it, rebuilt from its row
         expected_prev, expected_curr = compute_chain_hash(
-            prev_hash=prev,
-            event_data=event_data,
+            prev_hash=prev_hashes.get(key),
+            event_data=canonical_event(ev),
             hash_algorithm=settings.hash_algorithm,
         )
 
