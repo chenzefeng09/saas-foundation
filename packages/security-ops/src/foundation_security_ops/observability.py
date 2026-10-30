@@ -85,5 +85,9 @@ def setup_observability(app: FastAPI) -> None:
         pass
 
 
-def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger(name or "foundation_security_ops")
+def get_logger(name: str | None = None) -> structlog.typing.FilteringBoundLogger:
+    # _configure_logging installs make_filtering_bound_logger as the wrapper class.
+    logger: structlog.typing.FilteringBoundLogger = structlog.get_logger(
+        name or "foundation_security_ops"
+    )
+    return logger

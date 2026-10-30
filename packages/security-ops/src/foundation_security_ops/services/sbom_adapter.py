@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 SbomFormat = Literal["cyclonedx-json", "spdx-json"]
 
@@ -79,7 +79,7 @@ def verify_attestation(image_ref: str, *, timeout: int = 60) -> bool:
         return False
 
 
-def diff_sbom(sbom_a: bytes, sbom_b: bytes) -> dict:
+def diff_sbom(sbom_a: bytes, sbom_b: bytes) -> dict[str, Any]:
     """Naive component-level diff between two CycloneDX JSON SBOMs.
 
     Returns {"added": [...], "removed": [...], "count_a": int, "count_b": int}.

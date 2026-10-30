@@ -5,7 +5,7 @@ from typing import TypeGuard, get_args
 
 import structlog
 import ulid
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -23,7 +23,7 @@ def _is_actor(value: str) -> TypeGuard[ActorKind]:
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, r: Request, call_next):  # type: ignore[override]
+    async def dispatch(self, r: Request, call_next: RequestResponseEndpoint) -> Response:
         rid = r.headers.get("X-Request-Id")
         if not rid or not RID.match(rid):
             rid = f"req_{ulid.new()!s}"
@@ -36,7 +36,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 
 class TenantContextMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, r: Request, call_next):  # type: ignore[override]
+    async def dispatch(self, r: Request, call_next: RequestResponseEndpoint) -> Response:
         if any(r.url.path.endswith(p) for p in PUB):
             return await call_next(r)
         tid = r.headers.get("X-Tenant-Id")

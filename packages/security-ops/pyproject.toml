@@ -67,6 +67,8 @@ quote-style = "double"
 
 [tool.mypy]
 python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["foundation_storage.*", "foundation_feature_flag.*", "foundation_lifecycle.*", "ulid.*"]
