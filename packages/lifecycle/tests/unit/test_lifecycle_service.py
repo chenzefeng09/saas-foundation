@@ -200,17 +200,31 @@ class TestHardDelete:
         assert certs[0].witness_user_id == "usr_witness"
         assert certs[0].destruction_method == "crypto_key_destroy"
 
-    async def test_hard_delete_already_destroyed_noops(
+    @pytest.mark.parametrize("since", ["destroyed", "restored"])
+    async def test_hard_delete_refuses_an_entry_no_longer_in_the_bin(
         self, svc: LifecycleService, fake_session, tenant_id: str, actor_id: str, request_id: str,
+        since: str,
     ) -> None:
-        entry = make_recycle_bin_entry(tenant_id=tenant_id)
-        entry.hard_deleted_at = datetime.now(UTC)
+        # An approval reaches hard_delete; what happened to the entry since must stand.
+        rt = make_resource_type(requires_cert=True)
+        entry = make_recycle_bin_entry(tenant_id=tenant_id, resource_type_id=rt.id)
+        if since == "destroyed":
+            entry.hard_deleted_at = datetime.now(UTC)
+        else:
+            entry.restored_at = datetime.now(UTC)
         fake_session.put(entry)
+        fake_session.put(rt)
 
-        await svc.hard_delete(session=fake_session, tenant_id=tenant_id,
-            bin_id=entry.id, destroyed_by=actor_id, witness_user_id=None, request_id=request_id)
+        with pytest.raises(FoundationError) as exc:
+            await svc.hard_delete(session=fake_session, tenant_id=tenant_id,
+                bin_id=entry.id, destroyed_by=actor_id, witness_user_id="usr_witness",
+                request_id=request_id)
 
+        assert exc.value.error_code is RESOURCE_NOT_IN_BIN
+        assert fake_session.added == []
         assert fake_session.flush_calls == 0
+        if since == "restored":
+            assert entry.hard_deleted_at is None
 
     async def test_hard_delete_gcs_s3_objects(
         self, svc: LifecycleService, fake_session, tenant_id: str, actor_id: str, request_id: str,

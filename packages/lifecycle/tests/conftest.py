@@ -42,6 +42,8 @@ class FakeAsyncSession:
     # Every statement handed to scalar/scalars/execute, in call order, so tests
     # can assert on the SQL a service builds (the fake never evaluates it).
     statements: list[Any] = field(default_factory=list)
+    # (model, pk) of every get(..., with_for_update=True), i.e. the rows a service locks.
+    locked: list[tuple[type, Any]] = field(default_factory=list)
     _scalar_queue: list[Any] = field(default_factory=list)
     _scalars_queue: list[list[Any]] = field(default_factory=list)
     _execute_queue: list[list[Any]] = field(default_factory=list)
@@ -51,7 +53,9 @@ class FakeAsyncSession:
     def queue_scalars(self, rows: list[Any]) -> None: self._scalars_queue.append(list(rows))
     def queue_execute(self, rows: list[Any]) -> None: self._execute_queue.append(list(rows))
 
-    async def get(self, model: type, pk: Any) -> Any | None: return self.pk_store.get(model, {}).get(pk)
+    async def get(self, model: type, pk: Any, *, with_for_update: Any = None) -> Any | None:
+        if with_for_update: self.locked.append((model, pk))
+        return self.pk_store.get(model, {}).get(pk)
     async def scalar(self, stmt: Any) -> Any:
         self.statements.append(stmt)
         return self._scalar_queue.pop(0) if self._scalar_queue else None

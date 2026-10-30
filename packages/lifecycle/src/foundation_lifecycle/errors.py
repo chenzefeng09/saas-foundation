@@ -30,6 +30,9 @@ RESOURCE_TYPE_NOT_FOUND: Final = _ec("RESOURCE", "RESOURCE_TYPE_NOT_FOUND", 404,
 RESOURCE_NOT_IN_BIN: Final = _ec("RESOURCE", "RESOURCE_NOT_IN_BIN", 404, "Resource not in recycle bin", "Resource not found in recycle bin.", "回收站中无此资源。")
 LEGAL_HOLD_ACTIVE: Final = _ec("STATE", "LEGAL_HOLD_ACTIVE", 409, "Legal hold active", "Cannot delete resource with active legal hold.", "该资源有法律保留，无法删除。")
 LEGAL_HOLD_NOT_FOUND: Final = _ec("RESOURCE", "LEGAL_HOLD_NOT_FOUND", 404, "Legal hold not found", "Legal hold does not exist.", "法律保留不存在。")
+APPROVAL_REQUEST_NOT_FOUND: Final = _ec("RESOURCE", "APPROVAL_REQUEST_NOT_FOUND", 404, "Approval request not found", "Approval request does not exist.", "审批申请不存在。")
+APPROVAL_NOT_PENDING: Final = _ec("STATE", "APPROVAL_NOT_PENDING", 409, "Approval request not pending", "The approval request was already decided or has expired.", "该审批申请已处理或已过期。")
+SELF_APPROVAL_FORBIDDEN: Final = _ec("POLICY", "SELF_APPROVAL_FORBIDDEN", 403, "Self-approval forbidden", "The requester cannot approve their own request; a second person must.", "不能审批自己发起的申请，需由另一人审批。")
 UNEXPECTED: Final = _ec("INTERNAL", "UNEXPECTED", 500, "Unexpected error", "Internal error.", "服务异常。")
 
 @dataclass(frozen=True, slots=True)
