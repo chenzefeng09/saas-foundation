@@ -55,7 +55,7 @@ contracts/openapi/
 3. **错误响应必 $ref `_common.yaml`**；不允许 inline 定义错误 body。要自定义描述可以内联响应，但 body 必须是 `application/problem+json`，并 $ref `_common.yaml` 的 `Error` / `ValidationError`
 4. **错误码格式 `FOUNDATION.<SVC>.<CAT>.<NAME>`** 四段；各服务共用的码 `<SVC>` 为 `_`（[errors.md](../../docs/errors.md) §3.1、§12）
 5. **所有 operation 必须有 `operationId`**（camelCase，给 SDK 生成器用）；必须 unique
-6. **所有非公开端点声明 `security: [bearerAuth]`**；公开端点必须显式 `security: []`
+6. **spec 根级声明 `security`（如 `[bearerAuth]`）**，覆盖所有端点；公开端点必须显式 `security: []`
 
 ---
 

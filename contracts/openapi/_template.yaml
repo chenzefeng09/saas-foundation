@@ -10,7 +10,7 @@
 #
 # 强制要求（CI 用 spectral 校验）：
 #   - 版本只写在 servers URL 末尾（/api/<service>/v1），path 不带版本
-#   - 所有非公开端点必须声明 security: [bearerAuth]
+#   - 根级 security 覆盖所有端点；公开端点显式写 security: []
 #   - 4xx/5xx 响应 $ref ./_common.yaml 的 responses；要自定义描述就内联，
 #     body 仍 $ref ./_common.yaml 的 Error / ValidationError
 #   - 字段命名 snake_case；枚举 UPPER_SNAKE_CASE

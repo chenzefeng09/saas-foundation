@@ -30,15 +30,7 @@ info:
   description: 所有 service 通过 $ref 引用本文件的 schemas / parameters / responses / securitySchemes。
   version: 1.0.0
 
-# 占位 path 让本文件可独立 lint
-paths:
-  /_common:
-    get:
-      summary: 占位（不真实暴露）
-      operationId: _common_placeholder
-      responses:
-        '200':
-          description: ok
+# No paths: OpenAPI 3.1 allows a components-only document, and it lints as it is.
 
 components:
 

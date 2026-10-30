@@ -157,13 +157,28 @@ rules:
   # --------------------------------------------------------------------------
   # 所有非公开 path 必须声明 security
   # 公开路径：/healthz、/readyz、/metrics、登录端点（需显式 security: []）
+  # A spec with paths sets a root security requirement, so an operation is
+  # protected unless it opts out, visibly, with its own `security: []`.
   # --------------------------------------------------------------------------
   foundation-security-required:
-    description: All non-public paths must require auth; declare security explicitly
+    description: A spec with paths must set root security; public operations opt out with security []
     severity: error
-    given: $.paths..[get,put,post,delete,options,head,patch].security
+    given: $
     then:
-      function: defined
+      function: schema
+      functionOptions:
+        schema:
+          if:
+            required: [paths]
+          then:
+            required: [security]
+            properties:
+              security:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  minProperties: 1
 
   # --------------------------------------------------------------------------
   # 所有时间字段必须 format: date-time

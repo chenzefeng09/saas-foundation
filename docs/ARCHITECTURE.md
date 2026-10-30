@@ -276,7 +276,7 @@ These are enforced by `.spectral.yaml`; any spec PR must pass `make lint` (all g
 3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed. A response inlined for its own description still has an `application/problem+json` body that `$ref`s `_common.yaml`'s `Error` or `ValidationError`.
 4. **Error codes are the four-segment `FOUNDATION.<SVC>.<CAT>.<NAME>`**, with `_` as `<SVC>` for the codes all services share.
 5. **Every operation has a unique camelCase `operationId`** (consumed by the SDK generators).
-6. **Every non-public endpoint declares `security: [bearerAuth]`**; public endpoints must declare `security: []` explicitly.
+6. **Every spec declares root `security` (e.g. `[bearerAuth]`)**, which covers every endpoint; public endpoints must declare `security: []` explicitly.
 
 Breaking changes are caught by `oasdiff` (`make diff-base` against `main`); any breaking change blocks the PR and requires a `BREAKING:` commit footer plus a major version bump (compatibility policy in [CONVENTIONS.md §5](./CONVENTIONS.md)).
 
