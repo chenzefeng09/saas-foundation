@@ -18,7 +18,11 @@ from foundation_audit.adapters import crypto_client
 from foundation_audit.api.dependencies import current_context, current_request_id, db_session, ingest_service
 from foundation_audit.domain.base import FoundationContext
 from foundation_audit.schemas.event import AuditEvent, AuditQuery, AuditQueryResult, AuditEventStored
-from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
+from foundation_audit.services.hash_chain import (
+    canonical_event,
+    compute_chain_hash,
+    compute_merkle_root,
+)
 from foundation_audit.services.ingest_service import IngestService
 from foundation_audit.services.pagination import decode_cursor, encode_cursor
 
@@ -321,13 +325,17 @@ async def verify_integrity(
     """Verify hash chain integrity and Merkle batch signatures for a tenant.
 
     Steps:
-    1. Fetch events from ClickHouse ordered by ingested_at (same order worker used).
-    2. Recompute prev_hash / curr_hash for each event; compare with stored values.
+    1. Fetch events from ClickHouse in the order the worker chained them
+       (ingested_at, then Merkle leaf; ch.get_events_for_verification).
+    2. Recompute prev_hash / curr_hash for each event from the canonical form the
+       worker hashed (hash_chain.canonical_event); compare with stored values.
     3. For each merkle_batch: recompute Merkle root from stored leaf curr_hashes,
        call crypto-service /verify to check Ed25519 signature.
     4. Report first break event_id, signatures_verified/failed counts.
 
     Note: Cross-tenant verification is blocked (must match ctx.tenant_id).
+    Events hashed before canonical_event existed cannot be rebuilt from their
+    rows, so they show as a break.
     """
     if body.tenant_id != ctx.tenant_id:
         raise HTTPException(
@@ -365,35 +373,11 @@ async def verify_integrity(
 
     for ev in events:
         key = (ev.get("tenant_id", ""), ev.get("service", ""))
-        prev = prev_hashes.get(key)
 
-        # Build the event dict as the worker would have seen it (strip server-added fields)
-        event_data: dict[str, Any] = {}
-        _skip = frozenset({
-            "prev_hash", "curr_hash", "merkle_batch_id", "merkle_leaf_idx",
-            "batch_signature", "ingested_at", "tsa_timestamp",
-            "worm_written", "worm_uri",
-        })
-        for k, v in ev.items():
-            if k in _skip or v is None:
-                continue
-            # CH returns datetimes as datetime objects; canonical JSON needs strings
-            if isinstance(v, datetime):
-                event_data[k] = v.isoformat()
-            else:
-                event_data[k] = v
-
-        # payload comes back as string from CH; convert for canonical hashing
-        if "payload" in event_data and isinstance(event_data["payload"], str):
-            try:
-                event_data["payload"] = json.loads(event_data["payload"])
-            except (json.JSONDecodeError, ValueError):
-                event_data["payload"] = {}
-
-        # Recompute
+        # Recompute over the event as the worker hashed it, rebuilt from its row
         expected_prev, expected_curr = compute_chain_hash(
-            prev_hash=prev,
-            event_data=event_data,
+            prev_hash=prev_hashes.get(key),
+            event_data=canonical_event(ev),
             hash_algorithm=settings.hash_algorithm,
         )
 
@@ -410,13 +394,13 @@ async def verify_integrity(
     # --- Phase 2: Verify Merkle batch signatures ---
     # Group events by batch_id to recompute Merkle root per batch
     from collections import defaultdict
-    batch_leaves: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    batch_leaves: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
     for ev in events:
         bid = ev.get("merkle_batch_id")
         leaf_idx = ev.get("merkle_leaf_idx")
         curr_hash = ev.get("curr_hash", "")
         if bid and leaf_idx is not None and curr_hash:
-            batch_leaves[bid].append((leaf_idx, curr_hash))
+            batch_leaves[bid].append((leaf_idx, curr_hash, ev.get("event_id", "")))
 
     # Fetch merkle_batch metadata for signature verification
     try:
@@ -438,7 +422,7 @@ async def verify_integrity(
     for bid, leaf_list in batch_leaves.items():
         # Sort by leaf index, then build ordered hash list
         leaf_list.sort(key=lambda x: x[0])
-        leaf_hashes = [h for _, h in leaf_list]
+        leaf_hashes = [h for _, h, _ in leaf_list]
         recomputed_root = compute_merkle_root(leaf_hashes, hash_algorithm=settings.hash_algorithm)
 
         meta = batch_meta.get(bid)
@@ -454,7 +438,7 @@ async def verify_integrity(
             # Merkle root mismatch — tampered
             sigs_failed += 1
             if first_break_event_id is None and leaf_list:
-                first_break_event_id = leaf_list[0][1]  # leaf hash as marker
+                first_break_event_id = leaf_list[0][2]  # the batch's first event
             continue
 
         if not sig_b64 or not key_id:

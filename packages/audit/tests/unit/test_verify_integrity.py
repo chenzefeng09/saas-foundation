@@ -1,241 +1,484 @@
-"""Unit tests for verify-integrity endpoint — tamper detection.
+"""verify-integrity over chains the worker built, read back as ClickHouse hands them out.
 
-All tests mock ClickHouse and crypto-service calls.
-No external containers needed.
+Events take the real path: AuditEvent → IngestService's outbox JSON (through JSON
+text, as Postgres JSONB keeps it) → BatchProcessor (hash chain, Merkle batch) →
+the adapter's inserts → clickhouse-connect's own codec for each column's type in
+audit-schema.sql → the adapter's verification queries → verify_integrity.  Only
+Postgres, the ClickHouse server, crypto-service and the worker's clock are stand-ins.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
-from datetime import UTC, datetime
+import operator
+import re
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta, tzinfo
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
+from clickhouse_connect.datatypes.registry import get_from_name
+from clickhouse_connect.driver import ctypes as ch_ctypes
+from clickhouse_connect.driver.exceptions import OperationalError
+from clickhouse_connect.driver.insert import InsertContext
+from clickhouse_connect.driver.query import QueryContext
 
-from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
+from foundation_audit.api.v1.events import (
+    VerifyIntegrityRequest,
+    VerifyIntegrityResponse,
+    verify_integrity,
+)
+from foundation_audit.config import Settings
+from foundation_audit.domain.base import FoundationContext
+from foundation_audit.schemas.event import AuditEvent
+from foundation_audit.services.ingest_service import IngestService
+from foundation_audit.worker.batch_processor import BatchProcessor
+
+_SCHEMA_SQL = (
+    Path(__file__).resolve().parents[4]
+    / "deploy/docker-compose/config/clickhouse/audit-schema.sql"
+)
+_TENANT = "tnt_01J0000000000000000000TNT1"
+_SETTINGS = Settings(tsa_enabled=False, worm_enabled=False)
+
+# clickhouse-connect 0.7.19 reads DateTime64 columns with datetime.utcfromtimestamp.
+pytestmark = pytest.mark.filterwarnings("ignore:datetime.datetime.utcfromtimestamp")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# ClickHouse stand-in
 # ---------------------------------------------------------------------------
 
-_VERIFY_SKIP = frozenset({
-    "prev_hash", "curr_hash", "merkle_batch_id", "merkle_leaf_idx",
-    "batch_signature", "ingested_at", "tsa_timestamp", "worm_written", "worm_uri",
-})
+def _column_types(table: str) -> dict[str, str]:
+    """Column → type of ``table``, as audit-schema.sql creates it."""
+    ddl = _SCHEMA_SQL.read_text(encoding="utf-8")
+    body = re.search(rf"CREATE TABLE IF NOT EXISTS {re.escape(table)}\s*\((.*?)\n\)", ddl, re.S)
+    assert body is not None, table
+    types: dict[str, str] = {}
+    for line in body.group(1).splitlines():
+        column = line.split("--")[0].strip().rstrip(",")
+        if column:
+            name, column_type = column.split(None, 1)
+            types[name] = column_type.split(" DEFAULT ")[0].strip()
+    return types
 
 
-def _make_chain(
-    events_data: list[dict[str, Any]],
-    *,
-    tenant_id: str = "tnt_01J0000000000000000000TNT1",
-    service: str = "identity",
-) -> list[dict[str, Any]]:
-    """Build a correct hash chain for the given event data list.
+class _Body:
+    """A response body as clickhouse-connect's buffer reads it: one chunk."""
 
-    Simulates how events are stored in ClickHouse:
-    - occurred_at / ingested_at stored as naive datetime (as CH returns).
-    - The canonical hash is computed after converting datetimes → ISO strings,
-      matching the verify_integrity logic in events.py.
+    def __init__(self, data: bytes) -> None:
+        self.gen = iter([data])
+
+    def close(self) -> None:
+        pass
+
+
+def _stored(column_type: str, values: list[Any]) -> list[Any]:
+    """``values`` written to a ``column_type`` column and read back by clickhouse-connect."""
+    ch_type = get_from_name(column_type)
+    native = bytearray()
+    ch_type.write_column(values, native, InsertContext("t", ["c"], [ch_type]))
+    buffer = ch_ctypes.RespBuffCls(_Body(bytes(native)))
+    return list(ch_type.read_column(buffer, len(values), QueryContext()))
+
+
+# The WHERE conditions of the adapter's verification queries, as the server applies them.
+_CONDITIONS: dict[str, Callable[[dict[str, Any], dict[str, Any]], bool]] = {
+    "tenant_id = {tenant_id:String}": lambda row, p: row["tenant_id"] == p["tenant_id"],
+    "service = {service:String}": lambda row, p: row["service"] == p["service"],
+    "event_id >= {from_event_id:String}": lambda row, p: row["event_id"] >= p["from_event_id"],
+}
+_SELECT = re.compile(
+    r"SELECT (?P<columns>.+) FROM (?P<table>\S+) WHERE (?P<where>.+) "
+    r"ORDER BY (?P<order>.+) LIMIT (?P<limit>\d+|\{limit:UInt32\})"
+)
+
+
+class _ClickHouse:
+    """audit.events and audit.merkle_batch, answering the adapter as the server would.
+
+    insert() keeps every value as clickhouse-connect's codec hands it back for its
+    column's type: naive UTC datetimes to the millisecond, '' where a String column
+    got '', and None in a column that is not Nullable fails as it does there.
+    query() reads the SELECT list, WHERE conditions, ORDER BY and LIMIT of the SQL.
+    Either fails, storing or reading nothing, while ``refuse`` lists it.
     """
-    chain: list[dict[str, Any]] = []
-    prev: str | None = None
-    now_dt = datetime.now(UTC).replace(tzinfo=None)
 
-    for i, ev in enumerate(events_data):
-        # The "stored" CH row (datetimes as naive datetime objects)
-        stored: dict[str, Any] = {
-            "event_id": ev.get("event_id", f"evt_{i:064d}"),
-            "tenant_id": tenant_id,
-            "service": service,
-            "occurred_at": now_dt,
-            "ingested_at": now_dt,
-            "payload": json.dumps(ev.get("payload", {})),
-            "merkle_batch_id": "mrk_BATCHID0000000000000000001",
-            "merkle_leaf_idx": i,
-            **{k: v for k, v in ev.items() if k not in ("payload",)},
+    def __init__(self) -> None:
+        self.types = {t: _column_types(t) for t in ("audit.events", "audit.merkle_batch")}
+        self.rows: dict[str, list[dict[str, Any]]] = {t: [] for t in self.types}
+        # ("insert" or "query", table): refused once each, as by a server out of reach
+        self.refuse: list[tuple[str, str]] = []
+
+    def _answer(self, statement: str, table: str) -> None:
+        if (statement, table) in self.refuse:
+            self.refuse.remove((statement, table))
+            raise OperationalError(f"{statement} {table}: connection refused")
+
+    def insert(self, table: str, data: list[list[Any]], column_names: list[str]) -> None:
+        self._answer("insert", table)
+        assert sorted(column_names) == sorted(self.types[table])  # nothing left to a DEFAULT
+        columns = [
+            _stored(self.types[table][name], [row[i] for row in data])
+            for i, name in enumerate(column_names)
+        ]
+        self.rows[table] += [
+            dict(zip(column_names, row, strict=True)) for row in zip(*columns, strict=True)
+        ]
+
+    def query(self, sql: str, parameters: dict[str, Any]) -> SimpleNamespace:
+        select = _SELECT.fullmatch(sql)
+        assert select is not None, sql
+        self._answer("query", select["table"])
+        conditions = select["where"].split(" AND ")
+        rows = [
+            row
+            for row in self.rows[select["table"]]
+            if all(_CONDITIONS[c](row, parameters) for c in conditions)
+        ]
+        for key in reversed(select["order"].split(", ")):
+            column, _, direction = key.partition(" ")
+            rows.sort(key=operator.itemgetter(column), reverse=direction == "DESC")
+        limit = parameters["limit"] if select["limit"].startswith("{") else int(select["limit"])
+        columns = select["columns"].split(", ")
+        return SimpleNamespace(
+            column_names=tuple(columns),
+            result_rows=[tuple(row[c] for c in columns) for row in rows[:limit]],
+        )
+
+    def event(self, event_id: str) -> dict[str, Any]:
+        """The stored row of ``event_id``, to tamper with."""
+        (row,) = (r for r in self.rows["audit.events"] if r["event_id"] == event_id)
+        return row
+
+
+def _serving(clickhouse: _ClickHouse) -> Any:
+    return patch(
+        "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+        new=AsyncMock(return_value=clickhouse),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The real path, Postgres and crypto-service aside
+# ---------------------------------------------------------------------------
+
+async def _sign(root_hex: str, *, tenant_id: str) -> tuple[str, str]:
+    """crypto-service's signature: one that verifies for this root and tenant only."""
+    return f"sig({tenant_id}:{root_hex})", "kek_audit_1"
+
+
+async def _signature_valid(
+    root_hex: str, signature_b64: str, kek_id: str, *, tenant_id: str,
+) -> bool:
+    return (signature_b64, kek_id) == await _sign(root_hex, tenant_id=tenant_id)
+
+
+@asynccontextmanager
+async def _no_database() -> AsyncIterator[MagicMock]:
+    yield MagicMock()
+
+
+class _WorkerClock(datetime):
+    """The worker host's clock: now() is a second on at every reading.
+
+    A chain's batches follow each other in ingested_at, to the millisecond.  A real
+    worker spends round trips to Postgres, ClickHouse and crypto-service on every
+    batch; the stand-ins here can seal two in one millisecond.
+    """
+
+    _seconds = itertools.count(1)
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+        start = datetime(2026, 10, 30, 12, 1, tzinfo=UTC)
+        return (start + timedelta(seconds=next(cls._seconds))).astimezone(tz)
+
+
+async def _outbox(events: list[AuditEvent]) -> list[tuple[int, dict[str, Any]]]:
+    """``events`` as IngestService writes them to the outbox: (id, event_json)."""
+    session = MagicMock(flush=AsyncMock())
+    await IngestService().ingest_batch(session, events)
+    rows = [add.args[0] for add in session.add.call_args_list]
+    return [(row_id, row.event_json) for row_id, row in enumerate(rows, start=1)]
+
+
+def _worker() -> BatchProcessor:
+    with patch("foundation_audit.worker.batch_processor.get_settings", return_value=_SETTINGS):
+        return BatchProcessor()
+
+
+async def _deliver(
+    worker: BatchProcessor, pending: list[tuple[int, dict[str, Any]]], clickhouse: _ClickHouse,
+) -> int:
+    """One pass of ``worker`` over the outbox rows ``pending``.
+
+    Each pass reads event_json afresh through JSON text, as Postgres hands out JSONB.
+    """
+    fetched = [(row_id, json.loads(json.dumps(event_json))) for row_id, event_json in pending]
+    with (
+        patch("foundation_audit.worker.batch_processor.system_session_scope", _no_database),
+        patch("foundation_audit.worker.batch_processor.datetime", _WorkerClock),
+        patch.object(worker._ingest, "fetch_pending", AsyncMock(return_value=fetched)),
+        patch.object(worker._ingest, "mark_delivered", AsyncMock()),
+        patch.object(worker._ingest, "record_attempts", AsyncMock()),
+        patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root", _sign),
+        _serving(clickhouse),
+    ):
+        return await worker.run_once()
+
+
+async def _verify(clickhouse: _ClickHouse) -> VerifyIntegrityResponse:
+    ctx = FoundationContext(
+        tenant_id=_TENANT, user_id=None, actor="ADMIN", request_id="req_01J0000000000000000000REQ1",
+    )
+    with (
+        patch("foundation_audit.config.get_settings", return_value=_SETTINGS),
+        patch("foundation_audit.api.v1.events.crypto_client.verify_signature", _signature_valid),
+        _serving(clickhouse),
+    ):
+        return await verify_integrity(VerifyIntegrityRequest(tenant_id=_TENANT), ctx=ctx)
+
+
+def _evt(n: int) -> str:
+    return f"evt_01JC{n:022d}"
+
+
+def _emitted() -> list[AuditEvent]:
+    """Events of two services, as the ingest API accepts them.
+
+    Times come in every spelling, to the microsecond; optional fields are missing
+    or sent empty; payloads hold what JSON can; one event lists sensitive_fields.
+    """
+    return [
+        AuditEvent(
+            event_id=_evt(1), occurred_at="2026-10-30T12:00:00.250999Z", tenant_id=_TENANT,
+            service="identity", event_type="user.login", actor_kind="USER",
+            actor_user_id="usr_1", payload={"ip": "203.0.113.7", "mfa": True},
+        ),
+        AuditEvent(
+            event_id=_evt(2), occurred_at="2026-10-30T20:00:00.5+08:00", tenant_id=_TENANT,
+            service="lifecycle", service_version="", event_type="report.run",
+            actor_kind="SYSTEM", payload={},
+        ),
+        AuditEvent(
+            event_id=_evt(3), occurred_at=datetime(2026, 10, 30, 12, 0, 1), tenant_id=_TENANT,
+            service="identity", service_version="2.3.1", event_type="user.update",
+            actor_kind="ADMIN", actor_user_id="", resource_type="user", resource_id="usr_1",
+            request_id="req_01J0000000000000000000REQ1", ip="",
+            payload={"changes": {"name": ["Zoë", "Zoé"]}, "ratio": 0.1},
+            sensitive_fields=["changes"],
+        ),
+        AuditEvent(
+            event_id=_evt(4), occurred_at="2026-10-30T07:00:01.999-05:00", tenant_id=_TENANT,
+            service="identity", event_type="user.logout", severity="SECURITY",
+            outcome="DENIED", actor_kind="API_KEY", actor_api_key_id="key_1",
+            payload={"reason": "token expired", "rows": 12345678901234567890},
+        ),
+        AuditEvent(
+            event_id=_evt(5), occurred_at="2026-10-30T12:00:02Z", tenant_id=_TENANT,
+            service="lifecycle", event_type="report.done", actor_kind="SERVICE_ACCOUNT",
+            trace_id="0af7651916cd43dd8448eb211c80319c", payload={"rows": 3},
+        ),
+    ]
+
+
+def _logins(*ns: int) -> list[AuditEvent]:
+    """identity events with ids _evt(n), emitted a second apart in the order given."""
+    return [
+        AuditEvent(
+            event_id=_evt(n), occurred_at=datetime(2026, 10, 30, 12, 0, i), tenant_id=_TENANT,
+            service="identity", event_type="user.login", actor_kind="USER", payload={"n": n},
+        )
+        for i, n in enumerate(ns)
+    ]
+
+
+async def _sealed() -> _ClickHouse:
+    """The tables once a worker delivered _emitted() in two batches (3 and 2 events)."""
+    clickhouse, worker = _ClickHouse(), _worker()
+    outbox = await _outbox(_emitted())
+    assert await _deliver(worker, outbox[:3], clickhouse) == 3
+    assert await _deliver(worker, outbox[3:], clickhouse) == 2
+    return clickhouse
+
+
+def _flip(hex_text: str) -> str:
+    return hex_text[:-1] + ("1" if hex_text[-1] == "0" else "0")
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestVerifyIntegrity:
+    @pytest.mark.asyncio
+    async def test_an_untampered_chain_verifies(self) -> None:
+        clickhouse = await _sealed()
+
+        result = await _verify(clickhouse)
+
+        assert result.model_dump() == {
+            "valid": True,
+            "events_checked": 5,
+            "first_break_event_id": None,
+            "signatures_verified": 2,
+            "signatures_failed": 0,
+            "tsa_present": 0,
+            "message": "OK",
         }
 
-        # Build event_data as verify_integrity does: convert datetimes, skip server fields
-        event_data: dict[str, Any] = {}
-        for k, v in stored.items():
-            if k in _VERIFY_SKIP or v is None:
-                continue
-            if isinstance(v, datetime):
-                event_data[k] = v.isoformat()
-            else:
-                event_data[k] = v
-        if "payload" in event_data and isinstance(event_data["payload"], str):
-            try:
-                event_data["payload"] = json.loads(event_data["payload"])
-            except (json.JSONDecodeError, ValueError):
-                event_data["payload"] = {}
+    @pytest.mark.asyncio
+    async def test_a_chain_verifies_in_the_order_it_was_chained(self) -> None:
+        """Event ids need not follow the order events reach the outbox in."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(9, 7, 8)), clickhouse) == 3
 
-        prev_h, curr_h = compute_chain_hash(prev_hash=prev, event_data=event_data)
-        stored["prev_hash"] = prev_h
-        stored["curr_hash"] = curr_h
+        result = await _verify(clickhouse)
 
-        chain.append(stored)
-        prev = curr_h
-    return chain
+        assert (result.valid, result.first_break_event_id) == (True, None)
 
+    @pytest.mark.asyncio
+    async def test_a_restarted_worker_carries_the_chain_on_from_its_last_event(self) -> None:
+        """A new worker process reads the chain's head back from ClickHouse."""
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_logins(6, 2, 9, 7, 8, 1))
+        assert await _deliver(worker, outbox[:2], clickhouse) == 2
+        assert await _deliver(worker, outbox[2:4], clickhouse) == 2
+        assert await _deliver(_worker(), outbox[4:], clickhouse) == 2
 
-def _make_batch_meta(events: list[dict], batch_id: str = "mrk_BATCHID0000000000000000001") -> dict:
-    """Build a merkle_batch dict for the given events (correct root)."""
-    leaf_hashes = [ev["curr_hash"] for ev in events]
-    root = compute_merkle_root(leaf_hashes)
-    return {
-        "batch_id": batch_id,
-        "tenant_id": events[0]["tenant_id"],
-        "service": events[0]["service"],
-        "merkle_root": root,
-        "signature": "validSignatureBase64==",
-        "signature_key_id": "key_v1",
-        "tsa_token": "tsaTokenBase64==",
-        "tsa_provider": "freetsa",
-        "tsa_timestamp": datetime.now(UTC).replace(tzinfo=None),
-        "external_anchor": None,
-    }
+        result = await _verify(clickhouse)
 
+        assert (result.valid, result.first_break_event_id) == (True, None)
 
-# ---------------------------------------------------------------------------
-# Direct service-layer tests (no HTTP, faster)
-# ---------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_a_batch_clickhouse_refused_is_chained_again_when_retried(self) -> None:
+        """None of a refused batch is stored: its retry carries each chain on from ClickHouse."""
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_emitted())
+        for batch in (outbox[:3], outbox[3:]):  # the chains' first batch, then a later one
+            clickhouse.refuse.append(("insert", "audit.events"))
+            assert await _deliver(worker, batch, clickhouse) == 0  # left in the outbox
+            assert await _deliver(worker, batch, clickhouse) == len(batch)  # the next run
 
-def _recompute_loop(chain: list[dict[str, Any]]) -> str | None:
-    """Run the verify_integrity hash-chain loop over the given chain.
+        result = await _verify(clickhouse)
 
-    Returns the event_id of the first break, or None if valid.
-    Mirrors events.py verify_integrity logic exactly (including datetime → ISO conversion).
-    """
-    prev_hashes: dict[tuple[str, str], str] = {}
-    for ev in chain:
-        key = (ev["tenant_id"], ev["service"])
-        prev = prev_hashes.get(key)
-        event_data: dict[str, Any] = {}
-        for k, v in ev.items():
-            if k in _VERIFY_SKIP or v is None:
-                continue
-            if isinstance(v, datetime):
-                event_data[k] = v.isoformat()
-            else:
-                event_data[k] = v
-        if "payload" in event_data and isinstance(event_data["payload"], str):
-            try:
-                event_data["payload"] = json.loads(event_data["payload"])
-            except (json.JSONDecodeError, ValueError):
-                event_data["payload"] = {}
+        assert (result.valid, result.first_break_event_id) == (True, None)
 
-        exp_prev, exp_curr = compute_chain_hash(prev_hash=prev, event_data=event_data)
-        if ev["curr_hash"] != exp_curr or ev["prev_hash"] != exp_prev:
-            return str(ev["event_id"])
-        prev_hashes[key] = ev["curr_hash"]
-    return None
+    @pytest.mark.asyncio
+    async def test_a_chain_head_clickhouse_did_not_read_is_not_taken_for_genesis(self) -> None:
+        clickhouse = _ClickHouse()
+        outbox = await _outbox(_emitted())
+        assert await _deliver(_worker(), outbox[:3], clickhouse) == 3
+        worker = _worker()  # restarted: it reads each chain's head from ClickHouse
+        clickhouse.refuse.append(("query", "audit.events"))
+        with pytest.raises(OperationalError):
+            await _deliver(worker, outbox[3:], clickhouse)  # left in the outbox
+        assert await _deliver(worker, outbox[3:], clickhouse) == 2  # the next run
 
+        result = await _verify(clickhouse)
 
-class TestHashChainVerification:
-    """Test the hash-chain recomputation logic in isolation."""
+        assert (result.valid, result.first_break_event_id) == (True, None)
 
-    def test_correct_chain_passes(self) -> None:
-        """A correctly built chain validates without breaks."""
-        events_data = [
-            {"event_id": f"evt_01J0000000000000000000000{i:02d}", "event_type": "test", "actor_kind": "USER"}
-            for i in range(5)
-        ]
-        chain = _make_chain(events_data)
-        assert _recompute_loop(chain) is None
+    @pytest.mark.asyncio
+    async def test_rows_come_back_unlike_the_outbox_json(self) -> None:
+        """What the test above verifies over is not what the worker hashed from."""
+        clickhouse = await _sealed()
 
-    def test_tampered_curr_hash_detected(self) -> None:
-        """Modifying a stored curr_hash breaks the chain at that event."""
-        events_data = [
-            {"event_id": f"evt_01J0000000000000000000000{i:02d}", "event_type": "test", "actor_kind": "USER"}
-            for i in range(4)
-        ]
-        chain = _make_chain(events_data)
+        lifecycle = clickhouse.event(_evt(2))
+        assert lifecycle["occurred_at"] == datetime(2026, 10, 30, 12, 0, 0, 500000)  # naive UTC
+        assert (lifecycle["service_version"], lifecycle["resource_type"]) == ("", "")
+        assert (lifecycle["request_id"], lifecycle["actor_user_id"]) == ("", None)
+        assert lifecycle["payload"] == "{}"
+        login = clickhouse.event(_evt(1))
+        assert login["occurred_at"] == datetime(2026, 10, 30, 12, 0, 0, 250000)  # µs cut off
+        assert "sensitive_fields" not in login
 
-        # Tamper: flip curr_hash of event index 2
-        chain[2]["curr_hash"] = "f" * 64
-        first_break = _recompute_loop(chain)
+    @pytest.mark.parametrize(
+        ("event_id", "tamper"),
+        [
+            pytest.param(_evt(3), {"curr_hash": "f" * 64}, id="curr_hash"),
+            pytest.param(_evt(5), {"prev_hash": "0" * 64}, id="prev_hash"),
+            pytest.param(
+                _evt(1), {"payload": json.dumps({"ip": "198.51.100.9", "mfa": True})}, id="payload",
+            ),
+            pytest.param(_evt(2), {"payload": "not json"}, id="payload_was_empty_object"),
+            pytest.param(_evt(4), {"outcome": "SUCCESS"}, id="outcome"),
+            pytest.param(_evt(5), {"resource_type": "report"}, id="empty_field_filled"),
+            pytest.param(_evt(3), {"service_version": ""}, id="field_emptied"),
+            pytest.param(_evt(1), {"actor_user_id": None}, id="field_nulled"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_tampered_event_breaks_the_chain_there(
+        self, event_id: str, tamper: dict[str, Any],
+    ) -> None:
+        clickhouse = await _sealed()
+        clickhouse.event(event_id).update(tamper)
 
-        # Should detect tamper at index 2
-        assert first_break == chain[2]["event_id"]
+        result = await _verify(clickhouse)
 
-    def test_tampered_payload_detected(self) -> None:
-        """Modifying stored event payload invalidates curr_hash."""
-        events_data = [
-            {"event_id": "evt_01J00000000000000000000X01", "event_type": "test",
-             "actor_kind": "USER", "payload": {"amount": 100}},
-        ]
-        chain = _make_chain(events_data)
+        assert not result.valid
+        assert result.first_break_event_id == event_id
 
-        # Tamper: change payload (stored as JSON string in CH)
-        chain[0]["payload"] = json.dumps({"amount": 999999})  # tampered amount
+    @pytest.mark.asyncio
+    async def test_a_moved_occurred_at_breaks_the_chain_there(self) -> None:
+        clickhouse = await _sealed()
+        clickhouse.event(_evt(4))["occurred_at"] += timedelta(milliseconds=1)
 
-        first_break = _recompute_loop(chain)
-        # Stored curr_hash was computed with original payload → mismatch
-        assert first_break == chain[0]["event_id"]
+        result = await _verify(clickhouse)
 
-    def test_merkle_root_mismatch_detected(self) -> None:
-        """When stored Merkle root doesn't match recomputed root, sig verification fails."""
-        events_data = [
-            {"event_id": f"evt_01J0000000000000000000000{i:02d}", "event_type": "t", "actor_kind": "SYSTEM"}
-            for i in range(2)
-        ]
-        chain = _make_chain(events_data)
-        batch = _make_batch_meta(chain)
+        assert not result.valid
+        assert result.first_break_event_id == _evt(4)
 
-        # Tamper: flip last byte of stored root
-        original_root = batch["merkle_root"]
-        tampered_root = original_root[:-1] + ("0" if original_root[-1] == "f" else "f")
-        batch["merkle_root"] = tampered_root
+    @pytest.mark.asyncio
+    async def test_events_swapped_within_their_batch_break_the_chain(self) -> None:
+        clickhouse = await _sealed()
+        first, third = clickhouse.event(_evt(1)), clickhouse.event(_evt(3))
+        first["merkle_leaf_idx"], third["merkle_leaf_idx"] = (
+            third["merkle_leaf_idx"], first["merkle_leaf_idx"],
+        )
 
-        # Recompute from events
-        leaf_hashes = [ev["curr_hash"] for ev in chain]
-        recomputed = compute_merkle_root(leaf_hashes)
+        result = await _verify(clickhouse)
 
-        # Should not match
-        assert recomputed != batch["merkle_root"]
+        assert not result.valid
+        assert result.first_break_event_id == _evt(3)  # now first in its chain
 
+    @pytest.mark.asyncio
+    async def test_a_deleted_event_breaks_the_chain_at_the_next_one(self) -> None:
+        clickhouse = await _sealed()
+        clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(3)))
 
-class TestMerkleRootRecomputeMatchesWorker:
-    """Ensure verify uses the same power-of-2 padding Merkle as the worker."""
+        result = await _verify(clickhouse)
 
-    def test_odd_number_of_leaves(self) -> None:
-        """3 leaves → padded to 4 → root is deterministic."""
-        events_data = [
-            {"event_id": f"evt_01J00000000000000000000000{i}", "event_type": "t", "actor_kind": "SYSTEM"}
-            for i in range(3)
-        ]
-        chain = _make_chain(events_data)
-        leaf_hashes = [ev["curr_hash"] for ev in chain]
+        assert not result.valid
+        assert result.first_break_event_id == _evt(4)  # the next identity event
 
-        root1 = compute_merkle_root(leaf_hashes)
-        root2 = compute_merkle_root(leaf_hashes)  # Deterministic
-        assert root1 == root2
-        assert len(root1) == 64
+    @pytest.mark.asyncio
+    async def test_a_changed_merkle_root_fails_its_batch(self) -> None:
+        clickhouse = await _sealed()
+        batch = clickhouse.rows["audit.merkle_batch"][0]
+        batch["merkle_root"] = _flip(batch["merkle_root"])
 
-    def test_verify_uses_stored_leaf_order(self) -> None:
-        """Verify sorts by merkle_leaf_idx before computing root."""
-        events_data = [
-            {"event_id": f"evt_01J00000000000000000000000{i}", "event_type": "t", "actor_kind": "SYSTEM"}
-            for i in range(4)
-        ]
-        chain = _make_chain(events_data)
+        result = await _verify(clickhouse)
 
-        # Build batch with correct root
-        leaf_hashes_ordered = [ev["curr_hash"] for ev in chain]
-        expected_root = compute_merkle_root(leaf_hashes_ordered)
+        assert not result.valid
+        assert result.first_break_event_id == _evt(1)  # the batch's first event
+        assert (result.signatures_verified, result.signatures_failed) == (1, 1)
 
-        # Shuffle events (as might come from CH) and sort by leaf_idx
-        import random
-        shuffled = chain[:]
-        random.shuffle(shuffled)
+    @pytest.mark.asyncio
+    async def test_a_signature_that_does_not_verify_fails_its_batch(self) -> None:
+        clickhouse = await _sealed()
+        clickhouse.rows["audit.merkle_batch"][1]["signature"] = "sig(forged)"
 
-        # Sort as verify_integrity does
-        leaf_list = [(ev["merkle_leaf_idx"], ev["curr_hash"]) for ev in shuffled]
-        leaf_list.sort(key=lambda x: x[0])
-        recomputed_root = compute_merkle_root([h for _, h in leaf_list])
+        result = await _verify(clickhouse)
 
-        assert recomputed_root == expected_root
+        assert not result.valid
+        assert result.first_break_event_id is None  # the chain itself holds
+        assert (result.signatures_verified, result.signatures_failed) == (1, 1)
