@@ -284,6 +284,14 @@ paths:
         （`LLM_GATEWAY_EPHEMERAL_KEY_PURGE_GRACE_HOURS`，默认 168 小时）的 key 由网关的
         定时任务物理删除，之后查不到它对应的租户和 run。
         不传 `provider_id` 时，绑定租户最早创建的已启用 provider。
+
+        只有平台内部服务（agent-platform 的 scheduler 与 BFF）能调用：须带
+        `X-Actor: SERVICE` 与匹配的 `X-Internal-Service-Token`。actor 校验先于请求体字段校验和
+        provider 查找：未认证的调用方得到 401 / 403，而不是 404 或字段校验的 422。
+      security:
+        - internalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/ServiceActor'
       requestBody:
         required: true
         content:
@@ -295,11 +303,58 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EphemeralTenantKey' }
+        '401':
+          description: 缺少 `X-Tenant-Id`（没有租户上下文）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail: { type: string }
+        '403':
+          $ref: './_common.yaml#/components/responses/Forbidden'
+          description: PERMISSION_DENIED：actor 不是经认证的 SERVICE（没有 / 错误的 `X-Internal-Service-Token`、USER、ADMIN）
         '404':
           description: PROVIDER_NOT_FOUND：租户没有已启用的 provider，或 `provider_id` 不是本租户已启用的 provider
           content:
             application/problem+json:
               schema: { $ref: './_common.yaml#/components/schemas/Error' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /tenant-keys/revoke-run:
+    post:
+      tags: [tenant-keys]
+      operationId: revokeRunTenantKeys
+      description: |
+        提前停用一个 run 的全部短期 key（scheduler 取消 run 时调用）。尽力而为：过期才是兜底，
+        已过期、已停用或已被定时任务删除的 key 不计入 `disabled`。
+        与铸造相同，只有带 `X-Actor: SERVICE` 与匹配 `X-Internal-Service-Token` 的平台内部服务能调用。
+      security:
+        - internalServiceToken: []
+      parameters:
+        - $ref: '#/components/parameters/ServiceActor'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RevokeRunKeysRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevokeRunKeysResponse' }
+        '401':
+          description: 缺少 `X-Tenant-Id`（没有租户上下文）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail: { type: string }
+        '403':
+          $ref: './_common.yaml#/components/responses/Forbidden'
+          description: PERMISSION_DENIED：actor 不是经认证的 SERVICE
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /user-preferences:
@@ -337,7 +392,7 @@ paths:
     description: |
       租户管理员代成员处理 GDPR 数据主体请求（访问 Art. 15 / 删除 Art. 17）时，读取或删除
       该成员的模型偏好。只接受 ADMIN 或 SERVICE actor（BFF 先校验租户管理员权限，再带
-      `X-Actor: ADMIN`），且只作用于调用方所在租户。
+      `X-Actor: ADMIN`；SERVICE 须带匹配的 `X-Internal-Service-Token`），且只作用于调用方所在租户。
     parameters:
       - name: user_id
         in: path
@@ -414,6 +469,23 @@ components:
   securitySchemes:
     bearerAuth:
       $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
+    internalServiceToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Service-Token
+      description: |
+        平台内部调用方（agent-platform 的 scheduler 与 BFF）与网关预共享的密钥，
+        网关侧配置为 `LLM_GATEWAY_INTERNAL_SERVICE_TOKEN`；机制同 authz 的 `X-Internal-Admin-Token`。
+        与 `X-Actor: SERVICE` 一起发送；不匹配、缺失或网关未配置（空值）时，网关把 SERVICE
+        声明当作 USER。调用方不得把它交给自己启动的沙箱。
+
+  parameters:
+    ServiceActor:
+      name: X-Actor
+      in: header
+      required: true
+      description: 必须是 `SERVICE`，且由 `X-Internal-Service-Token` 证实
+      schema: { type: string, enum: [SERVICE] }
 
   schemas:
 
@@ -691,3 +763,20 @@ components:
         run_id: { type: string }
         ephemeral: { type: boolean, const: true }
         expires_at: { type: string, format: date-time }
+
+    RevokeRunKeysRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id:
+          type: string
+          description: 铸造时记在 key 上的 `run_id`
+
+    RevokeRunKeysResponse:
+      type: object
+      required: [run_id, disabled]
+      properties:
+        run_id: { type: string }
+        disabled:
+          type: integer
+          description: 本次停用的 key 数

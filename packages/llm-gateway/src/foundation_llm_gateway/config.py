@@ -1,5 +1,5 @@
 from functools import lru_cache; from typing import Literal
-from pydantic import Field, PostgresDsn; from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, PostgresDsn, SecretStr; from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config=SettingsConfigDict(env_file=".env",env_prefix="LLM_GATEWAY_",extra="ignore")
     service_name:str="llm-gateway"; env:Literal["dev","staging","production"]="dev"
@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # P1: External service URLs (fail-open when unreachable)
     billing_url:str="http://127.0.0.1:8017"; crypto_url:str="http://127.0.0.1:8004"
     audit_url:str="http://127.0.0.1:8013"; external_timeout_seconds:float=5.0
+    # Pre-shared secret that platform-internal callers (the agent-platform
+    # scheduler and BFF) send in X-Internal-Service-Token to act as SERVICE —
+    # authz's X-Internal-Admin-Token scheme. Only SERVICE may mint or revoke
+    # run-scoped keys. Empty (the default) disables it: an X-Actor: SERVICE
+    # claim is then always downgraded to USER. Callers MUST NOT pass it on to
+    # the sandboxes they spawn.
+    internal_service_token:SecretStr=SecretStr("")
     # Ephemeral-key purge (jobs.py). A run-scoped key stops authenticating the
     # moment it expires; the grace period only keeps its row (key -> tenant/run)
     # for incident forensics. 7 days = a week to look into a leaked key.

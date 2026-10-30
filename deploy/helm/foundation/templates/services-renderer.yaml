@@ -160,6 +160,15 @@ spec:
                   name: {{ $.Values.featureFlagUnleash.existingSecret | default "foundation-unleash-credentials" }}
                   key: {{ $.Values.featureFlagUnleash.adminTokenSecretKey | default "admin-token" }}
             {{- end }}
+            {{- if eq $name "llm-gateway" }}
+            # ── llm-gateway 专属：run 级 key 的铸造/吊销只认带此令牌的 SERVICE ──
+            - name: LLM_GATEWAY_INTERNAL_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.llmGatewayServiceToken.existingSecret | default "foundation-llm-gateway-service-token" | quote }}
+                  key: {{ $.Values.llmGatewayServiceToken.secretKey | default "token" | quote }}
+                  optional: true
+            {{- end }}
             {{- if or (eq $name "audit") (eq $name "security-ops") (eq $name "lifecycle") }}
             # ── storage-v1 §4: 多 bucket S3 配置 ─────────────────────────────
             # audit 直接经 packages/storage.StorageClient 写 audit bucket；
