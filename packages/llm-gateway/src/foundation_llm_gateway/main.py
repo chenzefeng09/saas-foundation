@@ -14,6 +14,7 @@ from foundation_llm_gateway.api.middleware import RequestIdMiddleware, TenantCon
 from foundation_llm_gateway.api.v1 import api_v1
 from foundation_llm_gateway.config import get_settings
 from foundation_llm_gateway.domain.db import dispose_engine
+from foundation_llm_gateway.jobs import start_scheduler
 from foundation_llm_gateway.observability import get_logger, setup_observability
 
 log = get_logger(__name__)
@@ -21,9 +22,15 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("startup", version=__version__, service="llm-gateway")
-    yield
-    log.info("shutdown")
-    await dispose_engine()
+    scheduler = start_scheduler(get_settings())
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+            log.info("scheduler.shutdown")
+        log.info("shutdown")
+        await dispose_engine()
 
 def create_app() -> FastAPI:
     settings = get_settings()
