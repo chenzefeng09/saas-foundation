@@ -32,6 +32,8 @@ tags:
     description: 租户虚拟 key
   - name: capabilities
     description: 能力探测
+  - name: user-preferences
+    description: 用户的模型偏好（本人；租户管理员处理数据主体请求时可代成员读取 / 删除）
   - name: health
 
 paths:
@@ -234,6 +236,73 @@ paths:
       responses:
         '204': { description: ok }
 
+  /user-preferences:
+    get:
+      tags: [user-preferences]
+      operationId: listUserPreferences
+      description: 调用者本人的模型偏好（每个 purpose 至多一条）。
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPreferenceList' }
+
+  /user-preferences/{purpose}:
+    parameters:
+      - name: purpose
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [user-preferences]
+      operationId: deleteUserPreference
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+
+  /users/{user_id}/preferences:
+    description: |
+      租户管理员代成员处理 GDPR 数据主体请求（访问 Art. 15 / 删除 Art. 17）时，读取或删除
+      该成员的模型偏好。只接受 ADMIN 或 SERVICE actor（BFF 先校验租户管理员权限，再带
+      `X-Actor: ADMIN`），且只作用于调用方所在租户。
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^usr_[0-9A-Z]{26}$' }
+    get:
+      tags: [user-preferences]
+      operationId: listMemberPreferences
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPreferenceList' }
+        '403': { description: actor 不是 ADMIN / SERVICE }
+    delete:
+      tags: [user-preferences]
+      operationId: deleteMemberPreferences
+      description: '删除该成员的全部模型偏好；幂等，没有可删的返回 `deleted: 0`。'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: integer }
+        '403': { description: actor 不是 ADMIN / SERVICE }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -241,6 +310,26 @@ components:
       $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
 
   schemas:
+
+    UserPreference:
+      type: object
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string }
+        purpose: { type: string }
+        model_id: { type: string }
+        provider_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UserPreferenceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/UserPreference' }
 
     ChatCompletionRequest:
       type: object

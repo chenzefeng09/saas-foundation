@@ -49,6 +49,8 @@ class FakeAsyncSession:
     flush_calls: int = 0
     _scalar_queue: list = field(default_factory=list)
     _scalars_queue: list = field(default_factory=list)
+    # Statements passed to scalars(), for tests of what a query selects.
+    statements: list = field(default_factory=list)
 
     def put(self, obj): self.pk_store[type(obj)][obj.id] = obj
     def queue_scalar(self, v): self._scalar_queue.append(v)
@@ -57,7 +59,8 @@ class FakeAsyncSession:
     async def get(self, model, pk): return self.pk_store.get(model, {}).get(pk)
     async def scalar(self, _stmt):
         return self._scalar_queue.pop(0) if self._scalar_queue else None
-    async def scalars(self, _stmt):
+    async def scalars(self, stmt):
+        self.statements.append(stmt)
         return _ScalarsResult(self._scalars_queue.pop(0)) if self._scalars_queue else _ScalarsResult([])
     def add(self, obj):
         self.added.append(obj)
@@ -455,6 +458,34 @@ class TestEphemeralKeys:
             fake_session, tenant_id=tenant_id, run_id="run_NONE",
         )
         assert count == 0
+
+    async def test_tenant_key_listing_leaves_out_run_keys_and_expired_keys(
+        self, fake_session, tenant_id, request_id
+    ):
+        """GET /tenant-keys callers use the first key listed (the scheduler's
+        fallback, the BFF canvas): another run's key, or a dead one, must never
+        be it.  Ephemeral keys outlive their runs as enabled rows, so the
+        query itself has to leave them out."""
+        from sqlalchemy.dialects import postgresql
+        from foundation_llm_gateway.api.v1.llm_gateway import list_tenant_keys
+        from foundation_llm_gateway.domain.base import FoundationContext
+
+        fake_session.queue_scalars([_make_virtual_key(tenant_id)])
+        ctx = FoundationContext(
+            tenant_id=tenant_id, user_id="usr_01J5DEVXX00000000000000001",
+            actor="SERVICE", request_id=request_id,
+        )
+
+        listed = await list_tenant_keys(ctx=ctx, session=fake_session)
+
+        assert [k["virtual_key"] for k in listed["items"]] == ["sk-foundation-TESTKEY"]
+        (stmt,) = fake_session.statements
+        sql = " ".join(str(stmt.compile(dialect=postgresql.dialect())).split())
+        key = "llm_gateway.llm_tenant_key"
+        assert f"{key}.enabled IS true" in sql
+        assert f"{key}.ephemeral IS false" in sql
+        assert f"({key}.expires_at IS NULL OR {key}.expires_at > now())" in sql
+        assert sql.endswith(f"ORDER BY {key}.created_at, {key}.id")
 
 
 # ---------------------------------------------------------------------------
