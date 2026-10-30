@@ -5,6 +5,8 @@ P1 enterprise additions:
   - POST /chat              — legacy alias (non-streaming simplified, kept for knowledge-ingest compat)
   - POST /tenant-keys       — create virtual key
   - GET  /tenant-keys       — list tenant virtual keys (internal scope)
+  - POST /tenant-keys/ephemeral, /tenant-keys/revoke-run
+                            — run-scoped keys; SERVICE callers only (X-Internal-Service-Token)
   - POST /providers         — now encrypts api_key via crypto service before storage
 """
 from __future__ import annotations
@@ -252,6 +254,22 @@ class RevokeRunKeysRequest(BaseModel):
     run_id: str
 
 
+def _require_service_actor(ctx: FoundationContext = Depends(current_context)) -> None:
+    """Run-scoped keys are minted and revoked by platform services only.
+
+    Their callers are the agent-platform scheduler (per run) and BFF (canvas,
+    titles). SERVICE is the one actor the middleware verifies — it takes the
+    pre-shared X-Internal-Service-Token — so USER and the header-trusted ADMIN
+    never pass. A route dependency, so a refusal comes before the body is
+    validated and before a DB session is opened.
+    """
+    if ctx.actor != "SERVICE":
+        raise FoundationError(
+            PERMISSION_DENIED,
+            detail="Run-scoped keys can only be minted or revoked by an authenticated SERVICE caller.",
+        )
+
+
 @router.post("/tenant-keys", status_code=201, tags=["llm-gateway"])
 async def create_tenant_key(
     body: CreateTenantKeyRequest,
@@ -313,7 +331,8 @@ async def list_tenant_keys(
     }
 
 
-@router.post("/tenant-keys/ephemeral", status_code=201, tags=["llm-gateway"])
+@router.post("/tenant-keys/ephemeral", status_code=201, tags=["llm-gateway"],
+             dependencies=[Depends(_require_service_actor)])
 async def mint_ephemeral_tenant_key(
     body: MintEphemeralKeyRequest,
     ctx: FoundationContext = Depends(current_context),
@@ -376,7 +395,8 @@ async def mint_ephemeral_tenant_key(
     }
 
 
-@router.post("/tenant-keys/revoke-run", tags=["llm-gateway"])
+@router.post("/tenant-keys/revoke-run", tags=["llm-gateway"],
+             dependencies=[Depends(_require_service_actor)])
 async def revoke_run_tenant_keys(
     body: RevokeRunKeysRequest,
     ctx: FoundationContext = Depends(current_context),

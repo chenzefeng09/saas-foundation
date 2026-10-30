@@ -263,6 +263,13 @@ featureFlagUnleash:
   clientTokenSecretKey: client-token
   adminTokenSecretKey: admin-token
 
+# llm-gateway 的 SERVICE 预共享令牌（X-Internal-Service-Token）：只有带它的调用方
+# （agent-platform scheduler / BFF，读同一个 secret）能铸造、吊销 run 级 key。
+# secret 不存在时 SERVICE 整体关闭，调用方退回租户长期 key。
+llmGatewayServiceToken:
+  existingSecret: foundation-llm-gateway-service-token
+  secretKey: token
+
 # =============================================================================
 # Service 列表 — 每个 service 一段
 # 共 18 个 service；启动时间长，可按需 enabled: false 分批上

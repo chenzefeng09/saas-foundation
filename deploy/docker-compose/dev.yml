@@ -1493,6 +1493,9 @@ services:
       LLM_GATEWAY_AUDIT_URL: http://audit:8013
       LLM_GATEWAY_OTEL_ENABLED: "true"
       LLM_GATEWAY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
+      # SERVICE token (X-Internal-Service-Token): only the agent-platform
+      # scheduler and BFF, which read the same variable, mint/revoke run keys.
+      LLM_GATEWAY_INTERNAL_SERVICE_TOKEN: ${LLM_GATEWAY_SERVICE_TOKEN:-dev-llm-gateway-service-token-change-me}
     ports:
       - "${PORT_LLM_GATEWAY:-8011}:8011"
     networks:
