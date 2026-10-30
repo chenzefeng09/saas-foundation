@@ -407,7 +407,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserPreferenceList' }
-        '403': { description: actor 不是 ADMIN / SERVICE }
+        '403':
+          $ref: './_common.yaml#/components/responses/Forbidden'
+          description: PERMISSION_DENIED：actor 不是 ADMIN / SERVICE
     delete:
       tags: [user-preferences]
       operationId: deleteMemberPreferences
@@ -422,7 +424,9 @@ paths:
                 required: [deleted]
                 properties:
                   deleted: { type: integer }
-        '403': { description: actor 不是 ADMIN / SERVICE }
+        '403':
+          $ref: './_common.yaml#/components/responses/Forbidden'
+          description: PERMISSION_DENIED：actor 不是 ADMIN / SERVICE
 
   /pricing:
     get:

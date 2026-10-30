@@ -273,7 +273,7 @@ These are enforced by `.spectral.yaml`; any spec PR must pass `make lint` (all g
 
 1. **The version ends the `servers` URL** (`/api/<service>/v1`) and paths do not repeat it — the version is explicit in the URL; header versioning is forbidden.
 2. **JSON fields are `snake_case`; enums are `UPPER_SNAKE_CASE`** (compliance-mode identifiers are the documented exception).
-3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed.
+3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed. A response inlined for its own description still has an `application/problem+json` body that `$ref`s `_common.yaml`'s `Error` or `ValidationError`.
 4. **Error codes are the four-segment `FOUNDATION.<SVC>.<CAT>.<NAME>`.**
 5. **Every operation has a unique camelCase `operationId`** (consumed by the SDK generators).
 6. **Every non-public endpoint declares `security: [bearerAuth]`**; public endpoints must declare `security: []` explicitly.

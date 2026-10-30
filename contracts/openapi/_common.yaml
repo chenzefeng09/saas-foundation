@@ -3,17 +3,13 @@
 # =============================================================================
 # 所有 service spec 通过 $ref 引用本文件，避免重复定义。
 #
-# 使用方式（service spec 顶部）：
+# 使用方式：operation 直接 $ref 本文件（.spectral.yaml 要求错误响应这样写）：
+#   parameters:
+#     - $ref: './_common.yaml#/components/parameters/RequestId'
+#   responses:
+#     '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+# 只有 securitySchemes 要在 service spec 里起本地名，因为 security 按名字引用：
 #   components:
-#     schemas:
-#       Error:
-#         $ref: './_common.yaml#/components/schemas/Error'
-#     parameters:
-#       RequestId:
-#         $ref: './_common.yaml#/components/parameters/RequestId'
-#     responses:
-#       BadRequest:
-#         $ref: './_common.yaml#/components/responses/BadRequest'
 #     securitySchemes:
 #       bearerAuth:
 #         $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
