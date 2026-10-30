@@ -368,9 +368,9 @@ event[1]:  prev_hash = event[0].curr_hash
 
 **实现**：每个 (tenant, service) 维护一行 `audit.chain_head`（Redis hash），写入新事件时 `LOAD prev → COMPUTE → STORE` 用 Redis lua 原子。
 
-### 5.2 Merkle tree（批量，跨链）
+### 5.2 Merkle tree（批量，每条链一个 batch）
 
-每 5 分钟 或 满 10000 events（先到先触发）封一个 batch：
+每 5 分钟 或 满 10000 events（先到先触发）封一次：本次的事件里每条链 `(tenant_id, service)` 各封一个 batch，batch 不跨链：
 
 ```
                   merkle_root
@@ -382,11 +382,15 @@ event[1]:  prev_hash = event[0].curr_hash
         evt1   evt2      evt3   evt4 ...
 ```
 
-叶子是 `curr_hash`。算法：标准 RFC 6962（CT log style，处理奇数叶子用复制）。
+叶子是该链这批事件的 `curr_hash`，按链内顺序编号 0..n-1。算法：标准 RFC 6962（CT log style，处理奇数叶子用复制）。
 
-`merkle_root` 写入 `audit.merkle_batch` + `crypto.sign(root)` + TSA 颁发时间戳。
+`merkle_root` 写入 `audit.merkle_batch`（一行一个 batch，记该链的 tenant_id、service、event_count、首尾 event_id；一次封出的所有行一次 insert）+ `crypto.sign(root)`（用该链租户的签名 key，见 5.3）+ TSA 颁发时间戳。
 
 每 batch 同步给 ClickHouse 各 events 行的 `merkle_batch_id` + `merkle_leaf_idx`。
+
+**为什么不跨链**：完整性校验（`POST /events:verify-integrity`）只读一个租户、可选一个 service 的事件，签名 key 又按租户分。跨租户或跨 service 的 batch，租户手里只有部分叶子，重算不出签过名的 root，别的租户的 key 签的 root 也验不过。每条链一个 batch，租户只凭自己的事件和自己的 key 就能验证自己的 batch。
+
+**校验口径**：`limit` / `service` / `from_event_id` 切到一半的 batch，补齐该租户在其中的全部叶子后整批校验。租户无法整批持有的 batch（查不到 `merkle_batch` 行，或缺叶子，如改为每链一个 batch 之前封的跨租户 batch）计入 `signatures_unverifiable`：既不能证明被篡改，也不能证明完好，结果不为 valid（"Integrity not proven"），与 root 或签名不符的 `signatures_failed` 分开计数。
 
 ### 5.3 数字签名
 
