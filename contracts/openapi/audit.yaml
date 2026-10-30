@@ -148,7 +148,11 @@ paths:
       tags: [chain]
       summary: Verify the hash chain and Merkle batch signatures of the caller's tenant's events
       description: |
-        Oldest first from `from_event_id` (or the start), at most `limit` events.
+        Checks a window of at most `limit` events of the tenant's chains (one per
+        service), in the order the worker chained them. Send the response's
+        `next_cursor` as `cursor` to check the events after the window; a run of
+        calls checks every event once. Every Merkle batch the window touches is
+        checked whole. Send `cursor` or `from_event_id`, not both (422).
         `tenant_id` must be the authenticated tenant (403 otherwise).
       operationId: verifyChainRange
       requestBody:
@@ -161,7 +165,15 @@ paths:
               properties:
                 tenant_id: { type: string }
                 service: { type: string, nullable: true }
-                from_event_id: { type: string, nullable: true }
+                cursor:
+                  type: string
+                  nullable: true
+                  description: The `next_cursor` of the previous call. The window resumes right after it.
+                from_event_id:
+                  type: string
+                  nullable: true
+                  deprecated: true
+                  description: For old clients. The window starts at this event, in chain order; 404 if the tenant has no such event.
                 limit: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
       responses:
         '200':
@@ -183,11 +195,41 @@ paths:
                   first_break_event_id: { type: string, nullable: true }
                   signatures_verified: { type: integer }
                   signatures_failed: { type: integer }
+                  signatures_unverifiable:
+                    type: integer
+                    default: 0
+                    description: Merkle batches the tenant's events cannot verify, proven neither intact nor tampered.
                   tsa_present: { type: integer }
                   message: { type: string }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Send as `cursor` to check the events after this window; null once none are left.
+                  chains:
+                    type: array
+                    description: Each chain (one per service) with events in the window.
+                    items:
+                      type: object
+                      required: [service, start, first_event_id, last_event_id, events_checked]
+                      properties:
+                        service: { type: string }
+                        start:
+                          type: string
+                          enum: [genesis, previous_event, predecessor_not_retained]
+                          description: |
+                            What first_event_id follows. `previous_event`: the chain's
+                            last event before the window, checked against it. `genesis`:
+                            nothing; it is the chain's first event. `predecessor_not_retained`:
+                            an event no longer stored (the chain's earlier events expired or
+                            were removed), so it is checked against its own prev_hash.
+                        first_event_id: { type: string }
+                        last_event_id: { type: string }
+                        events_checked: { type: integer }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+        '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
 
   /export:
     post:
