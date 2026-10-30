@@ -198,7 +198,7 @@
         "http://127.0.0.1:5173"
       ],
       "attributes": {
-        "use.refresh.tokens": "false",
+        "use.refresh.tokens": "true",
         "post.logout.redirect.uris": "+"
       },
       "defaultClientScopes": [

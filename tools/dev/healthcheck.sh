@@ -31,23 +31,55 @@ warn_check() {
   fi
 }
 
+# ── probes that need more than a one-liner ──────────────────────────────────
+# PgBouncer admin console needs the admin password (config/pgbouncer/userlist.txt;
+# dev.yml's own healthcheck uses the same dev default).
+PGBOUNCER_ADMIN_PASSWORD="${PGBOUNCER_ADMIN_PASSWORD:-pgbouncer_admin_change_me}"
+pgbouncer_transaction_mode() {
+  docker exec -e PGPASSWORD="$PGBOUNCER_ADMIN_PASSWORD" foundation-pgbouncer \
+    psql -h 127.0.0.1 -p 6432 -U pgbouncer_admin -d pgbouncer -Atc 'SHOW CONFIG' \
+    | grep -q '^pool_mode|transaction|'
+}
+# Keycloak ≥ 25 serves /health/* on the management port 9000, which dev.yml does not
+# publish (host :9000 is ClickHouse) — ask from inside the container.
+keycloak_ready() {
+  docker exec foundation-keycloak bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 &&
+    printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+    cat <&3' | grep -q '"status": *"UP"'
+}
+# dev.yml runs OpenSearch with the security plugin disabled: plain HTTP, no auth.
+opensearch_cluster() {
+  curl -sf "http://localhost:${PORT_OPENSEARCH_HTTP:-9200}/_cluster/health" \
+    | grep -qE '"status":"(yellow|green)"'
+}
+# Signs every realm-file seed user in (password grant); prints no secrets.
+keycloak_seed_users_sign_in() {
+  KC_URL="http://localhost:${PORT_KEYCLOAK:-8080}" \
+  KC_REALM_FILE=deploy/docker-compose/init/keycloak/foundation-realm.json \
+    python3 deploy/docker-compose/init/keycloak-seed/seed-dev-users.py --check
+}
+
 echo "═══ saas-foundation local stack healthcheck ═══"
 echo ""
 echo "▸ Infra container readiness"
 
 check "Postgres ready"           "docker exec foundation-postgres pg_isready -U postgres"
-check "PgBouncer transaction"     "docker exec foundation-pgbouncer psql -h 127.0.0.1 -p 6432 -U pgbouncer_admin -d pgbouncer -c 'SHOW POOLS' 2>&1 | grep -q transaction"
+check "PgBouncer pool_mode=transaction" pgbouncer_transaction_mode
 check "Redis PONG"                "docker exec foundation-redis redis-cli -a ${REDIS_PASSWORD:-redis_change_me} ping | grep -q PONG"
-check "Keycloak /health/ready"    "curl -sf http://localhost:${PORT_KEYCLOAK:-8080}/health/ready | grep -q UP"
+check "Keycloak /health/ready"    keycloak_ready
 check "ClickHouse ping"           "curl -sf http://localhost:${PORT_CLICKHOUSE_HTTP:-8123}/ping | grep -q Ok"
-check "OpenSearch cluster"        "curl -sk -u admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-OpenSearch_Change_Me_123!} https://localhost:${PORT_OPENSEARCH_HTTP:-9200}/_cluster/health | grep -qE 'yellow|green'"
+check "OpenSearch cluster"        opensearch_cluster
 check "Vault initialized"         "docker exec foundation-vault vault status 2>&1 | grep -q 'Initialized\\s*true'"
-check "MinIO online"              "docker exec foundation-minio mc ready local 2>&1 | grep -q 'Online'"
+check "MinIO ready"               "docker exec foundation-minio mc ready local"
 check "OPA health"                "curl -sf http://localhost:8181/health"
-check "Unleash health"            "curl -sf http://localhost:${PORT_UNLEASH:-4242}/health | grep -q OK"
+check "Unleash health"            "curl -sf http://localhost:${PORT_UNLEASH:-4242}/health | grep -q '\"health\":\"GOOD\"'"
 check "OTel accepts OTLP"         "curl -sf -X POST http://localhost:${PORT_OTEL_HTTP:-4318}/v1/traces -H 'Content-Type: application/json' -d '{\"resourceSpans\":[]}'"
 check "Jaeger UI"                 "curl -sf http://localhost:${PORT_JAEGER_UI:-16686}/"
-check "Mailhog UI"                "curl -sf http://localhost:${PORT_MAILHOG_UI:-8025}/"
+if docker ps --format '{{.Names}}' | grep -qx foundation-mailhog; then
+  check "Mailhog UI"              "curl -sf http://localhost:${PORT_MAILHOG_UI:-8025}/"
+else
+  echo "  - Mailhog UI — skipped (optional; start with: docker compose --profile extras up -d mailhog)"
+fi
 
 echo ""
 echo "▸ Multi-tenancy baseline (docs/multi-tenancy.md)"
@@ -94,11 +126,8 @@ warn_check "Keycloak realm 'foundation' loaded" \
   "curl -sf http://localhost:${PORT_KEYCLOAK:-8080}/realms/foundation/.well-known/openid-configuration | grep -q issuer" \
   "wait for Keycloak start or check init/keycloak/foundation-realm.json"
 
-warn_check "Keycloak dev user alice can authenticate" \
-  "curl -sf -X POST http://localhost:${PORT_KEYCLOAK:-8080}/realms/foundation/protocol/openid-connect/token \
-    -d 'grant_type=password' -d 'client_id=foundation-frontend' \
-    -d 'username=alice@tenant-a.local' -d 'password=Tenant-A-Dev-Pwd-15chars!' | grep -q access_token" \
-  "realm import may not include alice; try 'make seed-kc'"
+warn_check "Keycloak seed users can sign in" keycloak_seed_users_sign_in \
+  "re-run the keycloak-init job: docker compose -f deploy/docker-compose/dev.yml --env-file deploy/docker-compose/.env up keycloak-init"
 
 warn_check "OPA policy compiled (package foundation.authz exists)" \
   "curl -sf http://localhost:8181/v1/policies | grep -q foundation.authz" \

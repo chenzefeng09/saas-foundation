@@ -3,7 +3,7 @@
 #
 # - Vault: 启用 transit secrets engine + 创建初始 KEK
 # - MinIO: 建 4 个 bucket（含 1 个 WORM）
-# - Keycloak: 等待 realm 导入完成 + 创建 2 个 Organization
+# - Keycloak: 等待 realm 导入完成 + 为每个 tenant.tenant 建 Organization（仅当 KC 开启了该特性）
 # - 幂等：重复跑无副作用
 #
 # 用法：
@@ -23,8 +23,7 @@ fail() { echo -e "  ${RED}✗${RESET} $*" >&2; exit 1; }
 VAULT_ADDR="http://localhost:${PORT_VAULT:-8200}"
 VAULT_TOKEN="${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}"
 KC_URL="http://localhost:${PORT_KEYCLOAK:-8080}"
-KC_ADMIN="${KEYCLOAK_ADMIN:-admin}"
-KC_PWD="${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}"
+KC_CONTAINER="${KC_CONTAINER:-foundation-keycloak}"
 
 # ─────────────────────────────────────────────────────────────
 # 0) 预检
@@ -49,7 +48,11 @@ else
 fi
 
 step "vault: seed KEKs for dev tenants"
-for tenant in tnt_01J5DEV0000000000000000A tnt_01J5DEV0000000000000000B; do
+# The two dev tenants seeded by deploy/docker-compose (keycloak realm, tenant and
+# audit-init jobs).  The KEKs services actually use are created through the
+# crypto API by the audit-init / crypto-fieldencrypt-init jobs; these raw
+# transit keys are the per-tenant keys tools/dev/healthcheck.sh looks for.
+for tenant in tnt_01J5DEVXX00000000000000001 tnt_01J5DEVXX00000000000000002; do
   for purpose in pii_phone pii_id_card pii_bank_account audit_hashchain jwt_signing; do
     key="${purpose}_${tenant}"
     if docker exec -e VAULT_TOKEN="$VAULT_TOKEN" foundation-vault \
@@ -93,8 +96,15 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────
-# 3) Keycloak: 等 realm 就绪 + 建 Organizations
+# 3) Keycloak: 等 realm 就绪 + Organizations（1:1 tenant.tenant，仅当 KC 支持）
 # ─────────────────────────────────────────────────────────────
+# Organizations 在 KC 26 才 GA（docs/design/identity-v1.md 以 26.x 为目标），dev 栈当前跑
+# KC ${KEYCLOAK_VERSION:-25.0}：25 里它是默认关闭的 preview feature，admin API 直接 404；
+# 开了 feature 还要 realm 级 organizationsEnabled=true，且 25 的 Organization 没有 alias
+# 字段（传了 400）。平台代码目前不依赖 KC Organization，所以 KC 不支持时跳过并说明原因，
+# 不为 dev 去开 preview feature。
+# admin 调用走容器内 kcadm.sh → http://localhost:8080：master realm 要求"外部"来源用 HTTPS，
+# 宿主机经端口映射来的请求可能被判为外部（403 "HTTPS required"）。密码只在容器内展开。
 step "keycloak: wait for foundation realm"
 for i in $(seq 1 30); do
   if curl -sf "$KC_URL/realms/foundation/.well-known/openid-configuration" >/dev/null 2>&1; then
@@ -105,34 +115,65 @@ for i in $(seq 1 30); do
   sleep 10
 done
 
-step "keycloak: get admin token"
-KC_TOKEN=$(curl -sf -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
-  -d "grant_type=password" -d "client_id=admin-cli" \
-  -d "username=$KC_ADMIN" -d "password=$KC_PWD" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-[ -n "$KC_TOKEN" ] || fail "failed to get admin token"
-ok "admin token acquired"
+KCADM_CONFIG=/tmp/kcadm-post-up-init.config
+# kcadm chatter goes to stderr; only show it when a call fails.
+kcadm() {
+  local err rc=0
+  err=$(mktemp)
+  docker exec "$KC_CONTAINER" /opt/keycloak/bin/kcadm.sh "$@" --config "$KCADM_CONFIG" 2>"$err" || rc=$?
+  if [ "$rc" -ne 0 ]; then echo "  kcadm $* failed:" >&2; cat "$err" >&2; fi
+  rm -f "$err"
+  return "$rc"
+}
 
-step "keycloak: create Organizations (1:1 with tenant.tenant)"
-for tenant in tnt_01J5DEV0000000000000000A tnt_01J5DEV0000000000000000B; do
-  # 检查是否存在
-  exists=$(curl -sf -H "Authorization: Bearer $KC_TOKEN" \
-    "$KC_URL/admin/realms/foundation/organizations?search=$tenant" \
-    | python3 -c "import sys,json; data=json.load(sys.stdin); print(len(data))" 2>/dev/null || echo 0)
-  if [ "$exists" -gt 0 ]; then
-    ok "organization $tenant already exists"
-    continue
+step "keycloak: admin login (kcadm in $KC_CONTAINER)"
+if ! login_out=$(docker exec "$KC_CONTAINER" sh -c '/opt/keycloak/bin/kcadm.sh config credentials \
+    --config "$1" --server http://localhost:8080 --realm master \
+    --user "$KEYCLOAK_ADMIN" --password "$KEYCLOAK_ADMIN_PASSWORD"' _ "$KCADM_CONFIG" 2>&1); then
+  fail "kcadm login failed: $login_out"
+fi
+ok "admin session ready"
+
+step "keycloak: Organizations (1:1 with tenant.tenant)"
+org_probe=$(kcadm get serverinfo | python3 -c '
+import json, sys
+info = json.load(sys.stdin)
+on = any(f.get("name") == "ORGANIZATION" and f.get("enabled") for f in info.get("features", []))
+print(info["systemInfo"]["version"], "on" if on else "off")')
+kc_version=${org_probe% *}
+if [ "${org_probe#* }" != "on" ]; then
+  ok "skipped: Keycloak $kc_version has the Organizations feature off (preview in KC 25, GA in 26); nothing in the platform uses KC Organizations yet"
+else
+  realm_flag=$(kcadm get realms/foundation --fields organizationsEnabled \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin).get("organizationsEnabled") is True)')
+  if [ "$realm_flag" != "True" ]; then
+    kcadm update realms/foundation -s organizationsEnabled=true
+    ok "realm 'foundation': organizationsEnabled=true"
   fi
-  resp=$(curl -sf -w '%{http_code}' -o /tmp/kc-org-create.json \
-    -X POST "$KC_URL/admin/realms/foundation/organizations" \
-    -H "Authorization: Bearer $KC_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"name\":\"$tenant\",\"alias\":\"$tenant\",\"domains\":[{\"name\":\"${tenant//tnt_/}.local\",\"verified\":true}]}" || true)
-  if [ "$resp" = "201" ]; then
+  existing=$(kcadm get organizations -r foundation -q first=0 -q max=1000 \
+    | python3 -c 'import json, sys; print("\n".join(o["name"] for o in json.load(sys.stdin)))')
+  tenants=$(docker exec foundation-postgres psql -U postgres -d foundation -Atc \
+    "SELECT id, tier FROM tenant.tenant ORDER BY id")
+  [ -n "$tenants" ] || fail "no rows in tenant.tenant"
+  while IFS='|' read -r tenant tier; do
+    if grep -qxF "$tenant" <<<"$existing"; then
+      ok "organization $tenant already exists"
+      continue
+    fi
+    lower=$(tr '[:upper:]' '[:lower:]' <<<"$tenant")
+    domain="[{\"name\":\"${lower#tnt_}.local\"}]"
+    if [ "${kc_version%%.*}" -ge 26 ]; then
+      kcadm create organizations -r foundation -s "name=$tenant" -s "alias=$lower" \
+        -s "domains=$domain" -s "attributes={\"tier\":[\"$tier\"]}" >/dev/null
+    else
+      # KC 25 preview: no alias field, and attributes on create fail
+      # ("Can not update organization group").
+      kcadm create organizations -r foundation -s "name=$tenant" -s "domains=$domain" >/dev/null
+    fi
     ok "organization $tenant created"
-  else
-    echo -e "  ${YELLOW}!${RESET} organization $tenant create returned $resp (may need KC 26.4+ Organizations feature flag)"
-  fi
-done
+  done <<<"$tenants"
+fi
+docker exec "$KC_CONTAINER" rm -f "$KCADM_CONFIG"
 
 # ─────────────────────────────────────────────────────────────
 # 4) OPA: smoke test

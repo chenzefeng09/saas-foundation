@@ -265,9 +265,14 @@ services:
   #   foundation-kb-derived  (普通)
   # 兼容期保留：foundation-audit-worm（audit 服务双写期需要老 bucket 存在；
   # Phase 2 切换到抽象层后，由迁移脚本统一搬迁，再下线本 bucket）。
+  #
+  # 镜像：Docker Hub 上的 minio/mc 已拉取不到（含 :latest 与 helm 默认的
+  # RELEASE.2025-09-07T16-15-50Z）。MinIO server 镜像自带
+  # /usr/bin/mc（该 release 内置 mc RELEASE.2025-08-13T08-35-41Z）与 /bin/sh，
+  # 所以 init job 直接复用 server 同一个镜像/tag：server 能起，init 就能跑，不多拉镜像。
   # ---------------------------------------------------------------------------
   minio-init:
-    image: minio/mc:latest
+    image: minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
     container_name: foundation-minio-init
     restart: "no"
     depends_on:
@@ -469,7 +474,7 @@ services:
       IDENTITY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       IDENTITY_KEYCLOAK_BASE_URL: http://keycloak:8080
       IDENTITY_KEYCLOAK_REALM: foundation
-      IDENTITY_KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      IDENTITY_KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN:-admin}
       IDENTITY_KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
       # Tokens issued via the internal Docker hostname carry iss=keycloak:8080
       IDENTITY_JWT_ISSUER: http://keycloak:8080/realms/foundation
@@ -480,7 +485,10 @@ services:
       IDENTITY_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-dev-root-token-change-me}
       IDENTITY_OTEL_ENABLED: "true"
       IDENTITY_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4317
-      IDENTITY_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
+      # Settings.redis_dsn (refresh-token replay guard).  An unknown IDENTITY_*
+      # name is silently ignored and identity falls back to localhost:6379, where
+      # every session refresh then fails with REDIS_UNAVAILABLE.
+      IDENTITY_REDIS_DSN: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
     ports:
       - "${PORT_IDENTITY:-8001}:8001"
     networks:
@@ -1042,9 +1050,14 @@ services:
     networks: [foundation]
 
   # ===========================================================================
-  # authz-init — 为 dev 租户建系统角色 + 绑定 admin super_admin（一次性 job）
+  # authz-init — 为 dev 租户建系统角色 + 按 seed 角色绑定全部 seed 用户（一次性 job）
   # 依赖 migration-runner 完成（authz schema 已建好）+ postgres healthy。
-  # 幂等：角色/绑定已存在时静默跳过（ON CONFLICT 逻辑在脚本里）。
+  # 每次 `up` 都会重跑，幂等：
+  #   - 已有 ACTIVE 绑定 → 不动（不重复、不修改）；
+  #   - 绑定被管理员撤销 / 已过期 → 也不动：重跑 seed 不会把撤销的授权悄悄还回去。
+  #     确需恢复：在 RBAC 管理页重新授予，或手动带 --restore-revoked 跑一次脚本；
+  #   - 从未绑定过 → 新建。
+  # 详见 packages/authz/scripts/bootstrap_tenant_roles.py 与 README「Seed 用户」一节。
   # ===========================================================================
   authz-init:
     image: python:3.12-slim-bookworm
@@ -1065,25 +1078,28 @@ services:
         export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
         export PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
         pip install --quiet sqlalchemy[asyncio] asyncpg ulid-py
-        echo "=== authz-init: installing tenant roles ==="
+        echo "=== authz-init: installing tenant roles + seed-user bindings ==="
         run_bootstrap() {
           TENANT_ID="$$1"
-          ADMIN_USER_ID="$$2"
-          SVC_USER_ID="$$3"
+          shift
           echo "--- tenant $${TENANT_ID} ---"
           python /mnt/authz/scripts/bootstrap_tenant_roles.py \
-            --tenant-id "$${TENANT_ID}" \
-            $${ADMIN_USER_ID:+--admin-user-id "$${ADMIN_USER_ID}"} \
-            $${SVC_USER_ID:+--service-account-id "$${SVC_USER_ID}"} \
-            --db-url "$${AUTHZ_DB_DSN_ADMIN}"
+            --tenant-id "$${TENANT_ID}" --db-url "$${AUTHZ_DB_DSN_ADMIN}" "$$@"
         }
-        # Dev Tenant A: admin@foundation.local 绑 super_admin;
-        # cron-runner 服务账号(agent-platform 定时任务)绑 member —— id 必须
+        # seed 用户 → 角色 必须与 identity-init 里 identity."user".roles 一致
+        # （Keycloak realm 的 4 个 dev 用户）。
+        # Dev Tenant A: admin@foundation.local → super_admin；alice / bob → member；
+        # cron-runner 服务账号(agent-platform 定时任务)→ member —— id 必须
         # 匹配下游守卫的 usr_[0-9A-Z]{26} 格式,详见 agent-platform
         # contracts/worker-wire-contract.md §6。
-        run_bootstrap tnt_01J5DEVXX00000000000000001 usr_01KT7TZ70AM2RK8P0C01KMBPRR usr_01SVCCRON00000000000000000
-        # Dev Tenant B: 只建角色，无需 admin 绑定
-        run_bootstrap tnt_01J5DEVXX00000000000000002 ""
+        run_bootstrap tnt_01J5DEVXX00000000000000001 \
+          --admin-user-id usr_01KT7TZ70AM2RK8P0C01KMBPRR \
+          --bind-user usr_01KT7TZ70AM2RK8P0C0ALICE01=member \
+          --bind-user usr_01KT7TZ70AM2RK8P0C0BOB0001=member \
+          --service-account-id usr_01SVCCRON00000000000000000
+        # Dev Tenant B: carol@tenant-b.local → member
+        run_bootstrap tnt_01J5DEVXX00000000000000002 \
+          --bind-user usr_01KT7TZ70AM2RK8P0C0CAROL01=member
         echo "=== authz-init: all done ==="
     volumes:
       - ../../packages/authz:/mnt/authz:ro
@@ -1110,7 +1126,7 @@ services:
       - |
         set -e
         echo "=== billing-init: seeding PRO plan + dev tenant subscriptions ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 1) PRO 订阅计划（固定 ID，幂等）
         INSERT INTO billing.subscription_plan (id, name, tier, quotas, price_monthly_usd, active)
         VALUES (
@@ -1185,6 +1201,36 @@ services:
     networks: [foundation]
 
   # ===========================================================================
+  # keycloak-init — 让 realm 文件里的 seed 用户每次 `up` 后都能登录（一次性 job）
+  # Keycloak 只在首次启动时导入 foundation-realm.json；realm 的密码策略（与生产
+  # 一致，不改）含 forceExpiredPasswordChange(90)，导入 90 天后 seed 用户的密码
+  # 全部"过期"，password grant 报 "Account is not fully set up"。
+  # 本 job 只处理 realm 文件里带密码的 seed 用户：按 realm 文件重设密码（非临时，
+  # 90 天窗口重新计时）、把 required actions 还原为 realm 文件的值（无）、清除
+  # brute-force 锁定。不碰其它用户，不改密码策略；开发者给 seed 用户改的密码会在
+  # 下次 `up` 被还原。另外把 realm 文件里各 client 的 attributes（只写文件里声明的
+  # 键）同步到已存在的 realm，让之后改的 client 设置（如 use.refresh.tokens）也能
+  # 生效。幂等，不打印任何密码。详见 init/keycloak-seed/seed-dev-users.py。
+  # ===========================================================================
+  keycloak-init:
+    image: python:3.12-slim-bookworm
+    container_name: foundation-keycloak-init
+    restart: "no"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      KC_URL: http://keycloak:8080
+      KC_REALM_FILE: /seed/foundation-realm.json
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-keycloak_admin_change_me}
+    command: ["python", "/seed/seed-dev-users.py"]
+    volumes:
+      - ./init/keycloak/foundation-realm.json:/seed/foundation-realm.json:ro
+      - ./init/keycloak-seed/seed-dev-users.py:/seed/seed-dev-users.py:ro
+    networks: [foundation]
+
+  # ===========================================================================
   # identity-init — 为 dev 用户在 identity.user 表中建立初始行（一次性 job）
   # 依赖 migration-runner 完成（identity schema 已建好）+ postgres healthy。
   # 幂等：ON CONFLICT (id) DO NOTHING，重复跑无副作用（INSERT 0 0）。
@@ -1206,7 +1252,7 @@ services:
       - |
         set -e
         echo "=== identity-init: seeding 4 dev users into identity.user ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 4 dev users (mapped from Keycloak realm seed)
         -- 连接为 postgres 超级用户，FORCE RLS 对超级用户不生效，无需 SET app.actor
         INSERT INTO identity."user"
@@ -1214,7 +1260,7 @@ services:
            clearance, mfa_enabled, failed_login_count)
         VALUES
           -- admin@foundation.local → Tenant A → super_admin
-          -- id 必须与 authz-init 里 --admin-user-id 完全一致
+          -- id / roles 必须与 authz-init 的 --admin-user-id / --bind-user 完全一致
           ('usr_01KT7TZ70AM2RK8P0C01KMBPRR',
            'tnt_01J5DEVXX00000000000000001',
            'admin@foundation.local',
@@ -1651,7 +1697,7 @@ services:
       - |
         set -e
         echo "=== notification-init: seeding 2 templates for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         INSERT INTO notification.notification_template
           (id, tenant_id, event_type, locale, subject_template, body_template, enabled)
         VALUES
@@ -1692,7 +1738,7 @@ services:
       - |
         set -e
         echo "=== pam-init: seeding elevations + active session for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 1) PENDING elevation request
         INSERT INTO pam.pam_elevation_request
           (id, tenant_id, user_id, reason, target_permissions, duration_minutes,
@@ -1762,6 +1808,8 @@ services:
   # ===========================================================================
   # compliance-init — 为 dev 租户 A 塞 1 ROPA + 1 report（一次性 job）
   # 用 postgres 超管连接绕过 RLS；ON CONFLICT DO NOTHING 幂等。
+  # 所有 psql 种子都带 ON_ERROR_STOP=1：任一语句失败即 job 失败，不再静默
+  # 打出 "all done"（此前 ROPA 因 legal_basis 不合约束被悄悄跳过）。
   # ===========================================================================
   compliance-init:
     image: pgvector/pgvector:${POSTGRES_VERSION:-pg16}
@@ -1779,18 +1827,18 @@ services:
       - |
         set -e
         echo "=== compliance-init: seeding 1 ropa + 1 report for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
-        -- 1) ROPA 记录
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
+        -- 1) ROPA 记录（legal_basis 须为 ropa_record_legal_basis_check 允许的取值）
         INSERT INTO compliance.ropa_record
           (id, tenant_id, service, data_category, purpose, legal_basis,
            data_subjects, recipients, retention_days, cross_border, destination_countries)
         VALUES
           ('rpa_01DEVTNA0000000000000001',
            'tnt_01J5DEVXX00000000000000001',
-           'identity', '账户身份信息',
-           '用户身份认证与账户管理', '合同履行',
-           ARRAY['注册用户'],
-           ARRAY['内部运营团队'],
+           'identity', 'Account identity data',
+           'User authentication and account management', 'CONTRACT',
+           ARRAY['Registered users'],
+           ARRAY['Internal operations team'],
            365, false, NULL)
         ON CONFLICT (id) DO NOTHING;
 
@@ -1800,9 +1848,9 @@ services:
         VALUES
           ('crp_01DEVTNA0000000000000001',
            'tnt_01J5DEVXX00000000000000001',
-           'PIPL_ANNUAL',
-           ARRAY['pipl'],
-           '{"summary":"2025 年度个人信息保护合规自评","findings":3,"resolved":3,"score":92}'::jsonb,
+           'annual',
+           ARRAY['gdpr'],
+           '{"summary":"2025 annual GDPR compliance self-assessment","findings":3,"resolved":3,"score":92}'::jsonb,
            'usr_01KT7TZ70AM2RK8P0C01KMBPRR')
         ON CONFLICT (id) DO NOTHING;
         SQL
@@ -1829,7 +1877,7 @@ services:
       - |
         set -e
         echo "=== dlp-init: seeding 1 classification for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         INSERT INTO dlp.classification
           (id, tenant_id, resource_type, resource_id, sensitivity, tags, reason,
            auto_upgraded, tagged_by, downgradable)
@@ -1991,7 +2039,7 @@ services:
       - |
         set -e
         echo "=== security-ops-init: seeding platform security data ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 1) scan_run（最近一次 SCA 扫描，PASSED）
         INSERT INTO security_ops.scan_run
           (id, type, tool, target, commit_sha, pipeline_id, started_at, finished_at, status, findings_count)
@@ -2074,7 +2122,7 @@ services:
       - |
         set -e
         echo "=== lifecycle-init: seeding recycle bin + legal hold for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 0) resource_type（recycle_bin / override 的 FK 目标）
         INSERT INTO lifecycle.resource_type
           (id, service, kind, display_name, description,
@@ -2139,7 +2187,7 @@ services:
       - |
         set -e
         echo "=== data-protection-init: seeding destruction request + cross-border for dev tenant A ==="
-        psql -h postgres -U postgres -d foundation <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h postgres -U postgres -d foundation <<'SQL'
         -- 1) destruction_request（PENDING_APPROVAL，待四眼审批）
         INSERT INTO data_protection.data_destruction_request
           (id, tenant_id, resource_type, resource_ids, destruction_method,
