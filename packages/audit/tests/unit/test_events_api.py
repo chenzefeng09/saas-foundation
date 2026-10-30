@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from foundation_audit.adapters.clickhouse import EVENTS_COLUMNS
 from foundation_audit.api.v1.events import _row_to_stored
 from foundation_audit.domain.base import FoundationContext
+from foundation_audit.services.pagination import decode_cursor
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,7 @@ class TestQueryEventsCrossTenant:
         q = AuditQuery(tenant_id=ctx.tenant_id, limit=2)
 
         now = datetime(2026, 1, 1, 12, 0, tzinfo=None)
+        # limit + 1 rows: the lookahead row says a next page exists
         fake_rows = [
             {
                 "event_id": f"evt_01J0000000000000000000000{i}",
@@ -238,15 +241,21 @@ class TestQueryEventsCrossTenant:
                 "worm_written": False,
                 "worm_uri": None,
             }
-            for i in range(2)
+            for i in range(3)
         ]
 
         async def _run() -> None:
-            with patch("foundation_audit.api.v1.events.ch.query_events", new_callable=AsyncMock, return_value=fake_rows):
+            ch_query = AsyncMock(return_value=fake_rows)
+            with patch("foundation_audit.api.v1.events.ch.query_events", ch_query):
                 result = await query_events(query=q, ctx=ctx)
-            assert len(result.items) == 2
-            # limit == len(items) → next_cursor is set
-            assert result.next_cursor == result.items[-1].event_id
+            assert [e.event_id for e in result.items] == [r["event_id"] for r in fake_rows[:2]]
+            # The cursor resumes after the last event returned, not the lookahead row.
+            assert result.next_cursor is not None
+            assert decode_cursor(result.next_cursor) == (
+                now.replace(tzinfo=UTC), fake_rows[1]["event_id"],
+            )
+            assert ch_query.call_args.kwargs["after"] is None
+            assert ch_query.call_args.kwargs["limit"] == 3
 
         asyncio.run(_run())
 
@@ -406,10 +415,10 @@ class TestExportEventsPagination:
             # header + page1 + page2 rows
             lines = resp.body.decode("utf-8").strip().splitlines()
             assert len(lines) == 1 + EXPORT_PAGE_SIZE + 1
-            # Second call used the cursor = last event_id of page1
+            # Second call resumed after the sort key of the last event of page1
             assert mock.call_count == 2
             second_kwargs = mock.call_args_list[1].kwargs
-            assert second_kwargs["cursor"] == page1[-1]["event_id"]
+            assert second_kwargs["after"] == (page1[-1]["occurred_at"], page1[-1]["event_id"])
 
         asyncio.run(_run())
 
@@ -429,6 +438,155 @@ class TestExportEventsPagination:
             assert exc_info.value.status_code == 503
 
         asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Paging through the real adapter against a ClickHouse stand-in
+# ---------------------------------------------------------------------------
+
+_TENANT = "tnt_01J0000000000000000000TNT1"
+_T = datetime(2026, 10, 30, 12, 0)  # naive UTC: how ClickHouse hands back DateTime64(3, 'UTC')
+_MS = timedelta(milliseconds=1)
+
+
+def _evt(n: int) -> str:
+    return f"evt_01JC{n:022d}"
+
+
+def _stored_row(event_id: str, occurred_at: datetime, tenant_id: str) -> dict[str, Any]:
+    row: dict[str, Any] = dict.fromkeys(EVENTS_COLUMNS)
+    row.update(
+        event_id=event_id, schema_version=1, occurred_at=occurred_at, ingested_at=occurred_at,
+        tenant_id=tenant_id, service="identity", event_type="user.login", severity="INFO",
+        outcome="SUCCESS", actor_kind="USER", payload="{}", compliance_modes=[],
+        prev_hash="0" * 64, curr_hash="a" * 64, worm_written=False,
+    )
+    return row
+
+
+def _events(tenant_id: str) -> list[dict[str, Any]]:
+    # Emitted by different services: each mints its own ids, which need not sort
+    # like occurred_at, and three of the events share one millisecond.
+    return [
+        _stored_row(_evt(5), _T + 100 * _MS, tenant_id),
+        _stored_row(_evt(1), _T + 250 * _MS, tenant_id),
+        _stored_row(_evt(4), _T + 250 * _MS, tenant_id),
+        _stored_row(_evt(2), _T + 250 * _MS, tenant_id),
+        _stored_row(_evt(3), _T + 900 * _MS, tenant_id),
+    ]
+
+
+_IN_ORDER = [_evt(5), _evt(1), _evt(2), _evt(4), _evt(3)]  # (occurred_at, event_id)
+
+
+class _ClickHouseStandIn:
+    """Answers query_events' SELECT as ClickHouse would for its bound parameters.
+
+    It does not read the SQL (TestQueryEventsKeyset pins that): it applies the
+    keyset the parameters describe to the rows in the table's sort order.
+    """
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.parameters: list[dict[str, Any]] = []
+
+    def query(self, _sql: str, parameters: dict[str, Any]) -> MagicMock:
+        self.parameters.append(dict(parameters))
+        ordered = sorted(self.rows, key=lambda r: (r["occurred_at"], r["event_id"]))
+        if "after_ts" in parameters:  # ClickHouse reads the text as DateTime64(3, 'UTC')
+            after = (datetime.fromisoformat(parameters["after_ts"]), parameters["after_id"])
+            ordered = [r for r in ordered if (r["occurred_at"], r["event_id"]) > after]
+        result = MagicMock()
+        result.result_rows = [
+            tuple(r[c] for c in EVENTS_COLUMNS) for r in ordered[: parameters["limit"]]
+        ]
+        return result
+
+
+def _serving(clickhouse: _ClickHouseStandIn) -> Any:
+    return patch(
+        "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+        new=AsyncMock(return_value=clickhouse),
+    )
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestQueryEventsPaging:
+    @pytest.mark.asyncio
+    async def test_pages_through_every_event_once(self) -> None:
+        from foundation_audit.api.v1.events import query_events
+        from foundation_audit.schemas.event import AuditQuery
+
+        ctx = _make_context(tenant_id=_TENANT)
+        clickhouse = _ClickHouseStandIn(_events(_TENANT))
+
+        pages: list[list[str]] = []
+        cursor = None
+        with _serving(clickhouse):
+            for _ in clickhouse.rows:  # a cursor that never runs out fails below, not loops
+                q = AuditQuery(tenant_id=_TENANT, limit=2, cursor=cursor)
+                result = await query_events(query=q, ctx=ctx)
+                pages.append([e.event_id for e in result.items])
+                cursor = result.next_cursor
+                if cursor is None:
+                    break
+
+        assert cursor is None
+        assert pages == [_IN_ORDER[0:2], _IN_ORDER[2:4], _IN_ORDER[4:]]
+        first, *later = clickhouse.parameters
+        assert "after_ts" not in first
+        for page, params in zip(pages[:-1], later, strict=True):
+            last = next(r for r in clickhouse.rows if r["event_id"] == page[-1])
+            # each page resumes right after the last event shown, to the millisecond
+            assert params["after_ts"] == f"{last['occurred_at']:%Y-%m-%d %H:%M:%S.%f}"[:-3]
+            assert params["after_id"] == last["event_id"]
+        assert [params["limit"] for params in clickhouse.parameters] == [3, 3, 3]
+
+    @pytest.mark.asyncio
+    async def test_a_full_last_page_has_no_next_cursor(self) -> None:
+        from foundation_audit.api.v1.events import query_events
+        from foundation_audit.schemas.event import AuditQuery
+
+        with _serving(_ClickHouseStandIn(_events(_TENANT))):
+            result = await query_events(
+                query=AuditQuery(tenant_id=_TENANT, limit=5), ctx=_make_context(tenant_id=_TENANT),
+            )
+
+        assert [e.event_id for e in result.items] == _IN_ORDER
+        assert result.next_cursor is None  # the lookahead row decides, not len(items) == limit
+
+    @pytest.mark.asyncio
+    async def test_export_pages_through_every_event_once(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from foundation_audit.api.v1 import events as events_api
+        from foundation_audit.schemas.event import AuditQuery
+
+        monkeypatch.setattr(events_api, "EXPORT_PAGE_SIZE", 2)
+
+        with _serving(_ClickHouseStandIn(_events(_TENANT))):
+            resp = await events_api.export_events(
+                query=AuditQuery(tenant_id=_TENANT), fmt="json",
+                ctx=_make_context(tenant_id=_TENANT),
+            )
+
+        assert [item["event_id"] for item in json.loads(resp.body)] == _IN_ORDER
+
+    def test_a_cursor_the_query_did_not_issue_is_422_before_clickhouse(self) -> None:
+        from foundation_audit.main import create_app
+
+        ch_query = AsyncMock(return_value=[])
+        with patch("foundation_audit.api.v1.events.ch.query_events", ch_query):
+            response = TestClient(create_app(), raise_server_exceptions=False).post(
+                "/api/audit/v1/events:query",
+                json={"tenant_id": _TENANT, "cursor": _evt(1)},  # a bare id: the old cursor
+                headers={"X-Tenant-Id": _TENANT},
+            )
+
+        assert response.status_code == 422
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert response.json()["code"] == "FOUNDATION.AUDIT.INPUT.VALIDATION_FAILED"
+        ch_query.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

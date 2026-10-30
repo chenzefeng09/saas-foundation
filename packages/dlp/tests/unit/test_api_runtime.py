@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from foundation_dlp.api.dependencies import clearance_provider, db_session, dlp_service
 from foundation_dlp.domain.models import Classification, DLPRule
 from foundation_dlp.main import create_app
 from foundation_dlp.services.clearance_provider import ClearanceProviderError
+from foundation_dlp.services.dlp_service import DLPService
+from foundation_dlp.services.pagination import parse_event_id
+from tests._factories import make_dlp_event, newest_first_answer
+from tests.conftest import FakeAsyncSession
 
 TENANT_ID = "tnt_01J0000000000000000000TNT1"
 USER_ID = "usr_01J0000000000000000000USR1"
@@ -424,10 +429,11 @@ def test_classification_rejects_invalid_sensitivity() -> None:
 class _GovDLPService:
     """Records call kwargs and returns fixed governance payloads."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, next_cursor: str | None = None) -> None:
         self.calls: dict[str, dict[str, Any]] = {}
+        self.next_cursor = next_cursor
 
-    async def list_events(self, _session: Any, **kwargs: Any) -> list[Any]:
+    async def list_events(self, _session: Any, **kwargs: Any) -> tuple[list[Any], str | None]:
         self.calls["list_events"] = kwargs
         from foundation_dlp.domain.models import DLPEvent
 
@@ -445,9 +451,11 @@ class _GovDLPService:
                 occurred_at=datetime(2026, 6, 1, tzinfo=UTC),
                 request_id="req_x",
             ),
-        ]
+        ], self.next_cursor
 
-    async def list_classifications(self, _session: Any, **kwargs: Any) -> list[Any]:
+    async def list_classifications(
+        self, _session: Any, **kwargs: Any
+    ) -> tuple[list[Any], str | None]:
         self.calls["list_classifications"] = kwargs
         return [
             Classification(
@@ -463,7 +471,7 @@ class _GovDLPService:
                 updated_at=datetime(2026, 6, 2, tzinfo=UTC),
                 downgradable=False,
             ),
-        ]
+        ], self.next_cursor
 
     async def stats(self, _session: Any, **kwargs: Any) -> dict[str, Any]:
         self.calls["stats"] = kwargs
@@ -475,9 +483,9 @@ class _GovDLPService:
         }
 
 
-def _gov_client() -> tuple[TestClient, _GovDLPService]:
+def _gov_client(*, next_cursor: str | None = None) -> tuple[TestClient, _GovDLPService]:
     app = create_app()
-    svc = _GovDLPService()
+    svc = _GovDLPService(next_cursor=next_cursor)
 
     async def fake_db_session() -> AsyncIterator[_FakeSession]:
         yield _FakeSession()
@@ -485,6 +493,12 @@ def _gov_client() -> tuple[TestClient, _GovDLPService]:
     app.dependency_overrides[db_session] = fake_db_session
     app.dependency_overrides[dlp_service] = lambda: svc
     return TestClient(app, raise_server_exceptions=False), svc
+
+
+_GOV_LISTS = [
+    ("/api/dlp/v1/core/events", "list_events"),
+    ("/api/dlp/v1/core/classifications", "list_classifications"),
+]
 
 
 def test_events_endpoint_lists_and_passes_filters() -> None:
@@ -499,9 +513,111 @@ def test_events_endpoint_lists_and_passes_filters() -> None:
     body = response.json()
     assert body["items"][0]["check_type"] == "SCAN"
     assert body["items"][0]["id"] == 2
-    assert body["next_before"] is None  # fewer rows than limit
+    assert body["next_cursor"] is None  # the last page
+    assert body["next_before"] is None
     assert svc.calls["list_events"]["tenant_id"] == TENANT_ID
     assert svc.calls["list_events"]["check_type"] == "SCAN"
+    assert svc.calls["list_events"]["cursor"] is None
+
+
+@pytest.mark.parametrize(("path", "method"), _GOV_LISTS)
+def test_list_hands_out_its_cursor_as_next_before_too(path: str, method: str) -> None:
+    client, svc = _gov_client(next_cursor="TOKEN")
+
+    body = client.get(path, headers=_headers()).json()
+
+    assert method in svc.calls
+
+    # next_before is the deprecated twin of next_cursor: clients that page by
+    # echoing it back as `before` get the same exact keyset.
+    assert body["next_cursor"] == "TOKEN"
+    assert body["next_before"] == "TOKEN"
+
+
+@pytest.mark.parametrize(("path", "method"), _GOV_LISTS)
+@pytest.mark.parametrize("param", ["cursor", "before"])
+def test_list_takes_its_cursor_as_cursor_or_as_before(path: str, method: str, param: str) -> None:
+    client, svc = _gov_client()
+
+    response = client.get(path, params={param: "TOKEN"}, headers=_headers())
+
+    assert response.status_code == 200
+    assert svc.calls[method]["cursor"] == "TOKEN"
+
+
+@pytest.mark.parametrize(("path", "method"), _GOV_LISTS)
+def test_list_rejects_cursor_and_before_that_disagree(path: str, method: str) -> None:
+    client, svc = _gov_client()
+
+    response = client.get(path, params={"cursor": "A", "before": "B"}, headers=_headers())
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "FOUNDATION.DLP.INPUT.VALIDATION_FAILED"
+    assert method not in svc.calls
+
+
+def _real_service_client() -> tuple[TestClient, FakeAsyncSession]:
+    app = create_app()
+    session = FakeAsyncSession()
+
+    async def fake_db_session() -> AsyncIterator[FakeAsyncSession]:
+        yield session
+
+    app.dependency_overrides[db_session] = fake_db_session
+    app.dependency_overrides[dlp_service] = lambda: DLPService()
+    return TestClient(app, raise_server_exceptions=False), session
+
+
+@pytest.mark.parametrize(("path", "method"), _GOV_LISTS)
+@pytest.mark.parametrize("param", ["cursor", "before"])
+def test_list_with_a_cursor_it_did_not_issue_is_422_before_any_query(
+    path: str, method: str, param: str
+) -> None:
+    client, session = _real_service_client()
+
+    response = client.get(
+        path,
+        params={param: "2026-06-01T00:00:00+00:00"},  # a bare timestamp: the old next_before
+        headers=_headers(),
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "FOUNDATION.DLP.INPUT.VALIDATION_FAILED"
+    assert session.statements == []
+
+
+def test_paging_by_echoing_next_before_visits_every_event_once() -> None:
+    # What the admin console does: page 1 without a cursor, then send each
+    # next_before back as `before` until it is null.
+    t0 = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+    tick = timedelta(microseconds=1)
+    events = [
+        make_dlp_event(event_id=5, occurred_at=t0, tenant_id=TENANT_ID),
+        make_dlp_event(event_id=1, occurred_at=t0 + tick, tenant_id=TENANT_ID),
+        make_dlp_event(event_id=4, occurred_at=t0 + tick, tenant_id=TENANT_ID),
+        make_dlp_event(event_id=2, occurred_at=t0 + tick, tenant_id=TENANT_ID),
+        make_dlp_event(event_id=3, occurred_at=t0 + 2 * tick, tenant_id=TENANT_ID),
+    ]
+    client, session = _real_service_client()
+
+    pages: list[list[int]] = []
+    before = None
+    for _ in events:  # a cursor that never runs out fails below instead of looping
+        session.queue_scalars(newest_first_answer(
+            events, before, 2, ts=lambda e: e.occurred_at, parse_id=parse_event_id,
+        ))
+        params: dict[str, Any] = {"limit": 2} | ({"before": before} if before else {})
+        response = client.get("/api/dlp/v1/core/events", params=params, headers=_headers())
+        assert response.status_code == 200
+        body = response.json()
+        pages.append([item["id"] for item in body["items"]])
+        before = body["next_before"]
+        if before is None:
+            break
+
+    assert before is None
+    assert pages == [[3, 4], [2, 1], [5]]
 
 
 def test_events_endpoint_rejects_oversized_limit() -> None:

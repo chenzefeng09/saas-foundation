@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
-import pytest
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import pytest
+from sqlalchemy.dialects import postgresql
+
+from foundation_dlp.domain.models import Classification, DLPEvent
 from foundation_dlp.errors import (
     SENSITIVITY_IMMUTABLE_DOWNGRADE,
     VALIDATION_FAILED,
     FoundationError,
 )
 from foundation_dlp.services.dlp_service import DLPService
-from tests._factories import make_classification, make_dlp_rule
+from foundation_dlp.services.pagination import (
+    encode_cursor,
+    parse_classification_id,
+    parse_event_id,
+)
+from tests._factories import (
+    make_classification,
+    make_dlp_event,
+    make_dlp_rule,
+    newest_first_answer,
+)
 
 
 @pytest.fixture
@@ -591,18 +606,157 @@ class TestScanPersistence:
         assert not [obj for obj in fake_session.added if isinstance(obj, DLPEvent)]
 
 
+_T0 = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+_TICK = timedelta(microseconds=1)
+_EVENTS_ORDER_BY = "ORDER BY dlp.dlp_event.occurred_at DESC, dlp.dlp_event.id DESC"
+_EVENTS_AFTER = "(dlp.dlp_event.occurred_at, dlp.dlp_event.id) < "
+_LABELS_ORDER_BY = "ORDER BY dlp.classification.updated_at DESC, dlp.classification.id DESC"
+_LABELS_AFTER = "(dlp.classification.updated_at, dlp.classification.id) < "
+
+
+def _sql(stmt: Any) -> str:
+    """Render a recorded SELECT as Postgres SQL, values inlined."""
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    return " ".join(str(compiled).split())
+
+
 class TestGovernanceReads:
     """Service-layer queries backing the /core governance endpoints."""
 
-    async def test_list_events_filters_and_orders(
+    async def test_list_events_pages_through_every_event_once(
         self, svc: DLPService, fake_session, tenant_id: str
     ) -> None:
-        from foundation_dlp.domain.models import DLPEvent
+        # Events written in one transaction share its now(), and the sequence numbers
+        # concurrent transactions out of time order: paging must neither skip nor repeat.
+        events = [
+            make_dlp_event(event_id=5, occurred_at=_T0),
+            make_dlp_event(event_id=1, occurred_at=_T0 + _TICK),
+            make_dlp_event(event_id=4, occurred_at=_T0 + _TICK),
+            make_dlp_event(event_id=2, occurred_at=_T0 + _TICK),
+            make_dlp_event(event_id=3, occurred_at=_T0 + 2 * _TICK),
+        ]
 
-        rows = [DLPEvent(id=3, tenant_id=tenant_id, check_type="SCAN", decision="QUARANTINE")]
-        fake_session.queue_scalars(rows)
-        out = await svc.list_events(fake_session, tenant_id=tenant_id, check_type="SCAN", limit=10)
-        assert [e.id for e in out] == [3]
+        pages: list[list[DLPEvent]] = []
+        cursor = None
+        for _ in events:  # a cursor that never runs out fails below instead of looping
+            fake_session.queue_scalars(newest_first_answer(
+                events, cursor, 2, ts=lambda e: e.occurred_at, parse_id=parse_event_id,
+            ))
+            page, cursor = await svc.list_events(
+                fake_session, tenant_id=tenant_id, check_type="SCAN", cursor=cursor, limit=2,
+            )
+            pages.append(page)
+            if cursor is None:
+                break
+
+        assert cursor is None
+        assert [[e.id for e in page] for page in pages] == [[3, 4], [2, 1], [5]]
+        first, *later = (_sql(s) for s in fake_session.statements)
+        assert "dlp.dlp_event.check_type = 'SCAN'" in first
+        # LIMIT is one past the page: that row only tells whether another page follows.
+        assert first.endswith(f"{_EVENTS_ORDER_BY} LIMIT 3")
+        assert _EVENTS_AFTER not in first
+        for previous, sql in zip(pages[:-1], later, strict=True):
+            last = previous[-1]  # each page resumes right after the last event shown
+            assert sql.endswith(f"{_EVENTS_ORDER_BY} LIMIT 3")
+            assert f"{_EVENTS_AFTER}('{last.occurred_at}', {last.id})" in sql
+
+    async def test_list_classifications_pages_through_every_label_once(
+        self, svc: DLPService, fake_session, tenant_id: str
+    ) -> None:
+        # Labels written in one transaction share its now(); ids need not follow updated_at.
+        labels = [
+            make_classification(cls_id="cls_5", resource_id="doc_5", updated_at=_T0),
+            make_classification(cls_id="cls_1", resource_id="doc_1", updated_at=_T0 + _TICK),
+            make_classification(cls_id="cls_4", resource_id="doc_4", updated_at=_T0 + _TICK),
+            make_classification(cls_id="cls_2", resource_id="doc_2", updated_at=_T0 + _TICK),
+            make_classification(cls_id="cls_3", resource_id="doc_3", updated_at=_T0 + 2 * _TICK),
+        ]
+
+        pages: list[list[Classification]] = []
+        cursor = None
+        for _ in labels:  # a cursor that never runs out fails below instead of looping
+            fake_session.queue_scalars(newest_first_answer(
+                labels, cursor, 2, ts=lambda c: c.updated_at, parse_id=parse_classification_id,
+            ))
+            page, cursor = await svc.list_classifications(
+                fake_session, tenant_id=tenant_id, sensitivity="L3", cursor=cursor, limit=2,
+            )
+            pages.append(page)
+            if cursor is None:
+                break
+
+        assert cursor is None
+        assert [[c.id for c in page] for page in pages] == [
+            ["cls_3", "cls_4"], ["cls_2", "cls_1"], ["cls_5"],
+        ]
+        first, *later = (_sql(s) for s in fake_session.statements)
+        assert "dlp.classification.sensitivity = 'L3'" in first
+        # LIMIT is one past the page: that row only tells whether another page follows.
+        assert first.endswith(f"{_LABELS_ORDER_BY} LIMIT 3")
+        assert _LABELS_AFTER not in first
+        for previous, sql in zip(pages[:-1], later, strict=True):
+            last = previous[-1]  # each page resumes right after the last label shown
+            assert sql.endswith(f"{_LABELS_ORDER_BY} LIMIT 3")
+            assert f"{_LABELS_AFTER}('{last.updated_at}', '{last.id}')" in sql
+
+    async def test_a_full_last_page_of_events_has_no_next_cursor(
+        self, svc: DLPService, fake_session, tenant_id: str
+    ) -> None:
+        events = [make_dlp_event(event_id=n, occurred_at=_T0) for n in (1, 2)]
+        fake_session.queue_scalars(newest_first_answer(
+            events, None, 2, ts=lambda e: e.occurred_at, parse_id=parse_event_id,
+        ))
+
+        page, cursor = await svc.list_events(fake_session, tenant_id=tenant_id, limit=2)
+
+        assert [e.id for e in page] == [2, 1]
+        assert cursor is None  # the lookahead row decides, not len(page) == limit
+
+    async def test_a_full_last_page_of_labels_has_no_next_cursor(
+        self, svc: DLPService, fake_session, tenant_id: str
+    ) -> None:
+        labels = [
+            make_classification(cls_id=f"cls_{n}", resource_id=f"doc_{n}", updated_at=_T0)
+            for n in (1, 2)
+        ]
+        fake_session.queue_scalars(newest_first_answer(
+            labels, None, 2, ts=lambda c: c.updated_at, parse_id=parse_classification_id,
+        ))
+
+        page, cursor = await svc.list_classifications(fake_session, tenant_id=tenant_id, limit=2)
+
+        assert [c.id for c in page] == ["cls_2", "cls_1"]
+        assert cursor is None  # the lookahead row decides, not len(page) == limit
+
+    @pytest.mark.parametrize("cursor", [
+        "2026-10-30T12:00:00+00:00",  # a bare timestamp: what next_before used to hold
+        encode_cursor(_T0, "cls_01J0000000000000000000CLS1"),  # the label list's cursor
+        encode_cursor(_T0, 2**63),  # past bigint: the driver would fail, not a 422
+        "%%%",
+    ])
+    async def test_list_events_rejects_a_cursor_it_did_not_issue(
+        self, svc: DLPService, fake_session, tenant_id: str, cursor: str
+    ) -> None:
+        with pytest.raises(FoundationError) as exc:
+            await svc.list_events(fake_session, tenant_id=tenant_id, cursor=cursor)
+
+        assert exc.value.error_code is VALIDATION_FAILED
+        assert fake_session.statements == []
+
+    @pytest.mark.parametrize("cursor", [
+        "2026-10-30T12:00:00+00:00",  # a bare timestamp: what next_before used to hold
+        encode_cursor(_T0, 7),  # the event list's cursor
+        "%%%",
+    ])
+    async def test_list_classifications_rejects_a_cursor_it_did_not_issue(
+        self, svc: DLPService, fake_session, tenant_id: str, cursor: str
+    ) -> None:
+        with pytest.raises(FoundationError) as exc:
+            await svc.list_classifications(fake_session, tenant_id=tenant_id, cursor=cursor)
+
+        assert exc.value.error_code is VALIDATION_FAILED
+        assert fake_session.statements == []
 
     async def test_stats_aggregates(self, svc: DLPService, fake_session, tenant_id: str) -> None:
         from datetime import UTC, datetime, timedelta

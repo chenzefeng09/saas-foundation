@@ -269,6 +269,16 @@ async def get_chain_head(tenant_id: str, service: str) -> str | None:
     return str(val) if val else None
 
 
+def _ch_datetime64(ts: datetime) -> str:
+    """``ts`` as the text of a ``DateTime64(3, 'UTC')`` query parameter.
+
+    clickhouse-connect binds a ``datetime`` parameter in whole seconds and reads
+    a naive one as local time; a keyset bound must be the stored value exactly.
+    """
+    utc = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+    return utc.strftime("%Y-%m-%d %H:%M:%S.") + f"{utc.microsecond // 1000:03d}"
+
+
 async def query_events(
     *,
     tenant_id: str,
@@ -284,12 +294,14 @@ async def query_events(
     request_id: str | None = None,
     occurred_from: datetime | None = None,
     occurred_to: datetime | None = None,
-    cursor: str | None = None,
+    after: tuple[datetime, str] | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Query events from ClickHouse with mandatory tenant_id filter.
 
-    Uses keyset pagination: event_id > cursor (after ordering by occurred_at, event_id).
+    Rows come oldest first, in the table's sort order ``(occurred_at, event_id)``.
+    ``after`` is the ``(occurred_at, event_id)`` of the last row of the previous
+    page; the page resumes right after it in that order (services.pagination).
     """
     client = await get_clickhouse_client()
 
@@ -333,9 +345,17 @@ async def query_events(
     if occurred_to:
         conditions.append("occurred_at <= {occurred_to:DateTime64(3)}")
         params["occurred_to"] = occurred_to.replace(tzinfo=None) if occurred_to.tzinfo else occurred_to
-    if cursor:
-        conditions.append("event_id > {cursor:String}")
-        params["cursor"] = cursor
+    if after is not None:
+        after_ts, after_id = after
+        # The row comparison is the keyset.  The bare bound on occurred_at follows
+        # from it; it is there because ClickHouse skips parts and granules with the
+        # sort key for it but not for a tuple comparison.
+        conditions.append("occurred_at >= {after_ts:DateTime64(3, 'UTC')}")
+        conditions.append(
+            "(occurred_at, event_id) > ({after_ts:DateTime64(3, 'UTC')}, {after_id:String})"
+        )
+        params["after_ts"] = _ch_datetime64(after_ts)
+        params["after_id"] = after_id
 
     where = " AND ".join(conditions)
     sql = (

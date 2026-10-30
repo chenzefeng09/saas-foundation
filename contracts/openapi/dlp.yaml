@@ -32,6 +32,8 @@ tags:
     description: 异步扫描任务
   - name: incidents
     description: DLP 拦截事件
+  - name: governance
+    description: Read-only oversight lists (DLP decisions, resource labels)
   - name: downgrade
     description: 等级降级审批（4 眼）
   - name: health
@@ -198,6 +200,75 @@ paths:
                         sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
                   max_sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
                   action: { type: string, enum: [ALLOW, SCAN_REQUIRED, QUARANTINE] }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Governance (read-only) -----------------------
+  /core/events:
+    get:
+      tags: [governance]
+      summary: DLP decision and scan history, newest first
+      operationId: listDlpEvents
+      description: |
+        Keyset-paged on (occurred_at, id): pass a page's next_cursor as cursor
+        to get the next page, and every event appears exactly once.  The cursor
+        is opaque; one this list did not issue is a 422.
+      parameters:
+        - name: check_type
+          in: query
+          schema: { type: string }
+        - name: decision
+          in: query
+          schema: { type: string }
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/BeforeAlias'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/GovernancePage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/DlpEvent' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /core/classifications:
+    get:
+      tags: [governance]
+      summary: Resource labels, last changed first
+      operationId: listClassifications
+      description: |
+        Keyset-paged on (updated_at, id), the same way as /core/events.
+      parameters:
+        - name: sensitivity
+          in: query
+          schema: { type: string, pattern: '^L[1-5]$' }
+        - name: resource_type
+          in: query
+          schema: { type: string }
+        - $ref: './_common.yaml#/components/parameters/Limit'
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/BeforeAlias'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/GovernancePage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ResourceClassification' }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
@@ -478,6 +549,16 @@ components:
     bearerAuth:
       $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
 
+  parameters:
+    BeforeAlias:
+      name: before
+      in: query
+      deprecated: true
+      description: |
+        Deprecated alias of cursor: takes the next_before of the previous page,
+        which is the same token as its next_cursor.  A bare timestamp is a 422.
+      schema: { type: string }
+
   schemas:
 
     ResourceLabel:
@@ -584,3 +665,44 @@ components:
         status: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED] }
         created_at: { type: string, format: date-time }
         decided_at: { type: string, format: date-time, nullable: true }
+
+    GovernancePage:
+      allOf:
+        - $ref: './_common.yaml#/components/schemas/CursorPage'
+        - type: object
+          required: [next_cursor, next_before]
+          properties:
+            next_before:
+              type: string
+              nullable: true
+              deprecated: true
+              description: The same token as next_cursor, for clients that page with before.
+
+    DlpEvent:
+      type: object
+      required: [id, check_type, decision, occurred_at]
+      properties:
+        id: { type: integer, format: int64 }
+        check_type: { type: string }
+        decision: { type: string }
+        user_id: { type: string, nullable: true }
+        resource_type: { type: string, nullable: true }
+        resource_id: { type: string, nullable: true }
+        reason_code: { type: string, nullable: true }
+        detail: { type: string, nullable: true }
+        occurred_at: { type: string, format: date-time }
+        request_id: { type: string, nullable: true }
+
+    ResourceClassification:
+      type: object
+      required: [resource_type, resource_id, sensitivity, downgradable]
+      properties:
+        resource_type: { type: string }
+        resource_id: { type: string }
+        sensitivity: { type: string, enum: [L1, L2, L3, L4, L5] }
+        tags: { type: array, items: { type: string }, nullable: true }
+        reason: { type: string, nullable: true }
+        tagged_by: { type: string, nullable: true }
+        tagged_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time, nullable: true }
+        downgradable: { type: boolean }

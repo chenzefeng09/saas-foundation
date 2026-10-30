@@ -52,7 +52,7 @@ class StorageReportService:
         rows = list((await session.scalars(stmt)).all())
         next_cursor: str | None = None
         if len(rows) > page_size:
-            # Strip the lookahead row but use its id as the next cursor.
+            # Drop the lookahead row; the cursor is the id of the last row returned.
             rows = rows[:page_size]
             next_cursor = rows[-1].id
         return rows, next_cursor

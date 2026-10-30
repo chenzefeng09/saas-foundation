@@ -114,7 +114,7 @@ class AuditQuery(BaseModel):
     occurred_to: datetime | None = None
 
     limit: int = Field(default=100, ge=1, le=1000)
-    cursor: str | None = None  # event_id for keyset pagination
+    cursor: str | None = None  # next_cursor of the previous page (opaque keyset token)
 
 
 class AuditQueryResult(BaseModel):
