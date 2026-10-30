@@ -26,8 +26,8 @@ class LifecycleResource:
 
     def list_legal_holds(self, *, resource_id: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
-        if resource_id:
-            params["resource_id"] = resource_id
+        if resource_id is not None:
+            params["filter.resource_id"] = resource_id
         return self._t.request("GET", "/api/lifecycle/v1/legal-holds", params=params)
 
     # --- Retention ---

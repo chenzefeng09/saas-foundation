@@ -189,6 +189,43 @@ class TestQueries:
             assert _ORDER_BY in sql
             assert f"{_AFTER}('{last.placed_at}', '{last.id}')" in sql
 
+    @pytest.mark.parametrize("filters", [
+        {},
+        {"resource_type_id": "user_data"},
+        {"resource_id": "res_123"},
+        {"resource_type_id": "user_data", "resource_id": "res_123"},
+        {"resource_id": ""},  # an empty filter matches no resource; it must not mean "all holds"
+    ])
+    async def test_list_holds_narrows_to_the_requested_resource(
+        self, svc: LegalHoldService, fake_session, tenant_id: str, filters: dict[str, str],
+    ) -> None:
+        await svc.list_holds(fake_session, tenant_id=tenant_id, **filters)
+
+        (sql,) = (_sql(s) for s in fake_session.statements)
+        assert f"lifecycle.legal_hold.tenant_id = '{tenant_id}'" in sql
+        assert "lifecycle.legal_hold.released_at IS NULL" in sql
+        assert _ORDER_BY in sql
+        for column in ("resource_type_id", "resource_id"):
+            predicate = f"lifecycle.legal_hold.{column} = "
+            if column in filters:
+                assert f"{predicate}'{filters[column]}'" in sql
+            else:
+                assert predicate not in sql
+
+    async def test_list_holds_keeps_the_resource_filter_on_later_pages(
+        self, svc: LegalHoldService, fake_session, tenant_id: str,
+    ) -> None:
+        cursor = encode_cursor(_T0, "lhd_2")
+
+        await svc.list_holds(
+            fake_session, tenant_id=tenant_id, resource_id="res_123", cursor=cursor, limit=2,
+        )
+
+        (sql,) = (_sql(s) for s in fake_session.statements)
+        assert "lifecycle.legal_hold.resource_id = 'res_123'" in sql
+        assert f"{_AFTER}('{_T0}', 'lhd_2')" in sql
+        assert _ORDER_BY in sql
+
     @pytest.mark.parametrize("cursor", [
         "lhd_01J0000000000000000000HLD1",  # a bare id, what this list used to hand out
         encode_cursor(_T0, "bin_01J0000000000000000000BIN1"),  # the recycle bin's cursor

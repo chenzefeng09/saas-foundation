@@ -176,6 +176,14 @@ paths:
         - name: filter.status
           in: query
           schema: { type: string, enum: [ACTIVE, RELEASED] }
+        - name: filter.resource_type
+          in: query
+          description: Only holds on resources of this type (exact match; ANDed with the other filters)
+          schema: { type: string }
+        - name: filter.resource_id
+          in: query
+          description: Only holds on this resource (exact match; ANDed with the other filters)
+          schema: { type: string }
         - $ref: './_common.yaml#/components/parameters/Cursor'
       responses:
         '200':

@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
 from foundation_lifecycle.api import dependencies
 from foundation_lifecycle.api.exception_handlers import install_exception_handlers
 from foundation_lifecycle.errors import RESOURCE_NOT_IN_BIN, FoundationError
 from foundation_lifecycle.main import create_app
+
+from tests._factories import make_legal_hold
 
 
 def test_healthz_includes_request_id_header() -> None:
@@ -73,3 +78,28 @@ def test_list_with_a_cursor_it_did_not_issue_is_422_not_500(path: str, stale_cur
     assert response.status_code == 422
     assert response.headers["content-type"].startswith("application/problem+json")
     assert response.json()["code"] == "FOUNDATION.LIFECYCLE.INPUT.VALIDATION_FAILED"
+
+
+def test_list_legal_holds_hands_the_resource_filters_to_the_query(fake_session: Any) -> None:
+    app = create_app()
+
+    async def _fake_db() -> AsyncIterator[Any]:
+        yield fake_session  # the real LegalHoldService builds the query; the fake records it
+
+    app.dependency_overrides[dependencies.db_session] = _fake_db
+    fake_session.queue_scalars([
+        make_legal_hold(hold_id="lhd_1", placed_at=datetime(2026, 10, 30, 12, 0, tzinfo=UTC)),
+    ])
+
+    response = TestClient(app).get(
+        "/api/lifecycle/v1/legal-holds",
+        params={"filter.resource_type": "user_data", "filter.resource_id": "res_123"},
+        headers={"X-Tenant-Id": "tnt_01J0000000000000000000TNT1"},
+    )
+
+    assert response.status_code == 200
+    assert [h["id"] for h in response.json()["items"]] == ["lhd_1"]
+    (stmt,) = fake_session.statements
+    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "lifecycle.legal_hold.resource_type_id = 'user_data'" in sql
+    assert "lifecycle.legal_hold.resource_id = 'res_123'" in sql

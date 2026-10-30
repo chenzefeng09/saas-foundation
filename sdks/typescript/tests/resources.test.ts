@@ -161,6 +161,51 @@ describe("DLPResource — checkDownload", () => {
   });
 });
 
+describe("LifecycleResource — listLegalHolds", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let client: FoundationClient;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    client = new FoundationClient({
+      apiUrl: "http://api.test",
+      apiToken: "tok",
+      context: createContext({ tenantId: "tnt_001" }),
+    });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("filters by resource with the contract's filter.resource_id param", async () => {
+    fetchMock.mockResolvedValue(makeResponse(200, { items: [], next_cursor: null }));
+
+    await client.lifecycle.listLegalHolds({ resourceId: "res_001" });
+
+    // A bare resource_id is ignored by GET /legal-holds, which then lists every hold.
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/lifecycle/v1/legal-holds?filter.resource_id=res_001");
+  });
+
+  it("sends no filter when no resource is given", async () => {
+    fetchMock.mockResolvedValue(makeResponse(200, { items: [], next_cursor: null }));
+
+    await client.lifecycle.listLegalHolds();
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/lifecycle/v1/legal-holds");
+  });
+
+  it("keeps an empty resourceId as a filter instead of listing every hold", async () => {
+    fetchMock.mockResolvedValue(makeResponse(200, { items: [], next_cursor: null }));
+
+    await client.lifecycle.listLegalHolds({ resourceId: "" });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/lifecycle/v1/legal-holds?filter.resource_id=");
+  });
+});
+
 describe("BillingResource — checkQuota", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let client: FoundationClient;
