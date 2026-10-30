@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.api.dependencies import (
-    current_context, current_request_id, db_session, lifecycle_service, legal_hold_service,
+    current_context, current_request_id, current_user_id, db_session, lifecycle_service,
+    legal_hold_service,
 )
 from foundation_lifecycle.domain.base import FoundationContext
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
@@ -20,18 +21,29 @@ class SoftDeleteRequest(BaseModel):
     # hard-delete; see storage-v1 §6.2.
     s3_location: list[str] | None = None
 
+# Restore, hard-delete and release record the authenticated caller (``current_user_id``)
+# as the one who acted, never a name from the body. Their bodies only keep the fields
+# older clients still send (agent-platform's admin web sends destroyed_by / released_by),
+# so those requests still validate; the values are ignored.
+_IGNORED = "Deprecated and ignored: the service records the caller (X-User-Id)."
+
 class RestoreRequest(BaseModel):
-    restored_by: str | None = None
+    restored_by: str | None = Field(default=None, deprecated=True, description=_IGNORED)
 
 class HardDeleteRequest(BaseModel):
-    destroyed_by: str; witness_user_id: str | None = None
+    destroyed_by: str | None = Field(default=None, deprecated=True, description=_IGNORED)
+    # A witness the executor names has confirmed nothing. Until the witness can confirm
+    # with a request of their own, a destruction certificate names no witness.
+    witness_user_id: str | None = Field(
+        default=None, deprecated=True,
+        description="Deprecated and ignored: the certificate names no witness the caller picks.")
 
 class PlaceLegalHoldRequest(BaseModel):
     resource_type_id: str; resource_id: str
     reason: str = Field(min_length=10); case_reference: str | None = None
 
 class ReleaseLegalHoldRequest(BaseModel):
-    released_by: str
+    released_by: str | None = Field(default=None, deprecated=True, description=_IGNORED)
 
 
 # -- Recycle Bin --
@@ -49,26 +61,24 @@ async def soft_delete(
 
 @router.post("/recycle-bin/{bin_id}:restore", operation_id="restore")
 async def restore(
-    bin_id: str, body: RestoreRequest | None = None,
-    ctx: FoundationContext = Depends(current_context),
+    bin_id: str, body: RestoreRequest | None = None,  # legacy fields only, ignored
+    ctx: FoundationContext = Depends(current_context), actor: str = Depends(current_user_id),
     session: AsyncSession = Depends(db_session), svc: LifecycleService = Depends(lifecycle_service),
     request_id: str = Depends(current_request_id),
 ) -> dict:
-    # No body, `{}` and `{"restored_by": null}` all mean "the caller restored it".
-    restored_by = (body.restored_by if body else None) or ctx.user_id or ""
     await svc.restore(session, tenant_id=ctx.tenant_id, bin_id=bin_id,
-        restored_by=restored_by, request_id=request_id)
+        restored_by=actor, request_id=request_id)
     return {"restored": True}
 
 @router.post("/recycle-bin/{bin_id}:hard-delete", operation_id="hardDelete")
 async def hard_delete(
-    bin_id: str, body: HardDeleteRequest,
-    ctx: FoundationContext = Depends(current_context),
+    bin_id: str, body: HardDeleteRequest | None = None,  # legacy fields only, ignored
+    ctx: FoundationContext = Depends(current_context), actor: str = Depends(current_user_id),
     session: AsyncSession = Depends(db_session), svc: LifecycleService = Depends(lifecycle_service),
     request_id: str = Depends(current_request_id),
 ) -> dict:
     await svc.hard_delete(session, tenant_id=ctx.tenant_id, bin_id=bin_id,
-        destroyed_by=body.destroyed_by, witness_user_id=body.witness_user_id, request_id=request_id)
+        destroyed_by=actor, witness_user_id=None, request_id=request_id)
     return {"destroyed": True}
 
 @router.get("/recycle-bin", operation_id="listRecycleBin")
@@ -103,13 +113,13 @@ async def place_hold(
 
 @router.post("/legal-holds/{hold_id}:release", operation_id="releaseLegalHold")
 async def release_hold(
-    hold_id: str, body: ReleaseLegalHoldRequest,
-    ctx: FoundationContext = Depends(current_context),
+    hold_id: str, body: ReleaseLegalHoldRequest | None = None,  # legacy field only, ignored
+    ctx: FoundationContext = Depends(current_context), actor: str = Depends(current_user_id),
     session: AsyncSession = Depends(db_session), svc: LegalHoldService = Depends(legal_hold_service),
     request_id: str = Depends(current_request_id),
 ) -> dict:
     await svc.release(session, tenant_id=ctx.tenant_id, hold_id=hold_id,
-        released_by=body.released_by, request_id=request_id)
+        released_by=actor, request_id=request_id)
     return {"released": True}
 
 @router.get("/legal-holds:check", operation_id="checkLegalHold")
