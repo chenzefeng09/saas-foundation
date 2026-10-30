@@ -49,18 +49,19 @@ class BatchProcessor:
         self._ch_heads_fetched: set[tuple[str, str]] = set()
 
     async def _get_chain_head(self, tenant_id: str, service: str) -> str | None:
-        """Return chain head from memory (if cached) or ClickHouse."""
+        """Return chain head from memory (if cached) or ClickHouse.
+
+        A failed ClickHouse read raises, leaving the batch to the next run: carried
+        on from genesis instead, the chain would break.
+        """
         key = (tenant_id, service)
         if key not in self._ch_heads_fetched:
             # First time seeing this chain in this worker process: read from CH
-            try:
-                head = await ch.get_chain_head(tenant_id, service)
-                self._ch_heads_fetched.add(key)
-                if head is not None:
-                    self._chain_heads[key] = head
-                    log.debug("chain.head.restored_from_ch", tenant_id=tenant_id, service=service, head=head[:16])
-            except Exception as exc:
-                log.warning("chain.head.ch_read_failed", tenant_id=tenant_id, service=service, error=str(exc))
+            head = await ch.get_chain_head(tenant_id, service)
+            self._ch_heads_fetched.add(key)
+            if head is not None:
+                self._chain_heads[key] = head
+                log.debug("chain.head.restored_from_ch", tenant_id=tenant_id, service=service, head=head[:16])
         return self._chain_heads.get(key)
 
     async def run_once(self) -> int:
@@ -79,14 +80,18 @@ class BatchProcessor:
             processed: list[dict[str, Any]] = []
             row_ids: list[int] = []
             leaf_hashes: list[str] = []
+            # Where this batch takes each chain: the chain heads once ClickHouse holds it
+            batch_heads: dict[tuple[str, str], str] = {}
 
             for row_id, event_json in rows:
                 tenant_id = event_json.get("tenant_id", "")
                 service = event_json.get("service", "")
                 tenant_service = (tenant_id, service)
 
-                # Restart-safe: load chain head from CH if not in memory yet
-                prev = await self._get_chain_head(tenant_id, service)
+                prev = batch_heads.get(tenant_service)
+                if prev is None:
+                    # Restart-safe: load chain head from CH if not in memory yet
+                    prev = await self._get_chain_head(tenant_id, service)
 
                 # Hash the form verify-integrity can rebuild from the stored row.
                 prev_hash, curr_hash = compute_chain_hash(
@@ -94,8 +99,7 @@ class BatchProcessor:
                     event_data=canonical_event(event_json),
                     hash_algorithm=self._settings.hash_algorithm,
                 )
-                self._chain_heads[tenant_service] = curr_hash
-                self._ch_heads_fetched.add(tenant_service)
+                batch_heads[tenant_service] = curr_hash
 
                 leaf_idx = len(leaf_hashes)
                 event_json["prev_hash"] = prev_hash
@@ -112,10 +116,12 @@ class BatchProcessor:
             try:
                 await ch.insert_events(processed)
             except Exception as exc:
-                # CH write failed: record error, do NOT mark delivered (retry next run)
+                # CH write failed: record error, do NOT mark delivered (retry next run).
+                # The chain heads stay where ClickHouse has them, for the retry to carry on from.
                 log.error("ch.insert.failed", count=len(processed), error=str(exc))
                 await self._ingest.record_attempts(session, row_ids, error=str(exc))
                 return 0
+            self._chain_heads.update(batch_heads)
 
             # --- Compute Merkle root ---
             merkle_root = compute_merkle_root(

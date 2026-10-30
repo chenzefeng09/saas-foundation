@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from clickhouse_connect.datatypes.registry import get_from_name
 from clickhouse_connect.driver import ctypes as ch_ctypes
+from clickhouse_connect.driver.exceptions import OperationalError
 from clickhouse_connect.driver.insert import InsertContext
 from clickhouse_connect.driver.query import QueryContext
 
@@ -105,13 +106,22 @@ class _ClickHouse:
     column's type: naive UTC datetimes to the millisecond, '' where a String column
     got '', and None in a column that is not Nullable fails as it does there.
     query() reads the SELECT list, WHERE conditions, ORDER BY and LIMIT of the SQL.
+    Either fails, storing or reading nothing, while ``refuse`` lists it.
     """
 
     def __init__(self) -> None:
         self.types = {t: _column_types(t) for t in ("audit.events", "audit.merkle_batch")}
         self.rows: dict[str, list[dict[str, Any]]] = {t: [] for t in self.types}
+        # ("insert" or "query", table): refused once each, as by a server out of reach
+        self.refuse: list[tuple[str, str]] = []
+
+    def _answer(self, statement: str, table: str) -> None:
+        if (statement, table) in self.refuse:
+            self.refuse.remove((statement, table))
+            raise OperationalError(f"{statement} {table}: connection refused")
 
     def insert(self, table: str, data: list[list[Any]], column_names: list[str]) -> None:
+        self._answer("insert", table)
         assert sorted(column_names) == sorted(self.types[table])  # nothing left to a DEFAULT
         columns = [
             _stored(self.types[table][name], [row[i] for row in data])
@@ -124,6 +134,7 @@ class _ClickHouse:
     def query(self, sql: str, parameters: dict[str, Any]) -> SimpleNamespace:
         select = _SELECT.fullmatch(sql)
         assert select is not None, sql
+        self._answer("query", select["table"])
         conditions = select["where"].split(" AND ")
         rows = [
             row
@@ -341,6 +352,35 @@ class TestVerifyIntegrity:
         assert await _deliver(worker, outbox[:2], clickhouse) == 2
         assert await _deliver(worker, outbox[2:4], clickhouse) == 2
         assert await _deliver(_worker(), outbox[4:], clickhouse) == 2
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_clickhouse_refused_is_chained_again_when_retried(self) -> None:
+        """None of a refused batch is stored: its retry carries each chain on from ClickHouse."""
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_emitted())
+        for batch in (outbox[:3], outbox[3:]):  # the chains' first batch, then a later one
+            clickhouse.refuse.append(("insert", "audit.events"))
+            assert await _deliver(worker, batch, clickhouse) == 0  # left in the outbox
+            assert await _deliver(worker, batch, clickhouse) == len(batch)  # the next run
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
+
+    @pytest.mark.asyncio
+    async def test_a_chain_head_clickhouse_did_not_read_is_not_taken_for_genesis(self) -> None:
+        clickhouse = _ClickHouse()
+        outbox = await _outbox(_emitted())
+        assert await _deliver(_worker(), outbox[:3], clickhouse) == 3
+        worker = _worker()  # restarted: it reads each chain's head from ClickHouse
+        clickhouse.refuse.append(("query", "audit.events"))
+        with pytest.raises(OperationalError):
+            await _deliver(worker, outbox[3:], clickhouse)  # left in the outbox
+        assert await _deliver(worker, outbox[3:], clickhouse) == 2  # the next run
 
         result = await _verify(clickhouse)
 
