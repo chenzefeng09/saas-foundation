@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import ulid
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_dlp.domain.models import Classification, DLPEvent, DLPRule, Outbox, SensitivityLevel
@@ -22,6 +22,12 @@ from foundation_dlp.observability import (
     dlp_scan_hits_total,
     dlp_scan_total,
     get_logger,
+)
+from foundation_dlp.services.pagination import (
+    decode_cursor,
+    encode_cursor,
+    parse_classification_id,
+    parse_event_id,
 )
 
 log = get_logger(__name__)
@@ -482,19 +488,29 @@ class DLPService:
         tenant_id: str,
         check_type: str | None = None,
         decision: str | None = None,
-        before: datetime | None = None,
+        cursor: str | None = None,
         limit: int = 50,
-    ) -> list[DLPEvent]:
-        """Keyset page over dlp_event ordered by occurred_at desc (decision + scan history)."""
+    ) -> tuple[list[DLPEvent], str | None]:
+        """Decision + scan history, newest first, keyset-paged on (occurred_at, id).
+
+        See services.pagination.
+        """
         stmt = select(DLPEvent).where(DLPEvent.tenant_id == tenant_id)
         if check_type is not None:
             stmt = stmt.where(DLPEvent.check_type == check_type)
         if decision is not None:
             stmt = stmt.where(DLPEvent.decision == decision)
-        if before is not None:
-            stmt = stmt.where(DLPEvent.occurred_at < before)
-        stmt = stmt.order_by(DLPEvent.occurred_at.desc(), DLPEvent.id.desc()).limit(limit)
-        return list((await session.scalars(stmt)).all())
+        if cursor:
+            occurred_at, event_id = decode_cursor(cursor, parse_id=parse_event_id)
+            stmt = stmt.where(tuple_(DLPEvent.occurred_at, DLPEvent.id) < (occurred_at, event_id))
+        stmt = stmt.order_by(DLPEvent.occurred_at.desc(), DLPEvent.id.desc()).limit(limit + 1)
+        rows = list((await session.scalars(stmt)).all())
+        page = rows[:limit]
+        # The cursor is the sort key of the last row *returned*, never the lookahead row's.
+        next_cursor = (
+            encode_cursor(page[-1].occurred_at, page[-1].id) if len(rows) > limit else None
+        )
+        return page, next_cursor
 
     async def list_classifications(
         self,
@@ -503,21 +519,31 @@ class DLPService:
         tenant_id: str,
         sensitivity: str | None = None,
         resource_type: str | None = None,
-        before: datetime | None = None,
+        cursor: str | None = None,
         limit: int = 50,
-    ) -> list[Classification]:
-        """Keyset page over classification ordered by updated_at desc (tagged resources)."""
+    ) -> tuple[list[Classification], str | None]:
+        """Tagged resources, last changed first, keyset-paged on (updated_at, id).
+
+        See services.pagination.
+        """
         stmt = select(Classification).where(Classification.tenant_id == tenant_id)
         if sensitivity is not None:
             stmt = stmt.where(Classification.sensitivity == sensitivity)
         if resource_type is not None:
             stmt = stmt.where(Classification.resource_type == resource_type)
-        if before is not None:
-            stmt = stmt.where(Classification.updated_at < before)
+        if cursor:
+            updated_at, cls_id = decode_cursor(cursor, parse_id=parse_classification_id)
+            stmt = stmt.where(
+                tuple_(Classification.updated_at, Classification.id) < (updated_at, cls_id)
+            )
         stmt = stmt.order_by(Classification.updated_at.desc(), Classification.id.desc()).limit(
-            limit
+            limit + 1
         )
-        return list((await session.scalars(stmt)).all())
+        rows = list((await session.scalars(stmt)).all())
+        page = rows[:limit]
+        # The cursor is the sort key of the last row *returned*, never the lookahead row's.
+        next_cursor = encode_cursor(page[-1].updated_at, page[-1].id) if len(rows) > limit else None
+        return page, next_cursor
 
     async def stats(
         self,

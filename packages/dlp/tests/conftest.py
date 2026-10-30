@@ -35,6 +35,9 @@ class FakeAsyncSession:
     pk_store: dict = field(default_factory=lambda: defaultdict(dict))
     added: list = field(default_factory=list)
     flush_calls: int = 0
+    # Every statement handed to scalar/scalars/execute, in call order, so tests
+    # can assert on the SQL a service builds (the fake never evaluates it).
+    statements: list = field(default_factory=list)
     _scalar_queue: list = field(default_factory=list)
     _scalars_queue: list = field(default_factory=list)
     _execute_queue: list = field(default_factory=list)
@@ -45,11 +48,14 @@ class FakeAsyncSession:
     def queue_execute(self, rows): self._execute_queue.append(list(rows))
 
     async def get(self, model, pk): return self.pk_store.get(model, {}).get(pk)
-    async def scalar(self, _stmt):
+    async def scalar(self, stmt):
+        self.statements.append(stmt)
         return self._scalar_queue.pop(0) if self._scalar_queue else None
-    async def scalars(self, _stmt):
+    async def scalars(self, stmt):
+        self.statements.append(stmt)
         return _ScalarsResult(self._scalars_queue.pop(0)) if self._scalars_queue else _ScalarsResult([])
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(stmt)
         return self._execute_queue.pop(0) if self._execute_queue else _ScalarsResult([])  # type: ignore[return-value]
     def add(self, obj):
         self.added.append(obj)

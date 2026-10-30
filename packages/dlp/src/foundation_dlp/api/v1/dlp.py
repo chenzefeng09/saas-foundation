@@ -18,6 +18,7 @@ from foundation_dlp.api.dependencies import (
 )
 from foundation_dlp.domain.base import FoundationContext
 from foundation_dlp.domain.models import SensitivityLevel
+from foundation_dlp.errors import VALIDATION_FAILED, FoundationError
 from foundation_dlp.services.dlp_service import DLPService
 
 router = APIRouter()
@@ -165,14 +166,31 @@ async def scan_content(
 
 
 # -- Governance / Oversight (read-only) --
-def _parse_before(before: str | None) -> datetime | None:
-    """Parse an ISO-8601 occurred_at cursor; tolerate a trailing 'Z'."""
-    if not before:
+def _parse_since(since: str | None) -> datetime | None:
+    """Parse an ISO-8601 lower bound; tolerate a trailing 'Z'."""
+    if not since:
         return None
     try:
-        return datetime.fromisoformat(before.replace("Z", "+00:00"))
+        return datetime.fromisoformat(since.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"invalid 'before' cursor: {before}") from exc
+        raise HTTPException(status_code=422, detail=f"invalid 'since': {since}") from exc
+
+
+# Both lists page with an opaque keyset cursor (services.pagination).  ``before``
+# and ``next_before`` are deprecated aliases of ``cursor`` and ``next_cursor``:
+# they now carry the same token, so a client that pages by echoing next_before
+# back as before keeps working and no longer skips rows.
+_CURSOR_DOC = "next_cursor of the previous page (opaque keyset token)"
+_BEFORE_DOC = "Deprecated alias of cursor: takes the next_before of the previous page"
+
+
+def _page_cursor(cursor: str | None, before: str | None) -> str | None:
+    """The cursor of the requested page, given as ``cursor`` or as its alias ``before``."""
+    if cursor and before and cursor != before:
+        raise FoundationError(
+            VALIDATION_FAILED, detail="cursor and before (its deprecated alias) disagree"
+        )
+    return cursor or before
 
 
 @router.get("/events", operation_id="listDlpEvents")
@@ -180,17 +198,19 @@ async def list_events(
     check_type: str | None = Query(None),
     decision: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    before: str | None = Query(None, description="ISO occurred_at cursor (keyset, desc)"),
+    cursor: str | None = Query(None, description=_CURSOR_DOC),
+    before: str | None = Query(None, deprecated=True, description=_BEFORE_DOC),
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: DLPService = Depends(dlp_service),
 ) -> dict:
-    rows = await svc.list_events(
+    """Decision + scan history, newest first."""
+    rows, next_cursor = await svc.list_events(
         session,
         tenant_id=ctx.tenant_id,
         check_type=check_type,
         decision=decision,
-        before=_parse_before(before),
+        cursor=_page_cursor(cursor, before),
         limit=limit,
     )
     items = [
@@ -208,10 +228,7 @@ async def list_events(
         }
         for e in rows
     ]
-    next_before = (
-        rows[-1].occurred_at.isoformat() if len(rows) == limit and rows[-1].occurred_at else None
-    )
-    return {"items": items, "next_before": next_before}
+    return {"items": items, "next_cursor": next_cursor, "next_before": next_cursor}
 
 
 @router.get("/classifications", operation_id="listClassifications")
@@ -219,17 +236,19 @@ async def list_classifications(
     sensitivity: str | None = Query(None, pattern=r"^L[1-5]$"),
     resource_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    before: str | None = Query(None, description="ISO updated_at cursor (keyset, desc)"),
+    cursor: str | None = Query(None, description=_CURSOR_DOC),
+    before: str | None = Query(None, deprecated=True, description=_BEFORE_DOC),
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: DLPService = Depends(dlp_service),
 ) -> dict:
-    rows = await svc.list_classifications(
+    """Tagged resources, last changed first."""
+    rows, next_cursor = await svc.list_classifications(
         session,
         tenant_id=ctx.tenant_id,
         sensitivity=sensitivity,
         resource_type=resource_type,
-        before=_parse_before(before),
+        cursor=_page_cursor(cursor, before),
         limit=limit,
     )
     items = [
@@ -246,10 +265,7 @@ async def list_classifications(
         }
         for c in rows
     ]
-    next_before = (
-        rows[-1].updated_at.isoformat() if len(rows) == limit and rows[-1].updated_at else None
-    )
-    return {"items": items, "next_before": next_before}
+    return {"items": items, "next_cursor": next_cursor, "next_before": next_cursor}
 
 
 @router.get("/stats", operation_id="dlpStats")
@@ -259,5 +275,5 @@ async def dlp_stats(
     session: AsyncSession = Depends(db_session),
     svc: DLPService = Depends(dlp_service),
 ) -> dict:
-    since_dt = _parse_before(since) or (datetime.now(UTC) - timedelta(days=30))
+    since_dt = _parse_since(since) or (datetime.now(UTC) - timedelta(days=30))
     return await svc.stats(session, tenant_id=ctx.tenant_id, since=since_dt)
