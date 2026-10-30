@@ -208,6 +208,43 @@ rules:
       function: defined
 
   # --------------------------------------------------------------------------
+  # CONVENTIONS §2.6: the gateway fills in X-Request-Id and clients may send
+  # it; _template.yaml declares _common.yaml's RequestId, on the operation or
+  # on its path. The document is resolved, so the parameter is matched by name.
+  # --------------------------------------------------------------------------
+  foundation-request-id-param:
+    description: Operations should declare the X-Request-Id header (_common.yaml's RequestId), themselves or on their path
+    message: Declare X-Request-Id (_common.yaml's RequestId) on this path or on each of its operations
+    severity: warn
+    given: $.paths[*]
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          # not/not reports a path once, instead of once per failing branch.
+          not:
+            not:
+              anyOf:
+                - &declares-request-id
+                  type: object
+                  required: [parameters]
+                  properties:
+                    parameters:
+                      type: array
+                      contains:
+                        type: object
+                        required: [name, in]
+                        properties:
+                          name: { const: X-Request-Id }
+                          in: { const: header }
+                - properties:
+                    get: *declares-request-id
+                    put: *declares-request-id
+                    post: *declares-request-id
+                    delete: *declares-request-id
+                    patch: *declares-request-id
+
+  # --------------------------------------------------------------------------
   # info 块必填
   # --------------------------------------------------------------------------
   info-contact: warn
