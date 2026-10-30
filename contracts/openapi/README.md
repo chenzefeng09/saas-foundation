@@ -51,7 +51,7 @@ contracts/openapi/
 > 这些规则由 `.spectral.yaml` 机器强制；任何 spec 提 PR 必须 `make lint` 全绿。
 
 1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`，CONVENTIONS §2.2），path 不再带版本；版本号 URL 显式带，禁止 header version
-2. **JSON 字段 `snake_case`**（CONVENTIONS §2.8）；枚举 `UPPER_SNAKE_CASE`（合规模式标识符例外）
+2. **JSON 字段 `snake_case`**（CONVENTIONS §2.8；SCIM 资源 `Scim*` 沿用 RFC 7643 字段名）；枚举 `UPPER_SNAKE_CASE`（合规模式标识符例外）
 3. **错误响应必 $ref `_common.yaml`**；不允许 inline 定义错误 body。要自定义描述可以内联响应，但 body 必须是 `application/problem+json`，并 $ref `_common.yaml` 的 `Error` / `ValidationError`
 4. **错误码格式 `FOUNDATION.<SVC>.<CAT>.<NAME>`** 四段；各服务共用的码 `<SVC>` 为 `_`（[errors.md](../../docs/errors.md) §3.1、§12）
 5. **所有 operation 必须有 `operationId`**（camelCase，给 SDK 生成器用）；必须 unique

@@ -43,11 +43,14 @@ rules:
 
   # --------------------------------------------------------------------------
   # CONVENTIONS §2.8 JSON 字段命名 snake_case
+  # Except the SCIM resources (Scim*): RFC 7643/7644 fix their attribute names
+  # (userName, externalId, totalResults, Resources, Operations), and that is
+  # what IdPs such as Entra ID and Okta send.
   # --------------------------------------------------------------------------
   foundation-property-snake-case:
-    description: JSON property names must be snake_case
+    description: JSON property names must be snake_case (SCIM resources keep their RFC 7643 names)
     severity: error
-    given: $.components.schemas..properties[*]~
+    given: $.components.schemas[?(!@property.match(/^Scim/))]..properties[*]~
     then:
       function: pattern
       functionOptions:
