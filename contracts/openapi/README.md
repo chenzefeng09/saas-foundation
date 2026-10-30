@@ -50,7 +50,7 @@ contracts/openapi/
 
 > 这些规则由 `.spectral.yaml` 机器强制；任何 spec 提 PR 必须 `make lint` 全绿。
 
-1. **所有 path 带 `/v1` 前缀**（CONVENTIONS §2.2）；版本号 URL 显式带，禁止 header version
+1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`，CONVENTIONS §2.2），path 不再带版本；版本号 URL 显式带，禁止 header version
 2. **JSON 字段 `snake_case`**（CONVENTIONS §2.8）；枚举 `UPPER_SNAKE_CASE`（合规模式标识符例外）
 3. **错误响应必 $ref `_common.yaml`**；不允许 inline 定义错误 body
 4. **错误码格式 `FOUNDATION.<SVC>.<CAT>.<NAME>`** 四段

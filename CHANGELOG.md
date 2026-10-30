@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - lifecycle: a restore sent with `{}` or `{"restored_by": null}` records the
   caller as the restorer instead of NULL.
+- Contracts: `scim-dingtalk` paths no longer repeat the version
+  (`/scim/v2/Users`, not `/scim/v2/v1/Users`).
 
 [Unreleased]: https://github.com/chenzefeng09/saas-foundation/compare/v0.1.0...HEAD
 

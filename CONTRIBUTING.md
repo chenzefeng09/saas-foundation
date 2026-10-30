@@ -149,10 +149,10 @@ them, and FastAPI implementations must conform to the spec — never the reverse
 
 1. **Edit the spec.** Change `contracts/openapi/<service>.yaml` (or copy
    `_template.yaml` for a brand-new service and add it to the `SPECS` list).
-   The six machine-enforced rules — `/v1` on every path, `snake_case` JSON,
-   `$ref`'d shared error bodies, four-segment error codes, unique `camelCase`
-   `operationId`s, and explicit `security` — are described in
-   [`contracts/openapi/README.md`](./contracts/openapi/README.md).
+   The six machine-enforced rules — the version in the server URL rather than
+   the paths, `snake_case` JSON, `$ref`'d shared error bodies, four-segment
+   error codes, unique `camelCase` `operationId`s, and explicit `security` —
+   are described in [`contracts/openapi/README.md`](./contracts/openapi/README.md).
 2. **Lint with Spectral.**
 
    ```bash

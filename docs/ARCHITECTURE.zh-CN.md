@@ -271,7 +271,7 @@ Foundation 是**契约优先（contract-first）**：OpenAPI spec 是真相源�
 
 由 `.spectral.yaml` 强制；任何 spec PR 都必须 `make lint` 全绿：
 
-1. **所有 path 带 `/v1` 前缀**——版本在 URL 中显式声明；禁止 header 版本。
+1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`），path 不再重复——版本在 URL 中显式声明；禁止 header 版本。
 2. **JSON 字段 `snake_case`；枚举 `UPPER_SNAKE_CASE`**（合规模式标识符为已声明的例外）。
 3. **错误响应必须 `$ref` `_common.yaml`**——不允许内联错误 body。
 4. **错误码为四段 `FOUNDATION.<SVC>.<CAT>.<NAME>`。**

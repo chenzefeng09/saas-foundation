@@ -9,7 +9,7 @@
 #      components/responses/Common*、components/securitySchemes
 #
 # 强制要求（CI 用 spectral 校验）：
-#   - 所有 path 必须带 v1 前缀
+#   - 版本只写在 servers URL 末尾（/api/<service>/v1），path 不带版本
 #   - 所有非公开端点必须声明 security: [bearerAuth]
 #   - 4xx/5xx 响应必须用 components/responses 引用
 #   - 字段命名 snake_case；枚举 UPPER_SNAKE_CASE

@@ -271,7 +271,7 @@ The Foundation is **contract-first**: the OpenAPI specs are the source of truth,
 
 These are enforced by `.spectral.yaml`; any spec PR must pass `make lint` (all green):
 
-1. **Every path carries a `/v1` prefix** — the version is explicit in the URL; header versioning is forbidden.
+1. **The version ends the `servers` URL** (`/api/<service>/v1`) and paths do not repeat it — the version is explicit in the URL; header versioning is forbidden.
 2. **JSON fields are `snake_case`; enums are `UPPER_SNAKE_CASE`** (compliance-mode identifiers are the documented exception).
 3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed.
 4. **Error codes are the four-segment `FOUNDATION.<SVC>.<CAT>.<NAME>`.**

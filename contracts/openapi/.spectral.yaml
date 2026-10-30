@@ -15,17 +15,31 @@ formats:
 rules:
 
   # --------------------------------------------------------------------------
-  # CONVENTIONS §2.2 URL 路径：所有 path 必须带 v1 前缀（_common.yaml 占位除外）
+  # CONVENTIONS §2.2 URL 路径：/api/<service>/<version>/<resource>
+  # The version is part of the server URL (/api/identity/v1, /scim/v2), as in
+  # _template.yaml, and appears in the URL once: paths do not repeat it.
   # --------------------------------------------------------------------------
-  foundation-paths-must-have-version:
-    description: All paths must begin with /v1 or /v2 (versioned API per CONVENTIONS §2.2)
+  foundation-server-url-version:
+    description: Server URLs must end in the API version, e.g. /api/identity/v1 (CONVENTIONS §2.2)
+    severity: error
+    given:
+      - $.servers[*].url
+      - $.paths[*].servers[*].url
+      - $.paths[*][get,put,post,delete,options,head,patch,trace].servers[*].url
+    then:
+      function: pattern
+      functionOptions:
+        match: '/v[0-9]+$'
+
+  foundation-paths-unversioned:
+    description: Paths must not start with a version; the server URL carries it (CONVENTIONS §2.2)
     severity: error
     given: $.paths
     then:
       field: '@key'
       function: pattern
       functionOptions:
-        match: '^(/v[0-9]+/|/_common|/healthz|/readyz|/metrics)'
+        notMatch: '^/v[0-9]+(/|$)'
 
   # --------------------------------------------------------------------------
   # CONVENTIONS §2.8 JSON 字段命名 snake_case
