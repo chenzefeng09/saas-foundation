@@ -469,6 +469,7 @@ class TestVerifyIntegrity:
         result = await _verify(clickhouse)
 
         assert not result.valid
+        assert result.first_break_event_id == _evt(1)  # the batch's first event
         assert (result.signatures_verified, result.signatures_failed) == (1, 1)
 
     @pytest.mark.asyncio

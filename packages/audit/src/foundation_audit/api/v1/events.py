@@ -394,13 +394,13 @@ async def verify_integrity(
     # --- Phase 2: Verify Merkle batch signatures ---
     # Group events by batch_id to recompute Merkle root per batch
     from collections import defaultdict
-    batch_leaves: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    batch_leaves: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
     for ev in events:
         bid = ev.get("merkle_batch_id")
         leaf_idx = ev.get("merkle_leaf_idx")
         curr_hash = ev.get("curr_hash", "")
         if bid and leaf_idx is not None and curr_hash:
-            batch_leaves[bid].append((leaf_idx, curr_hash))
+            batch_leaves[bid].append((leaf_idx, curr_hash, ev.get("event_id", "")))
 
     # Fetch merkle_batch metadata for signature verification
     try:
@@ -422,7 +422,7 @@ async def verify_integrity(
     for bid, leaf_list in batch_leaves.items():
         # Sort by leaf index, then build ordered hash list
         leaf_list.sort(key=lambda x: x[0])
-        leaf_hashes = [h for _, h in leaf_list]
+        leaf_hashes = [h for _, h, _ in leaf_list]
         recomputed_root = compute_merkle_root(leaf_hashes, hash_algorithm=settings.hash_algorithm)
 
         meta = batch_meta.get(bid)
@@ -438,7 +438,7 @@ async def verify_integrity(
             # Merkle root mismatch — tampered
             sigs_failed += 1
             if first_break_event_id is None and leaf_list:
-                first_break_event_id = leaf_list[0][1]  # leaf hash as marker
+                first_break_event_id = leaf_list[0][2]  # the batch's first event
             continue
 
         if not sig_b64 or not key_id:
