@@ -61,3 +61,9 @@ Change the case in the same change. A failing SDK test prints the request the
 method sent next to the pinned one; a failing service test names the route, the
 parameter or the field it disagrees on. Add a case for every new public method:
 the SDK suites fail on a method without one.
+
+The pinned requests are the SDKs' wire contract. Changing what an existing
+method sends (its method, path or a required field) is a major SDK release with
+an ADR, per [`docs/sdk-release.md`](../../docs/sdk-release.md) §1 and
+[ADR 0001](../../docs/adr/0001-sdk-1-0-follows-served-routes.md). A new case or
+a new optional field is a minor release.

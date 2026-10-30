@@ -54,9 +54,8 @@ Process:
    `Proposed → Accepted` (or `Rejected`); superseded ADRs are marked
    `Superseded by NNNN` rather than deleted, preserving the history.
 
-> **Status:** `docs/adr/` currently contains only a placeholder and is awaiting
-> its first ADR. The first substantive architecture decision recorded here will
-> establish the numbering and template that subsequent ADRs follow.
+> **Status:** [ADR 0001](./docs/adr/0001-sdk-1-0-follows-served-routes.md) is the
+> first ADR; its numbering and layout are the template later ADRs follow.
 
 ## Contribution ladder
 
@@ -135,8 +134,8 @@ SaaS Foundation 采用 **maintainer 主导**的治理模式。日常变更通过
 maintainer 批准且 CI 门禁通过即可合并；决策以 **lazy consensus** 为主，分歧无法
 达成共识时由 maintainer 简单多数表决，平票由 project lead 决定。涉及架构、公共 API
 契约、多租户/隔离模型或安全姿态的变更，须 maintainer sign-off 并补
-**架构决策记录（ADR）**，写入 [`docs/adr/`](./docs/adr/)（目前仅有占位文件，等待
-第一条 ADR，它将确立后续编号与模板）。
+**架构决策记录（ADR）**，写入 [`docs/adr/`](./docs/adr/)（编号与模板以第一条
+[ADR 0001](./docs/adr/0001-sdk-1-0-follows-served-routes.md) 为准）。
 
 贡献阶梯为 Contributor → Reviewer → Maintainer → Project lead，按持续的高质量
 贡献与评审晋升，由现任 maintainer 提名通过。

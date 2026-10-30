@@ -14,13 +14,15 @@ Makefile 入口：`make sdk-build` / `make sdk-publish-dry` / `make sdk-publish`
 | Bump  | 触发条件                                   | 消费侧动作                                  |
 | ----- | ------------------------------------------ | ------------------------------------------- |
 | patch | bugfix、性能优化、纯文档                   | 无需配合，下次 `poetry lock` 自动获取       |
-| minor | 新增 resource、新增可选参数（向后兼容）    | 无需配合（pin 写作 `>=0.1,<0.2`）           |
+| minor | 新增 resource、新增可选参数（向后兼容）    | 无需配合（pin 写作 `>=1.0,<2.0`）           |
 | major | 删字段、改方法签名、改 wire-level 协议     | **必须**联动业务侧同 PR 升级，并发 ADR     |
 
-业务侧 4 个服务的 pin 写法是 `foundation-sdk = ">=0.1,<0.2"` —— 这意味着所有
-0.1.x、0.2.x 之内的发布自动滚到 lockfile。**major 升级必须开 ADR**，在
-agent-platform 和 saas-foundation 双方都 merge 后才发布 `v1.0.0`，避免
-"sdk 已发，但业务还没准备好" 的窗口。
+从 1.0.0 起，业务侧 4 个服务的 pin 写作 `foundation-sdk = ">=1.0,<2.0"`：
+1.x 之内的 minor、patch 发布会自动滚到 lockfile，major 不会。（1.0.0 之前的
+pin 是 `>=0.1,<0.2`，只覆盖 0.1.x。）**major 升级必须开 ADR**，在 agent-platform
+和 saas-foundation 双方都 merge 后才打 tag 发布，避免 "sdk 已发，但业务还没
+准备好" 的窗口。0.1.0 → 1.0.0 见
+[ADR 0001](./adr/0001-sdk-1-0-follows-served-routes.md)。
 
 ## 2. 发布流程（正常路径）
 
@@ -64,7 +66,7 @@ make sdk-publish       # 真上传
 4. 在业务侧执行 `poetry update foundation-sdk` 即可拉到 `0.1.2`。
 
 如果发版本身坏到无法 import（极少见），可以**手动在内部 PyPI 上 yank 该版本**
-（Nexus UI: "Delete"），这样所有 `>=0.1,<0.2` 的 solver 都会跳过这一版。
+（Nexus UI: "Delete"），这样所有 `>=1.0,<2.0` 的 solver 都会跳过这一版。
 yank 后必须立即发补丁版。
 
 ## 5. 与 build-context 模式的关系
