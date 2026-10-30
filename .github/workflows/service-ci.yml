@@ -35,10 +35,11 @@ on:
       CODECOV_TOKEN:
         required: false
 
+# A called workflow cannot ask for more than its caller grants: ci.yml grants
+# contents + security-events only, so anything more is a startup_failure.
 permissions:
   contents: read
   security-events: write
-  pull-requests: write
 
 jobs:
   # ===========================================================================
