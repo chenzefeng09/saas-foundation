@@ -49,15 +49,17 @@ class FakeAsyncSession:
     flush_calls: int = 0
     _scalar_queue: list = field(default_factory=list)
     _scalars_queue: list = field(default_factory=list)
-    # Statements passed to scalars(), for tests of what a query selects.
+    # Statements passed to scalars() / scalar(), for tests of what a query selects.
     statements: list = field(default_factory=list)
+    scalar_statements: list = field(default_factory=list)
 
     def put(self, obj): self.pk_store[type(obj)][obj.id] = obj
     def queue_scalar(self, v): self._scalar_queue.append(v)
     def queue_scalars(self, rows): self._scalars_queue.append(list(rows))
 
     async def get(self, model, pk): return self.pk_store.get(model, {}).get(pk)
-    async def scalar(self, _stmt):
+    async def scalar(self, stmt):
+        self.scalar_statements.append(stmt)
         return self._scalar_queue.pop(0) if self._scalar_queue else None
     async def scalars(self, stmt):
         self.statements.append(stmt)
@@ -418,6 +420,91 @@ class TestEphemeralKeys:
         )
         # >= now + 60s (allow a small scheduling slack below the clamp).
         assert key.expires_at >= datetime.now(UTC) + timedelta(seconds=55)
+
+    def test_mint_request_bounds_run_id_to_its_column(self):
+        """run_id lands in a String(64) column: reject what would fail the INSERT."""
+        from pydantic import ValidationError
+        from foundation_llm_gateway.api.v1.llm_gateway import MintEphemeralKeyRequest
+
+        assert MintEphemeralKeyRequest(run_id="r" * 64, ttl_seconds=600).run_id == "r" * 64
+        for bad in ("", "r" * 65):
+            with pytest.raises(ValidationError):
+                MintEphemeralKeyRequest(run_id=bad, ttl_seconds=600)
+
+    async def _mint_route(self, svc, session, tenant_id, request_id, **body):
+        from foundation_llm_gateway.api.v1.llm_gateway import (
+            MintEphemeralKeyRequest, mint_ephemeral_tenant_key,
+        )
+        from foundation_llm_gateway.domain.base import FoundationContext
+
+        ctx = FoundationContext(
+            tenant_id=tenant_id, user_id="usr_01J5DEVXX00000000000000001",
+            actor="SERVICE", request_id=request_id,
+        )
+        return await mint_ephemeral_tenant_key(
+            body=MintEphemeralKeyRequest(ttl_seconds=600, **body),
+            ctx=ctx, session=session, svc=svc, request_id=request_id,
+        )
+
+    @staticmethod
+    def _sql(stmt):
+        from sqlalchemy.dialects import postgresql
+        return " ".join(str(stmt.compile(dialect=postgresql.dialect())).split())
+
+    async def test_mint_binds_to_the_tenants_oldest_enabled_provider(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        fake_session.queue_scalar(_make_provider(tenant_id))
+
+        minted = await self._mint_route(svc, fake_session, tenant_id, request_id, run_id="run_A")
+
+        assert minted["provider_id"] == "llmp_TEST"
+        assert minted["run_id"] == "run_A" and minted["ephemeral"] is True
+        (stmt,) = fake_session.scalar_statements
+        sql = self._sql(stmt)
+        p = "llm_gateway.llm_provider"
+        assert f"{p}.tenant_id = " in sql and f"{p}.enabled IS true" in sql
+        # Without an order the pick among several providers was arbitrary.
+        assert sql.endswith(f"ORDER BY {p}.created_at, {p}.id LIMIT %(param_1)s")
+
+    async def test_mint_without_an_enabled_provider_is_404(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        with pytest.raises(FoundationError) as err:
+            await self._mint_route(svc, fake_session, tenant_id, request_id, run_id="run_A")
+        assert err.value.error_code.code == PROVIDER_NOT_FOUND.code
+        assert fake_session.added == []
+
+    async def test_mint_with_an_explicit_provider_binds_to_it(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        fake_session.queue_scalar(_make_provider(tenant_id))
+
+        minted = await self._mint_route(
+            svc, fake_session, tenant_id, request_id, run_id="run_A", provider_id="llmp_TEST",
+        )
+
+        assert minted["provider_id"] == "llmp_TEST"
+        (stmt,) = fake_session.scalar_statements
+        p = "llm_gateway.llm_provider"
+        assert f"{p}.id = " in self._sql(stmt)
+
+    async def test_mint_rejects_a_provider_that_is_not_the_tenants_or_is_disabled(
+        self, svc, fake_session, tenant_id, request_id
+    ):
+        """The explicit provider_id used to be stored unchecked."""
+        with pytest.raises(FoundationError) as err:
+            await self._mint_route(
+                svc, fake_session, tenant_id, request_id, run_id="run_A", provider_id="llmp_OTHER",
+            )
+
+        assert err.value.error_code.code == PROVIDER_NOT_FOUND.code
+        assert fake_session.added == []
+        (stmt,) = fake_session.scalar_statements
+        sql = self._sql(stmt)
+        p = "llm_gateway.llm_provider"
+        assert f"{p}.tenant_id = " in sql and f"{p}.enabled IS true" in sql
+        assert f"{p}.id = " in sql
 
     async def test_minted_key_then_resolves_until_it_expires(
         self, svc, fake_session, tenant_id

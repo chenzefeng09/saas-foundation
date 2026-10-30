@@ -1485,6 +1485,8 @@ services:
       LLM_GATEWAY_HTTP_PORT: "8011"
       LLM_GATEWAY_API_PREFIX: "/api/llm-gateway/v1"
       LLM_GATEWAY_DB_DSN: postgresql+asyncpg://app_user:${APP_USER_PASSWORD:-app_user_change_me}@pgbouncer:6432/foundation
+      # Expired ephemeral-key purge job (cross-tenant, actor=ADMIN).
+      LLM_GATEWAY_DB_DSN_ADMIN: postgresql+asyncpg://app_admin:${APP_ADMIN_PASSWORD:-app_admin_change_me}@pgbouncer:6432/foundation
       LLM_GATEWAY_DB_DSN_MIGRATOR: postgresql+asyncpg://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_change_me}@postgres:5432/foundation
       LLM_GATEWAY_BILLING_URL: http://billing:8007
       LLM_GATEWAY_CRYPTO_URL: http://crypto:8004

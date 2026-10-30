@@ -30,6 +30,8 @@ tags:
     description: Provider endpoints 管理
   - name: virtual-keys
     description: 租户虚拟 key
+  - name: tenant-keys
+    description: 按 run 铸造的短期虚拟 key
   - name: capabilities
     description: 能力探测
   - name: user-preferences
@@ -270,6 +272,35 @@ paths:
       operationId: revokeVirtualKey
       responses:
         '204': { description: ok }
+
+  /tenant-keys/ephemeral:
+    post:
+      tags: [tenant-keys]
+      operationId: mintEphemeralTenantKey
+      description: |
+        为一次 agent run（或一次 canvas / 标题调用）铸造短期虚拟 key，记下 `run_id`。
+        过了 `expires_at`，`/chat/completions` 就以 403 VIRTUAL_KEY_MISMATCH 拒绝它；
+        `POST /tenant-keys/revoke-run` 可提前停用。过期超过宽限期
+        （`LLM_GATEWAY_EPHEMERAL_KEY_PURGE_GRACE_HOURS`，默认 168 小时）的 key 由网关的
+        定时任务物理删除，之后查不到它对应的租户和 run。
+        不传 `provider_id` 时，绑定租户最早创建的已启用 provider。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MintEphemeralKeyRequest' }
+      responses:
+        '201':
+          description: ok（明文 `virtual_key` 只在本响应出现，`GET /tenant-keys` 不列短期 key）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EphemeralTenantKey' }
+        '404':
+          description: PROVIDER_NOT_FOUND：租户没有已启用的 provider，或 `provider_id` 不是本租户已启用的 provider
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /user-preferences:
     get:
@@ -622,3 +653,41 @@ components:
             token:
               type: string
               description: 明文 token，仅本响应可见
+
+    MintEphemeralKeyRequest:
+      type: object
+      required: [run_id, ttl_seconds]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 记在 key 上，供审计和 `revoke-run` 使用
+        ttl_seconds:
+          type: integer
+          description: 存活秒数；网关钳制到 60–86400
+        provider_id:
+          type: string
+          description: 须是本租户已启用的 provider；省略时取最早创建的那个
+        rate_limit_rpm:
+          type: integer
+          default: 60
+          description: 记录在 key 上；网关目前不据此限流
+
+    EphemeralTenantKey:
+      type: object
+      required: [id, virtual_key, provider_id, name, rate_limit_rpm, enabled, run_id, ephemeral, expires_at]
+      properties:
+        id: { type: string }
+        virtual_key:
+          type: string
+          description: 明文 key（`sk-foundation-eph-` 前缀）
+        provider_id: { type: string }
+        name:
+          type: string
+          description: '`run:<run_id>`'
+        rate_limit_rpm: { type: integer }
+        enabled: { type: boolean }
+        run_id: { type: string }
+        ephemeral: { type: boolean, const: true }
+        expires_at: { type: string, format: date-time }

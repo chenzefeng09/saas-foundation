@@ -646,7 +646,8 @@ class LLMGatewayService:
         ``run_id`` and ``ephemeral=True``. Once ``expires_at`` is in the past
         the resolver rejects the key (see ``resolve_provider``), so a key
         leaked out of a sandbox stops billing the tenant shortly after the run
-        ends — no background cleanup required.
+        ends, with no cleanup needed. The dead row itself is deleted later by
+        ``purge_expired_ephemeral_keys``.
 
         ``ttl_seconds`` is clamped to a sane window (matching the scheduler's
         token-TTL convention) so a bad caller can neither mint a 0-second key
@@ -697,6 +698,48 @@ class LLMGatewayService:
             await session.flush()
             log.info("ephemeral_key.revoked", run_id=run_id, count=len(rows))
         return len(rows)
+
+    async def purge_expired_ephemeral_keys(
+        self, session: AsyncSession, *, expired_before: datetime, limit: int,
+    ) -> int:
+        """Hard-delete up to ``limit`` ephemeral keys that expired before ``expired_before``.
+
+        One row is minted per agent run and per canvas/title call, and nothing
+        else ever removes it. Deleting is safe: an expired key no longer
+        authenticates, and nothing references the row. There is no FK to it,
+        usage records carry tenant/provider/request ids, and audit events carry
+        the run id from the request. The caller's grace period only keeps the
+        key -> tenant/run mapping (and the resolver's ``virtual_key.expired``
+        warning) for incident forensics.
+
+        Cross-tenant: run it in an ``admin_session_scope()`` session. One batch
+        per call keeps each transaction short, and ``SKIP LOCKED`` lets the
+        purgers of several replicas split the rows instead of queueing on
+        them. Long-lived keys (``ephemeral`` false) are never touched, whatever
+        their ``expires_at``. Revoked (disabled) ephemeral keys are purged on
+        the same expiry schedule.
+
+        The batch is locked and fetched first, then deleted by id. A single
+        ``DELETE ... WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)``
+        does not bound the batch: Postgres may plan the subquery as the inner
+        side of a nested loop and rescan it per row, and each rescan skips the
+        rows this statement already deleted, so the window slides past ``n``.
+        """
+        doomed = (await session.scalars(
+            select(LLMTenantKey.id)
+            .where(LLMTenantKey.ephemeral.is_(True), LLMTenantKey.expires_at < expired_before)
+            .order_by(LLMTenantKey.expires_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )).all()
+        if not doomed:
+            return 0
+        result = await session.execute(
+            delete(LLMTenantKey)
+            .where(LLMTenantKey.id.in_(doomed))
+            .execution_options(synchronize_session=False)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     # ------------------------------------------------------------------ Usage
 

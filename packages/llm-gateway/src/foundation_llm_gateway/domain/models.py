@@ -1,7 +1,7 @@
 """LLM Gateway models."""
 from __future__ import annotations
 from datetime import datetime; from typing import Any
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from foundation_llm_gateway.domain.base import Base
@@ -23,7 +23,13 @@ class LLMProvider(Base):
 
 class LLMTenantKey(Base):
     __tablename__ = "llm_tenant_key"
-    __table_args__ = (Index("llmk_tenant_idx", "tenant_id"), {"schema": "llm_gateway"})
+    __table_args__ = (
+        Index("llmk_tenant_idx", "tenant_id"),
+        # Expired-key purge (jobs.py) reads the oldest expired ephemeral keys
+        # first; partial, so long-lived keys never enter the index.
+        Index("llmk_ephemeral_expires_idx", "expires_at", postgresql_where=text("ephemeral IS TRUE")),
+        {"schema": "llm_gateway"},
+    )
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
     provider_id: Mapped[str] = mapped_column(String(40), nullable=False)
