@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
+from foundation_org.domain.models import OrgUnit
 from foundation_org.errors import (
     ORG_UNIT_ARCHIVED,
     ORG_UNIT_CODE_CONFLICT,
@@ -24,6 +27,18 @@ from tests._factories import make_membership, make_org_unit, make_team
 @pytest.fixture
 def svc(audit_publisher: AsyncMock) -> OrgUnitService:
     return OrgUnitService(audit=audit_publisher)
+
+
+def _sql(stmt: Any) -> str:
+    """Render a recorded SELECT as Postgres SQL, values inlined."""
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    return " ".join(str(compiled).split())
+
+
+def _db_answer(units: list[OrgUnit], cursor: str | None, limit: int) -> list[OrgUnit]:
+    """What ``WHERE id > :cursor ORDER BY id LIMIT :limit + 1`` returns from ``units``."""
+    ordered = sorted(units, key=lambda u: u.id)
+    return [u for u in ordered if cursor is None or u.id > cursor][: limit + 1]
 
 
 class TestGet:
@@ -142,23 +157,33 @@ class TestCreate:
 
 
 class TestList:
-    async def test_list_returns_page_and_next_cursor(
+    async def test_list_pages_through_every_org_unit_once(
         self, svc: OrgUnitService, fake_session, tenant_id: str,
     ) -> None:
-        first = make_org_unit(ou_id="ou_01J0000000000000000000OU01", tenant_id=tenant_id)
-        second = make_org_unit(ou_id="ou_01J0000000000000000000OU02", tenant_id=tenant_id)
-        fake_session.queue_scalars([first, second])
+        units = [
+            make_org_unit(ou_id=f"ou_01J0000000000000000000OU0{i}", tenant_id=tenant_id)
+            for i in range(1, 6)
+        ]
 
-        rows, cursor = await svc.list(
-            fake_session,
-            tenant_id=tenant_id,
-            parent_id=None,
-            cursor="ou_01J0000000000000000000OU00",
-            limit=1,
-        )
+        pages: list[list[OrgUnit]] = []
+        cursor = None
+        for _ in units:  # a cursor that never runs out fails below instead of looping
+            fake_session.queue_scalars(_db_answer(units, cursor, limit=2))
+            page, cursor = await svc.list(
+                fake_session, tenant_id=tenant_id, cursor=cursor, limit=2,
+            )
+            pages.append(page)
+            if cursor is None:
+                break
 
-        assert rows == [first]
-        assert cursor == second.id
+        assert cursor is None
+        assert pages == [units[0:2], units[2:4], units[4:5]]
+        first, *later = (_sql(s) for s in fake_session.statements)
+        assert "ORDER BY org.org_unit.id LIMIT 3" in first
+        assert "org.org_unit.id >" not in first
+        for previous, sql in zip(pages[:-1], later, strict=True):
+            # Each page resumes right after the last unit the previous one showed.
+            assert f"org.org_unit.id > '{previous[-1].id}' ORDER BY org.org_unit.id LIMIT 3" in sql
 
 
 class TestUpdate:
