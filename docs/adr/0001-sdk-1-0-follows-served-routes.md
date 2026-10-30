@@ -45,7 +45,7 @@ release that needs an ADR.
 
    | Method | Change |
    | --- | --- |
-   | `lifecycle.restore_from_bin`, `lifecycle.purge_from_bin` | Take the recycle-bin entry id (`bin_id`, as `list_recycle_bin` returns it), not the resource id. The optional actors (`restored_by`; `destroyed_by`, `witness_user_id`) default to the caller. |
+   | `lifecycle.restore_from_bin`, `lifecycle.purge_from_bin` | Take the recycle-bin entry id (`bin_id`, as `list_recycle_bin` returns it), not the resource id. Nothing in the call names who acted: the service records the authenticated caller. |
    | `audit.verify_chain` | `event_ids` is gone. It re-verifies the tenant's chain from `from_event_id` onwards (`service`, `limit`). |
    | `audit.export` | Returns the exported file as text (`str`), not a dict. Gains `user_id` and `resource_id` filters. |
    | `authz.bind_role` | `role_name` and `scope` become `role_id` (from `list_roles`) and `scope_kind` (default `TENANT`). `scope_id`, `expires_at` and `grant_reason` are optional. |
@@ -76,14 +76,22 @@ release that needs an ADR.
    - `authz.check` sends `user_id`, which defaults to the context user. With
      no user, it raises before sending.
 
+   Two answers change under the four-eyes rule (`docs/design/lifecycle-v1.md`
+   §4.4). `lifecycle.purge_from_bin` and `lifecycle.release_legal_hold` act
+   only once a second user approves. Until then they return
+   `{destroyed: false, approval_request}` or `{released: false, approval_request}`.
+   A caller that took the answer as done must now wait for the approval.
+
    Each `fix(sdk)` commit lists the request every method sent before and what
    the service answered.
 
 5. **Additions** ship in the same release:
+   - the lifecycle approval requests behind the four-eyes rule:
+     `list_approval_requests`, `get_approval_request`, `approve_request` and
+     `reject_request`;
    - optional arguments: `authz.check(user_id=)`,
      `authz.create_role(display_name=, description=)`,
-     `lifecycle.mark_legal_hold(case_reference=)`,
-     `lifecycle.release_legal_hold(released_by=)` and
+     `lifecycle.mark_legal_hold(case_reference=)` and
      `crypto.create_kek(auto_rotate_days=)`. Python's `crypto.encrypt_async(context=)`,
      `search.query_async(cursor=)` and `notification.send_async(priority=)` are new too;
    - `bytes` as well as `str` for the payloads of `crypto.encrypt`, `crypto.sign` and
@@ -121,7 +129,7 @@ release that needs an ADR.
 
 ## Consequences
 
-- **agent-platform needs no code change.** It imports only `CookieSigner`,
+- **agent-platform needs no code change for the SDK.** It imports only `CookieSigner`,
   `SignatureExpiredError`, `SignatureInvalid` and `foundation_sdk.fastapi` from
   the SDK, and this release changes none of them. To take 1.0.0 from the
   internal index, it moves the pin in `docs/foundation-sdk-consumption.md`
@@ -129,10 +137,13 @@ release that needs an ADR.
   new code as soon as it is checked out.
 - **Release order:** per `docs/sdk-release.md`, merge this and the agent-platform
   pin change, then tag `foundation-sdk-v1.0.0`.
-- **Pending lifecycle work.** Recording lifecycle actors from the authenticated
-  caller, instead of the request body, also touches the lifecycle signatures.
-  Land it before the tag, or keep its SDK change additive, so that it does not
-  force a 2.0.0.
+- **The lifecycle service goes out first.** 1.0.0 sends hard-delete and
+  legal-hold release without a body, and an older lifecycle service answers
+  that with 422. So deploy the lifecycle service that records the
+  authenticated caller and applies the four-eyes rule before publishing
+  1.0.0, or with it. That service, in turn, needs agent-platform's admin web
+  to have an approval view and BFF proxies for `/approval-requests` before it
+  goes live.
 - **Upgrading breaks only calls that were already failing.** Code calling a
   removed or changed method breaks at upgrade, but every such call was already
   getting a 404, 405 or 422, or being ignored.
