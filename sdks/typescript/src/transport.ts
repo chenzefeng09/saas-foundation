@@ -18,7 +18,8 @@ import { currentContext, type FoundationContext } from "./context.js";
 import { type ProblemDetails, fromProblem } from "./errors.js";
 import { DEFAULT_RETRY, type RetryPolicy } from "./retry.js";
 
-const SDK_VERSION = "0.1.0";
+// package.json carries the same number; tests/version.test.ts keeps the two equal.
+const SDK_VERSION = "1.0.0";
 const DEFAULT_USER_AGENT = `foundation-sdk-typescript/${SDK_VERSION}`;
 
 export interface TransportOptions {

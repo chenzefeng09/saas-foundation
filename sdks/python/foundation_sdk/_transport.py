@@ -12,6 +12,7 @@ import httpx
 
 from foundation_sdk._context import current_context
 from foundation_sdk._retry import DEFAULT_RETRY, RetryPolicy
+from foundation_sdk._version import __version__
 from foundation_sdk.errors import FoundationError, from_problem
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class Transport:
         *,
         timeout: float = 30.0,
         retry: RetryPolicy = DEFAULT_RETRY,
-        user_agent: str = "foundation-sdk-python/0.1.0",
+        user_agent: str = f"foundation-sdk-python/{__version__}",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_token = api_token

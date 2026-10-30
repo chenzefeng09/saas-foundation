@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "foundation-sdk"
-version = "0.1.0"
+version = "1.0.0"
 description = "Python SDK for SaaS Foundation — typed client for all 16 microservices"
 authors = ["SaaS Foundation Team <foundation@example.com>"]
 readme = "README.md"

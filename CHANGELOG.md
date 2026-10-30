@@ -8,7 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- _Nothing yet._
+- **Golden SDK requests** in `contracts/sdk/`. Both SDK suites check that
+  every public method sends exactly its pinned request. Every service suite
+  checks that the request reaches a route that accepts it and that the
+  contract documents it. `.github/workflows/sdk-ci.yml` runs both SDK suites
+  on pull requests.
+
+### Changed
+- **Breaking:** `foundation-sdk` and `@foundation/sdk` 1.0.0. Every method now
+  sends the request its service serves. Six methods with no route behind them
+  are removed and seventeen change signature; see
+  [ADR 0001](docs/adr/0001-sdk-1-0-follows-served-routes.md).
+- org: `GET /org-units` and `GET /teams` filter by `filter.parent_id` and
+  `filter.org_unit_id`, as the contract documents. The bare names still work
+  as deprecated aliases.
+- Contracts: every operation the SDKs call documents its route as served.
+
+### Fixed
+- lifecycle: a restore sent with `{}` or `{"restored_by": null}` records the
+  caller as the restorer instead of NULL.
 
 [Unreleased]: https://github.com/chenzefeng09/saas-foundation/compare/v0.1.0...HEAD
 

@@ -290,8 +290,8 @@ OpenAPI spec 从单一真相源驱动三套客户端 SDK：
 
 | SDK | 状态 | 包 | 说明 |
 |---|---|---|---|
-| **Python** | 已交付（v0.1.0） | `foundation_sdk`（`sdks/python`） | `FoundationClient.from_env()` 聚合 17 个资源组；异步；可选 `[fastapi]` extra 增加 `RequestContextMiddleware` + RFC 7807 problem-details 注册。 |
-| **TypeScript** | 已交付（v0.1.0） | `@foundation/sdk`（`sdks/typescript`） | 与 Python 表面 1:1 对齐（同 17 资源、错误体系、上下文助手）；零运行时依赖、基于 fetch、双 ESM/CJS（tsup），用 vitest 测试。 |
+| **Python** | 已交付（v1.0.0） | `foundation_sdk`（`sdks/python`） | `FoundationClient.from_env()` 聚合 17 个资源组；异步；可选 `[fastapi]` extra 增加 `RequestContextMiddleware` + RFC 7807 problem-details 注册。 |
+| **TypeScript** | 已交付（v1.0.0） | `@foundation/sdk`（`sdks/typescript`） | 与 Python 表面 1:1 对齐（同 17 资源、错误体系、上下文助手）；零运行时依赖、基于 fetch、双 ESM/CJS（tsup），用 vitest 测试。 |
 | **Go** | **规划中** | `sdks/go/` | 仅一个 stub——只有 `.gitkeep`，无 `go.mod` 或代码。README / Makefile 引用了未来的 `make sdk-go`，但尚未生成。 |
 
 业务系统依赖生成的 `foundation_*` SDK 包，**不允许**直接调服务 URL 或 import Foundation 引擎的内部包。对私有云客户，离线 SDK tarball（`sdks/python-1.0.0.tar.gz`、`sdks/typescript-1.0.0.tgz`）随 Helm chart 一起交付。
