@@ -74,7 +74,11 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["tests"]
+# Bare `pytest` (the CI lint-and-test job) runs the unit tier only; the integration
+# and rls-fuzz jobs pass tests/integration/ and tests/security/ explicitly.
+testpaths = ["tests/unit"]
+# CI installs with --no-root, so the package is imported from src/.
+pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = ["-ra","--strict-markers","--strict-config"]

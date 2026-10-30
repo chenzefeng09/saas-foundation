@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+
+# Set before any test module imports foundation_security_ops.main, which builds the
+# app (and caches Settings) at import time. With OTEL on, the tests would try to
+# export spans to a collector at 127.0.0.1:4317 and stall on retries at exit.
+os.environ["SECURITY_OPS_OTEL_ENABLED"] = "false"
 
 
 class _ScalarsResult:
