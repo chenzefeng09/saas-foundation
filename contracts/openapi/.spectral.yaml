@@ -67,16 +67,23 @@ rules:
         match: '^([A-Z][A-Z0-9_]*|equal_protection_[34]|finance_jrt0071|pipl|gdpr|hipaa|soc2|iso27001)$'
 
   # --------------------------------------------------------------------------
-  # 错误码格式 FOUNDATION.<SVC>.<CAT>.<NAME> 四段
+  # 错误码格式 FOUNDATION.<SVC>.<CAT>.<NAME> 四段（CONVENTIONS §4、errors.md §3.1）
+  # <SVC> is `_` for the codes all services share (errors.md §12). The Error
+  # schema must carry the regex tests/conformance/test_c4_error_format.py holds
+  # every response to; spectral:oas then checks each example against it.
   # --------------------------------------------------------------------------
   foundation-error-code-format:
-    description: Error code must match FOUNDATION.<SVC>.<CAT>.<NAME> 4-segment pattern
+    description: The Error schema's code must use the FOUNDATION.<SVC>.<CAT>.<NAME> pattern (errors.md §3.1)
     severity: error
-    given: $.components.schemas..code.pattern
+    given: $.components.schemas.Error.properties.code
     then:
-      function: pattern
-      functionOptions:
-        match: '\\^\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\$'
+      - field: pattern
+        function: truthy
+      - field: pattern
+        function: enumeration
+        functionOptions:
+          values:
+            - '^FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+$'
 
   # --------------------------------------------------------------------------
   # 所有 path 必须有 operationId（SDK 生成必需）

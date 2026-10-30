@@ -370,7 +370,7 @@ components:
           description: HTTP 状态码
         code:
           type: string
-          pattern: '^[A-Z][A-Z_]+\.[A-Z][A-Z_]+\.[A-Z][A-Z_]+\.[A-Z][A-Z_]+$'
+          pattern: '^FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+$'
           description: 机器可读错误码 `FOUNDATION.<SVC>.<CAT>.<NAME>` 四段
           example: FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS
         detail:
