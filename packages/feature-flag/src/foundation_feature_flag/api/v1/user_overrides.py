@@ -20,6 +20,11 @@ from sqlalchemy import delete, select
 from foundation_feature_flag.domain.base import foundation_context
 from foundation_feature_flag.domain.db import session_scope
 from foundation_feature_flag.domain.models import Flag, UserFlagOverride
+from foundation_feature_flag.errors import (
+    TENANT_CONTEXT_MISSING,
+    USER_CONTEXT_MISSING,
+    FoundationError,
+)
 from foundation_feature_flag.observability import get_logger
 from foundation_feature_flag.services.unleash_gateway import UnleashGateway
 
@@ -51,8 +56,10 @@ class SetUserOverrideRequest(BaseModel):
 def _identity() -> tuple[str, str]:
     """Return (tenant_id, user_id) or raise 401."""
     ctx = foundation_context.get()
-    if ctx is None or not ctx.tenant_id or not ctx.user_id:
-        raise HTTPException(status_code=401, detail="tenant and user context required")
+    if ctx is None or not ctx.tenant_id:
+        raise FoundationError(TENANT_CONTEXT_MISSING)
+    if not ctx.user_id:
+        raise FoundationError(USER_CONTEXT_MISSING)
     return ctx.tenant_id, ctx.user_id
 
 

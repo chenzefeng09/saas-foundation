@@ -4,14 +4,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_lifecycle.adapters.org_client import OrgClient
 from foundation_lifecycle.config import get_settings
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
 from foundation_lifecycle.domain.db import admin_session_scope, session_scope
-from foundation_lifecycle.errors import PERMISSION_DENIED, FoundationError
+from foundation_lifecycle.errors import (
+    INSUFFICIENT_SCOPE,
+    PERMISSION_DENIED,
+    TENANT_CONTEXT_MISSING,
+    FoundationError,
+)
 from foundation_lifecycle.services.approval_service import ApprovalService
 from foundation_lifecycle.services.large_attachment_service import LargeAttachmentService
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
@@ -21,7 +26,7 @@ from foundation_lifecycle.services.storage_report_service import StorageReportSe
 
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
-    if ctx is None: raise HTTPException(status_code=401, detail="Tenant context missing")
+    if ctx is None: raise FoundationError(TENANT_CONTEXT_MISSING)
     return ctx
 
 def current_user_id(ctx: FoundationContext = Depends(current_context)) -> str:
@@ -99,5 +104,6 @@ def require_scope(scope: str) -> Callable[[Request], None]:
     """Return a FastAPI dep that 403s when ``scope`` is missing from the actor."""
     def _dep(request: Request) -> None:
         if scope not in _request_scopes(request):
-            raise HTTPException(status_code=403, detail=f"missing scope: {scope}")
+            raise FoundationError(INSUFFICIENT_SCOPE, detail=f"Missing required scope: {scope}",
+                                  extra={"required_scope": scope})
     return _dep

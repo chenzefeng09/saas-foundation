@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from httpx import AsyncClient
+
+# docs/errors.md §3.1, as contracts/openapi/_common.yaml's Error.code pattern.
+CODE_FORMAT = re.compile(r"FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+")
 
 
 @pytest.mark.unit
@@ -48,3 +53,17 @@ async def test_invalid_tenant_header_returns_400(client: AsyncClient) -> None:
     body = resp.json()
     assert body["code"] == "FOUNDATION.IDENTITY.INPUT.INVALID_FORMAT"
     assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.unit
+async def test_missing_tenant_header_returns_problem_json_401(client: AsyncClient) -> None:
+    path = "/api/identity/v1/mfa/methods"
+    resp = await client.get(path)
+    assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    body = resp.json()
+    assert body["code"] == "FOUNDATION.IDENTITY.AUTH.TENANT_CONTEXT_MISSING"
+    assert CODE_FORMAT.fullmatch(body["code"])
+    assert body["status"] == 401
+    assert body["instance"] == path
+    assert body["request_id"] == resp.headers["X-Request-Id"]

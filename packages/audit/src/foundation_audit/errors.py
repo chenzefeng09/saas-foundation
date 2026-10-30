@@ -30,6 +30,9 @@ def _ec(category: str, name: str, http: int, title: str, detail: str, user_msg: 
                      title=title, default_detail=detail, default_user_message=user_msg)
 
 
+TENANT_CONTEXT_MISSING: Final = _ec(
+    "AUTH", "TENANT_CONTEXT_MISSING", 401, "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).", "缺少租户上下文。")
 PERMISSION_DENIED: Final = _ec("POLICY", "PERMISSION_DENIED", 403, "Permission denied", "Subject does not have audit permission.", "您没有审计查询权限。")
 TENANT_MISMATCH: Final = _ec("POLICY", "TENANT_MISMATCH", 403, "Tenant mismatch", "Event belongs to a different tenant.", "租户不匹配。")
 INVALID_FORMAT: Final = _ec("INPUT", "INVALID_FORMAT", 400, "Invalid input", "Payload malformed.", "请求格式错误。")

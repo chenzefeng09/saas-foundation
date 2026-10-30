@@ -127,6 +127,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/vN`-in-path rule contradicted CONVENTIONS §2.2. It now runs
   `contracts/openapi/.spectral.yaml`, as `make lint` does (that ruleset did
   not load), with Spectral 6.17.0 pinned, and fails on errors.
+- A request without tenant context (no `X-Tenant-Id`) gets an RFC 9457 `401`
+  with `FOUNDATION.<SVC>.AUTH.TENANT_CONTEXT_MISSING` instead of FastAPI's
+  `{"detail": ...}`, in api-platform, audit, authz, billing, compliance,
+  crypto, data-protection, dlp, feature-flag (user overrides), identity,
+  lifecycle, llm-gateway, notification, org, pam and search. feature-flag's
+  user overrides without a user get
+  `FOUNDATION.FEATURE_FLAG.AUTH.USER_CONTEXT_MISSING`, and lifecycle's
+  missing-scope `403` is `FOUNDATION.LIFECYCLE.POLICY.INSUFFICIENT_SCOPE`.
+- Contracts: llm-gateway's `POST /tenant-keys/ephemeral` and
+  `POST /tenant-keys/revoke-run` document their `401` as `_common.yaml`'s
+  `Unauthorized`, which is what the service sends.
 - Local stack: seed users can sign in again after the realm's 90-day
   password expiry (a keycloak-init job resets them on every `up`), web
   sessions can refresh, services get the env names they read, and

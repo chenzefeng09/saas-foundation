@@ -28,6 +28,13 @@ class FoundationError(Exception):
         super().__init__(f"{error_code.code}: {self.detail}")
 
 
+TENANT_CONTEXT_MISSING: Final = ErrorCode(
+    "FOUNDATION.SEARCH.AUTH.TENANT_CONTEXT_MISSING",
+    401,
+    "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).",
+    "缺少租户上下文。",
+)
 VALIDATION_FAILED: Final = ErrorCode(
     "FOUNDATION.SEARCH.INPUT.VALIDATION_FAILED",
     422,

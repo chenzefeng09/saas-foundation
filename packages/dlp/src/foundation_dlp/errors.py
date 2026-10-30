@@ -21,6 +21,9 @@ CLEARANCE_UNAVAILABLE: Final = _ec("DEPENDENCY", "CLEARANCE_UNAVAILABLE", 503, "
 CLEARANCE_INSUFFICIENT: Final = _ec("POLICY", "CLEARANCE_INSUFFICIENT", 403, "Clearance insufficient", "User clearance < resource sensitivity.", "您的密级不足以访问该资源。")
 DLP_DENIED: Final = _ec("POLICY", "DLP_DENIED", 403, "DLP denied", "Action blocked by DLP policy.", "DLP 策略阻止了该操作。")
 IDENTITY_CONTEXT_MISSING: Final = _ec("AUTH", "IDENTITY_CONTEXT_MISSING", 401, "Identity context missing", "A trusted user identity is required for this operation.", "缺少可信用户身份。")
+TENANT_CONTEXT_MISSING: Final = _ec(
+    "AUTH", "TENANT_CONTEXT_MISSING", 401, "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).", "缺少租户上下文。")
 SENSITIVITY_IMMUTABLE_DOWNGRADE: Final = _ec("STATE", "SENSITIVITY_IMMUTABLE_DOWNGRADE", 409, "Cannot downgrade", "Sensitivity level cannot be downgraded.", "密级不能降级。")
 VALIDATION_FAILED: Final = _ec("INPUT", "VALIDATION_FAILED", 422, "Validation failed", "Input failed validation.", "输入校验未通过。")
 UNEXPECTED: Final = _ec("INTERNAL", "UNEXPECTED", 500, "Unexpected error", "Internal error.", "服务异常。")

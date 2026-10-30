@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_audit.domain.base import FoundationContext, foundation_context
 from foundation_audit.domain.db import session_scope
+from foundation_audit.errors import TENANT_CONTEXT_MISSING, FoundationError
 from foundation_audit.services.ingest_service import IngestService
 
 
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
     if ctx is None:
-        raise HTTPException(status_code=401, detail="Tenant context missing")
+        raise FoundationError(TENANT_CONTEXT_MISSING)
     return ctx
 
 

@@ -33,11 +33,12 @@ class TestErrorCodeRegistry:
             assert parts[0] == "FOUNDATION"
             assert parts[1] == "AUTHZ"
             assert parts[2] in {
-                "POLICY", "INPUT", "RESOURCE", "STATE", "DEPENDENCY", "INTERNAL"
+                "AUTH", "POLICY", "INPUT", "RESOURCE", "STATE", "DEPENDENCY", "INTERNAL"
             }, f"unknown category in {c.code}"
 
     def test_http_status_consistent_with_category(self) -> None:
         category_to_allowed_status = {
+            "AUTH": {401},
             "POLICY": {403},
             "INPUT": {400, 422},
             "RESOURCE": {404, 409},

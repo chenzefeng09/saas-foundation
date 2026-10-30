@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +28,9 @@ from tests._factories import (
     make_resource_type,
 )
 
+# docs/errors.md §3.1, as contracts/openapi/_common.yaml's Error.code pattern.
+CODE_FORMAT = re.compile(r"FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+")
+
 
 def test_healthz_includes_request_id_header() -> None:
     client = TestClient(create_app())
@@ -49,6 +53,21 @@ def test_invalid_tenant_header_returns_problem_json() -> None:
     assert response.status_code == 400
     assert response.headers["content-type"].startswith("application/problem+json")
     assert response.json()["code"] == "FOUNDATION.LIFECYCLE.INPUT.VALIDATION_FAILED"
+
+
+def test_missing_tenant_header_returns_problem_json_401() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/api/lifecycle/v1/recycle-bin")
+
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["code"] == "FOUNDATION.LIFECYCLE.AUTH.TENANT_CONTEXT_MISSING"
+    assert CODE_FORMAT.fullmatch(body["code"])
+    assert body["status"] == 401
+    assert body["instance"] == "/api/lifecycle/v1/recycle-bin"
+    assert body["request_id"] == response.headers["X-Request-Id"]
 
 
 def test_foundation_error_handler_returns_problem_json() -> None:

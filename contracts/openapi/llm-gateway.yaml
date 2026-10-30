@@ -304,13 +304,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/EphemeralTenantKey' }
         '401':
-          description: 缺少 `X-Tenant-Id`（没有租户上下文）
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  detail: { type: string }
+          $ref: './_common.yaml#/components/responses/Unauthorized'
+          description: TENANT_CONTEXT_MISSING：缺少 `X-Tenant-Id`（没有租户上下文）
         '403':
           $ref: './_common.yaml#/components/responses/Forbidden'
           description: PERMISSION_DENIED：actor 不是经认证的 SERVICE（没有 / 错误的 `X-Internal-Service-Token`、USER、ADMIN）
@@ -345,13 +340,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RevokeRunKeysResponse' }
         '401':
-          description: 缺少 `X-Tenant-Id`（没有租户上下文）
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  detail: { type: string }
+          $ref: './_common.yaml#/components/responses/Unauthorized'
+          description: TENANT_CONTEXT_MISSING：缺少 `X-Tenant-Id`（没有租户上下文）
         '403':
           $ref: './_common.yaml#/components/responses/Forbidden'
           description: PERMISSION_DENIED：actor 不是经认证的 SERVICE
