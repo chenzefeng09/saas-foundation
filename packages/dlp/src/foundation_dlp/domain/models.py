@@ -44,6 +44,8 @@ class Classification(Base):
         ),
         Index("class_tenant_idx", "tenant_id"),
         Index("class_sensitivity_idx", "sensitivity"),
+        # GET /core/classifications: keyset pages on (updated_at, id) per tenant
+        Index("class_tenant_updated_idx", "tenant_id", "updated_at", "id"),
         {"schema": "dlp"},
     )
 
@@ -62,7 +64,7 @@ class Classification(Base):
     tagged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     # Whether the classification can be downgraded (L5 cannot)
     downgradable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
