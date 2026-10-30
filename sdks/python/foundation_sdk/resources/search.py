@@ -26,12 +26,15 @@ class SearchResource:
         return self._t.request("POST", "/api/search/v1/query", json=body)
 
     async def query_async(self, *, q: str, resource_types: list[str] | None = None,
-                           tags: list[str] | None = None, limit: int = 20) -> dict[str, Any]:
+                           tags: list[str] | None = None, cursor: str | None = None,
+                           limit: int = 20) -> dict[str, Any]:
         body: dict[str, Any] = {"q": q, "limit": limit}
         if resource_types:
             body["resource_types"] = resource_types
         if tags:
             body["tags"] = tags
+        if cursor:
+            body["cursor"] = cursor
         return await self._t.request_async("POST", "/api/search/v1/query", json=body)
 
     def index(self, *, resource_type: str, resource_id: str, title: str,
@@ -45,5 +48,5 @@ class SearchResource:
                                       "tags": tags or [], "acl_user_ids": acl_user_ids or [],
                                       "metadata": metadata or {}})
 
-    def deindex(self, resource_id: str) -> dict[str, Any]:
-        return self._t.request("DELETE", f"/api/search/v1/index/{resource_id}")
+    def deindex(self, resource_type: str, resource_id: str) -> dict[str, Any]:
+        return self._t.request("DELETE", f"/api/search/v1/index/{resource_type}/{resource_id}")

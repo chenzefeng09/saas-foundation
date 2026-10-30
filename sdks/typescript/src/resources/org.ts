@@ -12,7 +12,7 @@ export class OrgResource {
 
   async listOrgUnits(params?: { parentId?: string }): Promise<Record<string, unknown>> {
     return this.t.request("GET", "/api/org/v1/org-units", {
-      params: { parent_id: params?.parentId },
+      params: { "filter.parent_id": params?.parentId },
     });
   }
 
@@ -38,18 +38,21 @@ export class OrgResource {
 
   async listTeams(params?: { orgUnitId?: string }): Promise<Record<string, unknown>> {
     return this.t.request("GET", "/api/org/v1/teams", {
-      params: { org_unit_id: params?.orgUnitId },
+      params: { "filter.org_unit_id": params?.orgUnitId },
     });
   }
 
+  /** `code`: unique slug in the tenant, `^[a-z][a-z0-9_-]{0,31}$`. */
   async createTeam(params: {
     name: string;
+    code: string;
     orgUnitId: string;
     description?: string;
   }): Promise<Record<string, unknown>> {
     return this.t.request("POST", "/api/org/v1/teams", {
       json: {
         name: params.name,
+        code: params.code,
         org_unit_id: params.orgUnitId,
         description: params.description ?? "",
       },
@@ -58,22 +61,19 @@ export class OrgResource {
 
   // --- Memberships ---
 
+  /** `role`: MEMBER, LEAD or OBSERVER. */
   async addMember(params: {
     userId: string;
     teamId: string;
     role?: string;
   }): Promise<Record<string, unknown>> {
-    return this.t.request("POST", "/api/org/v1/memberships", {
-      json: {
-        user_id: params.userId,
-        team_id: params.teamId,
-        role: params.role ?? "member",
-      },
+    return this.t.request("POST", `/api/org/v1/teams/${params.teamId}/members`, {
+      json: { user_id: params.userId, role_in_team: params.role ?? "MEMBER" },
     });
   }
 
   async removeMember(userId: string, teamId: string): Promise<Record<string, unknown>> {
-    return this.t.request("DELETE", `/api/org/v1/memberships/${userId}/${teamId}`);
+    return this.t.request("DELETE", `/api/org/v1/teams/${teamId}/members/${userId}`);
   }
 
   async listMembers(teamId: string): Promise<Record<string, unknown>> {

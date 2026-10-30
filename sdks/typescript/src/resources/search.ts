@@ -47,7 +47,7 @@ export class SearchResource {
     });
   }
 
-  async deindex(resourceId: string): Promise<Record<string, unknown>> {
-    return this.t.request("DELETE", `/api/search/v1/index/${resourceId}`);
+  async deindex(resourceType: string, resourceId: string): Promise<Record<string, unknown>> {
+    return this.t.request("DELETE", `/api/search/v1/index/${resourceType}/${resourceId}`);
   }
 }

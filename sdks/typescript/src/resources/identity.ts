@@ -23,51 +23,40 @@ export class IdentityResource {
     });
   }
 
+  /** Invite a user. No password goes through this call; identity emails an invite. */
   async createUser(body: {
     email: string;
     displayName: string;
-    password?: string;
     roles?: string[];
   }): Promise<Record<string, unknown>> {
-    return this.t.request("POST", "/api/identity/v1/users", {
-      json: {
-        email: body.email,
-        display_name: body.displayName,
-        password: body.password,
-        roles: body.roles,
-      },
+    const json: Record<string, unknown> = { email: body.email, display_name: body.displayName };
+    if (body.roles?.length) json["roles"] = body.roles;
+    return this.t.request("POST", "/api/identity/v1/users", { json });
+  }
+
+  /** Emergency freeze — invalidates all tokens immediately. `reason`: 5–500 chars. */
+  async freezeUser(userId: string, params: { reason: string }): Promise<Record<string, unknown>> {
+    return this.t.request("POST", `/api/identity/v1/users/${userId}/freeze`, {
+      json: { reason: params.reason },
     });
-  }
-
-  async disableUser(userId: string): Promise<Record<string, unknown>> {
-    return this.t.request("POST", `/api/identity/v1/users/${userId}/disable`);
-  }
-
-  /** Emergency freeze — invalidates all tokens immediately. */
-  async freezeUser(userId: string): Promise<Record<string, unknown>> {
-    return this.t.request("POST", `/api/identity/v1/users/${userId}/freeze`);
   }
 
   // --- Password Policy ---
 
   async getPasswordPolicy(): Promise<Record<string, unknown>> {
-    return this.t.request("GET", "/api/identity/v1/password-policy");
-  }
-
-  async validatePassword(password: string): Promise<Record<string, unknown>> {
-    return this.t.request("POST", "/api/identity/v1/password-policy/validate", {
-      json: { password },
-    });
+    return this.t.request("GET", "/api/identity/v1/policies/password");
   }
 
   // --- Sessions ---
 
-  async listSessions(userId: string): Promise<Record<string, unknown>> {
-    return this.t.request("GET", `/api/identity/v1/users/${userId}/sessions`);
+  /** The caller's own sessions. */
+  async listSessions(): Promise<Record<string, unknown>> {
+    return this.t.request("GET", "/api/identity/v1/sessions");
   }
 
-  async revokeSession(userId: string, sessionId: string): Promise<Record<string, unknown>> {
-    return this.t.request("DELETE", `/api/identity/v1/users/${userId}/sessions/${sessionId}`);
+  /** Revoke one of the caller's own sessions. */
+  async revokeSession(sessionId: string): Promise<Record<string, unknown>> {
+    return this.t.request("DELETE", `/api/identity/v1/sessions/${sessionId}`);
   }
 
   /**

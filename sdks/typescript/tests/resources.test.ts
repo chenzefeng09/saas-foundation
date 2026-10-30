@@ -106,13 +106,13 @@ describe("AuthzResource — check", () => {
     client = new FoundationClient({
       apiUrl: "http://api.test",
       apiToken: "tok",
-      context: createContext({ tenantId: "tnt_001" }),
+      context: createContext({ tenantId: "tnt_001", userId: "usr_001" }),
     });
   });
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("calls POST /api/authz/v1/check with correct body", async () => {
+  it("calls POST /api/authz/v1/check for the context user", async () => {
     fetchMock.mockResolvedValue(makeResponse(200, { allowed: true }));
 
     await client.authz.check({
@@ -125,10 +125,27 @@ describe("AuthzResource — check", () => {
     expect(url).toBe("http://api.test/api/authz/v1/check");
     expect(init.method).toBe("POST");
 
+    // The route takes the subject from the body: without user_id it answers 422.
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body["action"]).toBe("session.read");
-    expect(body["resource_type"]).toBe("Agent");
-    expect(body["resource_id"]).toBe("agent_001");
+    expect(body).toEqual({
+      user_id: "usr_001",
+      action: "session.read",
+      resource_type: "Agent",
+      resource_id: "agent_001",
+    });
+  });
+
+  it("refuses to check without a user instead of sending a request the route rejects", async () => {
+    const anonymous = new FoundationClient({
+      apiUrl: "http://api.test",
+      apiToken: "tok",
+      context: createContext({ tenantId: "tnt_001" }),
+    });
+
+    await expect(
+      anonymous.authz.check({ action: "session.read", resourceType: "Agent" }),
+    ).rejects.toThrow("userId is required");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
