@@ -61,6 +61,8 @@ from foundation_identity.domain.models import Session as SessionModel
 from foundation_identity.errors import (
     ACCOUNT_LOCKED,
     INVALID_CREDENTIALS,
+    KEYCLOAK_ERROR,
+    KEYCLOAK_UNAVAILABLE,
     LOGIN_DENIED_RISK,
     MFA_CODE_INVALID,
     PERMISSION_DENIED,
@@ -360,7 +362,6 @@ async def create_session(
         tenant_id=tenant_id,
         user_id=user_id,
         issued_at=issued_at,
-        expires_at=expires_at,
         refresh_token_jti=_refresh_token_jti(refresh_token) if refresh_token else None,
         device_id=body.device_id,
         scopes=scopes,
@@ -514,7 +515,6 @@ async def _persist_session(
     tenant_id: str,
     user_id: str,
     issued_at: datetime,
-    expires_at: datetime,
     refresh_token_jti: str | None,
     device_id: str | None,
     scopes: list[str],
@@ -528,7 +528,17 @@ async def _persist_session(
     the tenant's admin scope because login happens before a normal tenant
     request context is established.  Best-effort: a write failure must not block
     the login itself, so callers wrap this defensively.
+
+    The row's ``expires_at`` is the session's ABSOLUTE deadline
+    (``session_absolute_timeout_floor_seconds`` after login) — the clock that
+    ``_touch_session_or_expire`` / ``_relink_session_jti`` enforce.  It is NOT
+    the access token's expiry: the access token is short-lived and gets
+    replaced by refresh rotation, while the session lives on until the idle or
+    absolute timeout (or a logout / revoke) ends it.
     """
+    expires_at = issued_at + timedelta(
+        seconds=get_settings().session_absolute_timeout_floor_seconds
+    )
     async with admin_session_scope(tenant_id=tenant_id, user_id="PLATFORM") as session:
         session.add(
             SessionModel(
@@ -930,7 +940,6 @@ async def _complete_sso_session(
         tenant_id=tenant_id,
         user_id=user_id,
         issued_at=issued_at,
-        expires_at=expires_at,
         refresh_token_jti=_refresh_token_jti(refresh_token) if refresh_token else None,
         device_id=device_id,
         scopes=scopes,
@@ -1021,7 +1030,6 @@ async def verify_mfa_login(
         tenant_id=tenant_id,
         user_id=user_id,
         issued_at=issued_at,
-        expires_at=expires_at,
         refresh_token_jti=_refresh_token_jti(refresh_token) if refresh_token else None,
         device_id=device_id,
         scopes=scopes,
@@ -1095,18 +1103,27 @@ async def refresh_session(
     Fail-secure: if the cache is unreachable the blacklist write raises
     ``REDIS_UNAVAILABLE`` and the refresh is refused rather than allowing a
     potentially-replayed token through.
+
+    Dependency failures do not burn the token: if Keycloak cannot be reached
+    (``KEYCLOAK_UNAVAILABLE``) or answers unexpectedly (``KEYCLOAK_ERROR``) the
+    reuse mark is released again before the error propagates, so the caller
+    can retry the SAME refresh token once the dependency recovers instead of
+    having that retry treated as a replay (which would revoke every session the
+    user has).  A definitive Keycloak refusal (``invalid_grant``) keeps the mark.
     """
     settings = get_settings()
     old_jti = _refresh_token_jti(body.refresh_token)
 
+    reuse_key: str | None = None
     if (
         settings.refresh_reuse_detection_enabled
         and settings.refresh_token_rotation_enabled
         and old_jti is not None
     ):
         # SET NX: first use wins; a False return means we have seen this jti.
+        reuse_key = _REUSED_RT_KEY.format(jti=old_jti)
         first_use = await cache.set_if_absent(
-            _REUSED_RT_KEY.format(jti=old_jti),
+            reuse_key,
             "1",
             settings.refresh_token_lifespan_seconds,
         )
@@ -1114,7 +1131,15 @@ async def refresh_session(
             await _handle_refresh_reuse(body.refresh_token, old_jti)
             raise FoundationError(REFRESH_TOKEN_REUSED)
 
-    tokens = await oidc.refresh_token_grant(refresh_token=body.refresh_token)
+    try:
+        tokens = await oidc.refresh_token_grant(refresh_token=body.refresh_token)
+    except FoundationError as exc:
+        if reuse_key is not None and exc.error_code in (
+            KEYCLOAK_UNAVAILABLE,
+            KEYCLOAK_ERROR,
+        ):
+            await _release_reuse_mark(cache, reuse_key)
+        raise
     access_token = tokens["access_token"]
     new_refresh_token = tokens.get("refresh_token", "")
     expires_in = int(tokens.get("expires_in", 300))
@@ -1149,6 +1174,18 @@ async def refresh_session(
         issued_at=issued_at,
         scopes=scopes,
     )
+
+
+async def _release_reuse_mark(cache: RedisCacheAdapter, key: str) -> None:
+    """Best-effort undo of the reuse mark after Keycloak failed to redeem.
+
+    If the delete itself fails the mark simply stays (the pre-existing
+    behaviour); the original Keycloak error is what the caller sees.
+    """
+    try:
+        await cache.delete(key)
+    except FoundationError:
+        log.warning("session.refresh.reuse_mark_release_failed")
 
 
 async def _handle_refresh_reuse(refresh_token: str, jti: str) -> None:

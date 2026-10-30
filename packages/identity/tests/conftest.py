@@ -123,11 +123,20 @@ class FakeAsyncSession:
     async def flush(self) -> None:
         now = datetime.now(UTC)
         for obj in self.added:
-            if hasattr(obj, "created_at") and getattr(obj, "created_at") is None:
-                setattr(obj, "created_at", now)
-            if hasattr(obj, "updated_at") and getattr(obj, "updated_at") is None:
-                setattr(obj, "updated_at", now)
+            _fill_db_timestamps(obj, now)
         return None
+
+    async def refresh(self, obj: Any, *_args: Any, **_kwargs: Any) -> None:
+        # A real refresh reloads DB-computed columns; here those are the
+        # timestamps flush() fills in.  UserService.update_user refreshes the
+        # user it returns so serializing it never lazy-loads.
+        _fill_db_timestamps(obj, datetime.now(UTC))
+
+
+def _fill_db_timestamps(obj: Any, now: datetime) -> None:
+    for attr in ("created_at", "updated_at"):
+        if hasattr(obj, attr) and getattr(obj, attr) is None:
+            setattr(obj, attr, now)
 
 
 class FakeRedisCache:

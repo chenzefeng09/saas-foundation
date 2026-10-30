@@ -100,6 +100,20 @@ ACCOUNT_FROZEN: Final = _ec(
     "Account is frozen by administrator.",
     "账号已被管理员冻结。",
 )
+# The password was accepted, but Keycloak still has required actions pending on
+# the account (UPDATE_PASSWORD after a password expiry or an admin-requested
+# reset, VERIFY_EMAIL, CONFIGURE_TOTP, ...).  The password grant cannot run those
+# interactive steps, so no session is issued — but this is NOT a wrong password
+# and must not be reported (or counted toward lockout) as one.
+ACCOUNT_SETUP_REQUIRED: Final = _ec(
+    "AUTH", "ACCOUNT_SETUP_REQUIRED", 401,
+    "Account setup required",
+    "The account has pending required actions (for example an expired password or "
+    "an administrator-requested password reset) that must be completed before a "
+    "session can be issued.",
+    "账号需要先完成更新才能登录（例如密码已过期或管理员要求重置密码）。"
+    "请使用设置邮件中的链接完成更新，或联系管理员为您发送密码重置邮件。",
+)
 LOGIN_DENIED_RISK: Final = _ec(
     "AUTH", "LOGIN_DENIED_RISK", 401,
     "Login denied — anomalous activity",

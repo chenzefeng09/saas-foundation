@@ -30,6 +30,7 @@ from foundation_identity.domain.models import (
     User,
 )
 from foundation_identity.errors import (
+    ACCOUNT_SETUP_REQUIRED,
     CURRENT_PASSWORD_INCORRECT,
     INVALID_CREDENTIALS,
     PASSWORD_CHANGE_NOT_ALLOWED,
@@ -401,6 +402,11 @@ class UserService:
             )
 
         # --- (4) verify the CURRENT password --------------------------------
+        # ACCOUNT_SETUP_REQUIRED means Keycloak ACCEPTED the password but the
+        # account has required actions pending (typically UPDATE_PASSWORD after
+        # a password expiry).  That is exactly the situation a password change
+        # resolves — the non-temporary reset in step (5) clears UPDATE_PASSWORD —
+        # so treat it as a verified current password rather than refusing.
         try:
             await oidc.password_grant(username=email, password=current_password)
         except FoundationError as exc:
@@ -409,7 +415,8 @@ class UserService:
                     CURRENT_PASSWORD_INCORRECT,
                     detail="Current password is incorrect",
                 ) from exc
-            raise
+            if exc.error_code is not ACCOUNT_SETUP_REQUIRED:
+                raise
 
         # --- (5) set the NEW password ---------------------------------------
         await self._kc.reset_password(kc_user_id, new_password, temporary=False)

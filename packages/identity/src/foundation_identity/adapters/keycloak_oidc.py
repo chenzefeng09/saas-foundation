@@ -25,6 +25,7 @@ from jose.exceptions import ExpiredSignatureError, JWTError
 
 from foundation_identity.config import get_settings
 from foundation_identity.errors import (
+    ACCOUNT_SETUP_REQUIRED,
     INVALID_CREDENTIALS,
     KEYCLOAK_ERROR,
     KEYCLOAK_UNAVAILABLE,
@@ -35,6 +36,19 @@ from foundation_identity.errors import (
 from foundation_identity.observability import get_logger
 
 log = get_logger(__name__)
+
+# Keycloak's token endpoint answers ``invalid_grant`` with this (fixed, English)
+# ``error_description`` when the direct grant AUTHENTICATED the user but the
+# account still has required actions pending — UPDATE_PASSWORD after a password
+# expiry / admin-requested reset, VERIFY_EMAIL, CONFIGURE_TOTP, ...  The password
+# grant cannot run those interactive steps, so it fails; the credentials
+# themselves were correct.
+_ACCOUNT_NOT_SET_UP = "account is not fully set up"
+
+
+def _is_account_setup_required(err: dict[str, Any]) -> bool:
+    desc = err.get("error_description")
+    return isinstance(desc, str) and _ACCOUNT_NOT_SET_UP in desc.lower()
 
 
 class KeycloakOIDCAdapter:
@@ -83,6 +97,9 @@ class KeycloakOIDCAdapter:
 
         Raises:
             FoundationError(INVALID_CREDENTIALS): KC returned 400/401 (bad creds).
+            FoundationError(ACCOUNT_SETUP_REQUIRED): the credentials are valid
+                but the account has pending required actions (expired password,
+                admin-requested reset, ...) — KC "Account is not fully set up".
             FoundationError(KEYCLOAK_UNAVAILABLE): network failure.
             FoundationError(KEYCLOAK_ERROR): unexpected 5xx / shape mismatch.
         """
@@ -189,7 +206,18 @@ class KeycloakOIDCAdapter:
                 err = resp.json()
             except ValueError:
                 err = {}
+            if not isinstance(err, dict):
+                err = {}
             kc_err = err.get("error", "")
+            if kc_err == "invalid_grant" and _is_account_setup_required(err):
+                log.info(
+                    "keycloak.token.account_setup_required",
+                    grant=data.get("grant_type"),
+                )
+                raise FoundationError(
+                    ACCOUNT_SETUP_REQUIRED,
+                    detail="Account is not fully set up (required actions pending)",
+                )
             if kc_err in ("invalid_grant", "unauthorized_client", "invalid_client"):
                 log.info(
                     "keycloak.token.invalid_credentials",
