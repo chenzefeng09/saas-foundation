@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from foundation_security_ops.domain.base import foundation_context
 from foundation_security_ops.domain.models import (
     Drill,
     Incident,
@@ -338,3 +339,47 @@ class TestDeleteEndpoints:
         resp = client.delete("/api/security-ops/v1/drills/drill_TEST01")
         assert resp.status_code == 204
         client._mock_svc.delete_drill.assert_awaited_once()
+
+
+# ─── Request context headers ─────────────────────────────────────────────────
+
+
+class TestContextHeaders:
+    def test_unknown_actor_is_rejected_before_the_route(self, client):
+        client._mock_svc.list_incidents = AsyncMock(return_value=[])
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Actor": "ROOT"})
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["code"] == "FOUNDATION.SECURITY_OPS.INPUT.INVALID_FORMAT"
+        assert data["detail"] == "Invalid X-Actor"
+        client._mock_svc.list_incidents.assert_not_awaited()
+
+    @pytest.mark.parametrize("actor", ["USER", "SERVICE", "SYSTEM", "MIGRATOR", "ADMIN"])
+    def test_known_actor_reaches_the_route_context(self, client, actor):
+        seen = []
+
+        async def _list_incidents(*_args, **_kwargs):
+            seen.append(foundation_context.get())
+            return []
+
+        client._mock_svc.list_incidents = AsyncMock(side_effect=_list_incidents)
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Actor": actor})
+        assert resp.status_code == 200
+        assert [ctx.actor for ctx in seen] == [actor]
+
+    def test_actor_defaults_to_service(self, client):
+        seen = []
+
+        async def _list_incidents(*_args, **_kwargs):
+            seen.append(foundation_context.get())
+            return []
+
+        client._mock_svc.list_incidents = AsyncMock(side_effect=_list_incidents)
+        resp = client.get("/api/security-ops/v1/incidents")
+        assert resp.status_code == 200
+        assert [ctx.actor for ctx in seen] == ["SERVICE"]
+
+    def test_malformed_tenant_id_is_rejected(self, client):
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Tenant-Id": "acme"})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid X-Tenant-Id"

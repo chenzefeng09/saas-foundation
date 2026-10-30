@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import UTC, datetime
+from typing import TypeGuard, get_args
 
 import structlog
 import ulid
@@ -8,12 +9,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from foundation_security_ops.domain.base import FoundationContext, foundation_context
+from foundation_security_ops.domain.base import ActorKind, FoundationContext, foundation_context
 
 RID = re.compile(r"^req_[0-9A-Z]{26}$")
 TID = re.compile(r"^tnt_[0-9A-Z]{26}$")
+ACTORS: frozenset[str] = frozenset(get_args(ActorKind))
 
 PUB = frozenset({"/healthz", "/readyz", "/metrics", "/docs", "/openapi.json", "/redoc"})
+
+
+def _is_actor(value: str) -> TypeGuard[ActorKind]:
+    return value in ACTORS
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -42,6 +48,16 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
                 400,
                 "FOUNDATION.SECURITY_OPS.INPUT.INVALID_FORMAT",
                 "Invalid X-Tenant-Id",
+                r.url.path,
+                rid,
+            )
+        # app.actor drives the RLS policies, so an unknown value is rejected here
+        # rather than reaching the database as an arbitrary string.
+        if not _is_actor(actor):
+            return _problem(
+                400,
+                "FOUNDATION.SECURITY_OPS.INPUT.INVALID_FORMAT",
+                "Invalid X-Actor",
                 r.url.path,
                 rid,
             )
