@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from clickhouse_connect.driver.query import format_bind_value
 from fastapi.testclient import TestClient
 
 from foundation_audit.adapters.clickhouse import EVENTS_COLUMNS
@@ -482,8 +483,9 @@ _IN_ORDER = [_evt(5), _evt(1), _evt(2), _evt(4), _evt(3)]  # (occurred_at, event
 class _ClickHouseStandIn:
     """Answers query_events' SELECT as ClickHouse would for its bound parameters.
 
-    It does not read the SQL (TestQueryEventsKeyset pins that): it applies the
-    keyset the parameters describe to the rows in the table's sort order.
+    It does not read the SQL (TestQueryEventsKeyset pins that): it applies the time
+    bounds and the keyset the parameters describe to the rows in the table's sort
+    order, each parameter read from the text clickhouse-connect sends for it.
     """
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
@@ -492,9 +494,17 @@ class _ClickHouseStandIn:
 
     def query(self, _sql: str, parameters: dict[str, Any]) -> MagicMock:
         self.parameters.append(dict(parameters))
+        # The text clickhouse-connect sends; ClickHouse reads a time's as DateTime64(3, 'UTC').
+        sent = {k: format_bind_value(v) for k, v in parameters.items()}
         ordered = sorted(self.rows, key=lambda r: (r["occurred_at"], r["event_id"]))
-        if "after_ts" in parameters:  # ClickHouse reads the text as DateTime64(3, 'UTC')
-            after = (datetime.fromisoformat(parameters["after_ts"]), parameters["after_id"])
+        if "occurred_from" in sent:
+            since = datetime.fromisoformat(sent["occurred_from"])
+            ordered = [r for r in ordered if r["occurred_at"] >= since]
+        if "occurred_to" in sent:
+            until = datetime.fromisoformat(sent["occurred_to"])
+            ordered = [r for r in ordered if r["occurred_at"] <= until]
+        if "after_ts" in sent:
+            after = (datetime.fromisoformat(sent["after_ts"]), sent["after_id"])
             ordered = [r for r in ordered if (r["occurred_at"], r["event_id"]) > after]
         result = MagicMock()
         result.result_rows = [
@@ -554,6 +564,39 @@ class TestQueryEventsPaging:
 
         assert [e.event_id for e in result.items] == _IN_ORDER
         assert result.next_cursor is None  # the lookahead row decides, not len(items) == limit
+
+    @pytest.mark.parametrize(
+        ("occurred_from", "occurred_to"),
+        [
+            ("2026-10-30T12:00:00.101Z", "2026-10-30T12:00:00.899Z"),
+            ("2026-10-30T20:00:00.101+08:00", "2026-10-30T20:00:00.899+08:00"),
+            ("2026-10-30T12:00:00.101", "2026-10-30T12:00:00.899"),  # no offset: UTC
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_time_bounds_hold_to_the_millisecond(
+        self, occurred_from: str, occurred_to: str,
+    ) -> None:
+        from foundation_audit.api.v1.events import query_events
+        from foundation_audit.schemas.event import AuditQuery
+
+        ctx = _make_context(tenant_id=_TENANT)
+        pages: list[list[str]] = []
+        cursor = None
+        with _serving(_ClickHouseStandIn(_events(_TENANT))):
+            for _ in range(3):
+                q = AuditQuery(
+                    tenant_id=_TENANT, occurred_from=occurred_from, occurred_to=occurred_to,
+                    limit=2, cursor=cursor,
+                )
+                result = await query_events(query=q, ctx=ctx)
+                pages.append([e.event_id for e in result.items])
+                cursor = result.next_cursor
+                if cursor is None:
+                    break
+
+        # The events at .100 and .900 lie a millisecond outside; the three at .250 inside.
+        assert pages == [_IN_ORDER[1:3], _IN_ORDER[3:4]]
 
     @pytest.mark.asyncio
     async def test_export_pages_through_every_event_once(

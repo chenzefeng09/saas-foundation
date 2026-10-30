@@ -50,6 +50,56 @@ async def get_clickhouse_client() -> clickhouse_connect.driver.Client:
 
 
 # ---------------------------------------------------------------------------
+# Datetimes reach clickhouse-connect only through _insert and _query, each one
+# as the exact UTC instant it names.  Left to itself, clickhouse-connect inserts
+# a naive datetime as host local time (datetime.timestamp()) and binds a
+# datetime parameter in whole seconds, again reading a naive one as local time.
+# ---------------------------------------------------------------------------
+def _utc(value: datetime | str) -> datetime:
+    """``value`` (a datetime or ISO 8601 text) as an aware UTC datetime.
+
+    A naive value is UTC: that is how ClickHouse hands back ``DateTime64(3, 'UTC')``.
+    """
+    ts = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def _ch_datetime64(ts: datetime) -> str:
+    """``ts`` as the text of a ``DateTime64(3, 'UTC')`` query parameter.
+
+    Milliseconds are kept and the rest cut off, as an insert stores them, so a
+    bound compares with stored values exactly.
+    """
+    utc = _utc(ts)
+    return utc.strftime("%Y-%m-%d %H:%M:%S.") + f"{utc.microsecond // 1000:03d}"
+
+
+async def _insert(table: str, rows: list[list[Any]], column_names: list[str]) -> None:
+    """Insert ``rows`` into ``table``, every datetime in them as a UTC instant."""
+    client = await get_clickhouse_client()
+    data = [[_utc(v) if isinstance(v, datetime) else v for v in row] for row in rows]
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: client.insert(table, data, column_names=column_names),
+    )
+
+
+async def _query(sql: str, params: dict[str, Any]) -> Any:
+    """Run ``sql``; a datetime parameter is bound as ``_ch_datetime64`` text.
+
+    That text is UTC, so ``sql`` declares such a parameter ``DateTime64(3, 'UTC')``.
+    """
+    client = await get_clickhouse_client()
+    bound = {k: _ch_datetime64(v) if isinstance(v, datetime) else v for k, v in params.items()}
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: client.query(sql, parameters=bound),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Column order for audit.events INSERT
 # Must stay aligned with audit-schema.sql DDL.
 # ---------------------------------------------------------------------------
@@ -121,23 +171,8 @@ def _event_to_row(ev: dict[str, Any]) -> list[Any]:
     payload_str = json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else str(payload)
     payload_size = len(payload_str.encode())
 
-    occurred_raw = ev.get("occurred_at")
-    if isinstance(occurred_raw, str):
-        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-    elif isinstance(occurred_raw, datetime):
-        occurred_at = occurred_raw
-    else:
-        occurred_at = datetime.now(UTC)
-    if occurred_at.tzinfo is not None:
-        occurred_at = occurred_at.replace(tzinfo=None)  # CH stores as UTC naive
-
-    ingested_raw = ev.get("ingested_at", datetime.now(UTC).isoformat())
-    if isinstance(ingested_raw, str):
-        ingested_at = datetime.fromisoformat(ingested_raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    elif isinstance(ingested_raw, datetime):
-        ingested_at = ingested_raw.replace(tzinfo=None)
-    else:
-        ingested_at = datetime.utcnow()  # noqa: DTZ003
+    occurred_at = _utc(ev.get("occurred_at") or datetime.now(UTC))
+    ingested_at = _utc(ev.get("ingested_at") or datetime.now(UTC))
 
     return [
         ev.get("event_id", ""),
@@ -185,48 +220,20 @@ async def insert_events(events: list[dict[str, Any]]) -> None:
     """Insert a batch of event dicts into audit.events."""
     if not events:
         return
-    client = await get_clickhouse_client()
     rows = [_event_to_row(ev) for ev in events]
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        lambda: client.insert("audit.events", rows, column_names=EVENTS_COLUMNS),
-    )
+    await _insert("audit.events", rows, EVENTS_COLUMNS)
     log.debug("clickhouse.events.inserted", count=len(rows))
 
 
 async def insert_merkle_batch(batch: dict[str, Any]) -> None:
     """Insert a single merkle_batch row."""
-    client = await get_clickhouse_client()
-
-    sealed_raw = batch.get("sealed_at", datetime.now(UTC).isoformat())
-    if isinstance(sealed_raw, str):
-        sealed_at = datetime.fromisoformat(sealed_raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    elif isinstance(sealed_raw, datetime):
-        sealed_at = sealed_raw.replace(tzinfo=None)
-    else:
-        sealed_at = datetime.utcnow()  # noqa: DTZ003
-
-    created_raw = batch.get("created_at", datetime.now(UTC).isoformat())
-    if isinstance(created_raw, str):
-        created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    elif isinstance(created_raw, datetime):
-        created_at = created_raw.replace(tzinfo=None)
-    else:
-        created_at = datetime.utcnow()  # noqa: DTZ003
-
     tsa_ts = batch.get("tsa_timestamp")
-    if isinstance(tsa_ts, str):
-        tsa_ts = datetime.fromisoformat(tsa_ts.replace("Z", "+00:00")).replace(tzinfo=None)
-    elif isinstance(tsa_ts, datetime):
-        tsa_ts = tsa_ts.replace(tzinfo=None)
-
     row = [
         batch.get("batch_id", ""),
         batch.get("tenant_id", ""),
         batch.get("service") or "",
-        created_at,
-        sealed_at,
+        _utc(batch.get("created_at") or datetime.now(UTC)),
+        _utc(batch.get("sealed_at") or datetime.now(UTC)),
         int(batch.get("event_count", 0)),
         batch.get("first_event_id", ""),
         batch.get("last_event_id", ""),
@@ -235,14 +242,10 @@ async def insert_merkle_batch(batch: dict[str, Any]) -> None:
         batch.get("signature_key_id", ""),
         batch.get("tsa_token"),
         batch.get("tsa_provider") or "",
-        tsa_ts,
+        _utc(tsa_ts) if tsa_ts else None,
         batch.get("external_anchor"),
     ]
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        lambda: client.insert("audit.merkle_batch", [row], column_names=MERKLE_BATCH_COLUMNS),
-    )
+    await _insert("audit.merkle_batch", [row], MERKLE_BATCH_COLUMNS)
     log.debug("clickhouse.merkle_batch.inserted", batch_id=batch.get("batch_id"))
 
 
@@ -251,32 +254,17 @@ async def get_chain_head(tenant_id: str, service: str) -> str | None:
 
     Returns None if no events exist yet (genesis).
     """
-    client = await get_clickhouse_client()
     query = (
         "SELECT curr_hash FROM audit.events "
         "WHERE tenant_id = {tenant_id:String} AND service = {service:String} "
         "ORDER BY ingested_at DESC, event_id DESC LIMIT 1"
     )
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: client.query(query, parameters={"tenant_id": tenant_id, "service": service}),
-    )
+    result = await _query(query, {"tenant_id": tenant_id, "service": service})
     rows = result.result_rows
     if not rows:
         return None
     val = rows[0][0]
     return str(val) if val else None
-
-
-def _ch_datetime64(ts: datetime) -> str:
-    """``ts`` as the text of a ``DateTime64(3, 'UTC')`` query parameter.
-
-    clickhouse-connect binds a ``datetime`` parameter in whole seconds and reads
-    a naive one as local time; a keyset bound must be the stored value exactly.
-    """
-    utc = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
-    return utc.strftime("%Y-%m-%d %H:%M:%S.") + f"{utc.microsecond // 1000:03d}"
 
 
 async def query_events(
@@ -302,9 +290,8 @@ async def query_events(
     Rows come oldest first, in the table's sort order ``(occurred_at, event_id)``.
     ``after`` is the ``(occurred_at, event_id)`` of the last row of the previous
     page; the page resumes right after it in that order (services.pagination).
+    ``occurred_from`` and ``occurred_to`` are inclusive, to the stored millisecond.
     """
-    client = await get_clickhouse_client()
-
     # Build WHERE clauses — tenant_id is ALWAYS injected (no RLS in CH)
     conditions: list[str] = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
@@ -340,11 +327,11 @@ async def query_events(
         conditions.append("request_id = {request_id:String}")
         params["request_id"] = request_id
     if occurred_from:
-        conditions.append("occurred_at >= {occurred_from:DateTime64(3)}")
-        params["occurred_from"] = occurred_from.replace(tzinfo=None) if occurred_from.tzinfo else occurred_from
+        conditions.append("occurred_at >= {occurred_from:DateTime64(3, 'UTC')}")
+        params["occurred_from"] = occurred_from
     if occurred_to:
-        conditions.append("occurred_at <= {occurred_to:DateTime64(3)}")
-        params["occurred_to"] = occurred_to.replace(tzinfo=None) if occurred_to.tzinfo else occurred_to
+        conditions.append("occurred_at <= {occurred_to:DateTime64(3, 'UTC')}")
+        params["occurred_to"] = occurred_to
     if after is not None:
         after_ts, after_id = after
         # The row comparison is the keyset.  The bare bound on occurred_at follows
@@ -354,7 +341,7 @@ async def query_events(
         conditions.append(
             "(occurred_at, event_id) > ({after_ts:DateTime64(3, 'UTC')}, {after_id:String})"
         )
-        params["after_ts"] = _ch_datetime64(after_ts)
+        params["after_ts"] = after_ts
         params["after_id"] = after_id
 
     where = " AND ".join(conditions)
@@ -366,11 +353,7 @@ async def query_events(
     )
     params["limit"] = limit
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: client.query(sql, parameters=params),
-    )
+    result = await _query(sql, params)
 
     out: list[dict[str, Any]] = []
     for row in result.result_rows:
@@ -386,8 +369,6 @@ async def get_events_for_verification(
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     """Fetch events ordered by ingested_at for hash-chain verification."""
-    client = await get_clickhouse_client()
-
     conditions = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if service:
@@ -414,11 +395,7 @@ async def get_events_for_verification(
     )
     params["limit"] = limit
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: client.query(sql, parameters=params),
-    )
+    result = await _query(sql, params)
     # clickhouse-connect returns column_names as a list of plain strings
     col_names_list = list(result.column_names)
     out: list[dict[str, Any]] = []
@@ -434,8 +411,6 @@ async def get_merkle_batches(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Fetch merkle_batch rows for integrity verification."""
-    client = await get_clickhouse_client()
-
     conditions = ["tenant_id = {tenant_id:String}"]
     params: dict[str, Any] = {"tenant_id": tenant_id}
     if service:
@@ -451,11 +426,7 @@ async def get_merkle_batches(
     )
     params["limit"] = limit
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: client.query(sql, parameters=params),
-    )
+    result = await _query(sql, params)
     out: list[dict[str, Any]] = []
     for row in result.result_rows:
         out.append(dict(zip(MERKLE_BATCH_COLUMNS, row, strict=False)))
