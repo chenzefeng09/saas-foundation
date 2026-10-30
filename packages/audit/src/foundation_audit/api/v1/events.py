@@ -313,6 +313,8 @@ class VerifyIntegrityResponse(BaseModel):
     first_break_event_id: str | None = None
     signatures_verified: int
     signatures_failed: int
+    # Batches the tenant's events cannot verify: proven neither intact nor tampered
+    signatures_unverifiable: int = 0
     tsa_present: int
     message: str
 
@@ -329,9 +331,22 @@ async def verify_integrity(
        (ingested_at, then Merkle leaf; ch.get_events_for_verification).
     2. Recompute prev_hash / curr_hash for each event from the canonical form the
        worker hashed (hash_chain.canonical_event); compare with stored values.
-    3. For each merkle_batch: recompute Merkle root from stored leaf curr_hashes,
-       call crypto-service /verify to check Ed25519 signature.
-    4. Report first break event_id, signatures_verified/failed counts.
+    3. For each Merkle batch the events are in: read its merkle_batch row and every
+       leaf the tenant has in it, those the limit, the service filter or
+       from_event_id left out of step 1 too; recompute its Merkle root from their
+       curr_hashes, call crypto-service /verify to check its Ed25519 signature.
+    4. Report first break event_id, signatures_verified/failed/unverifiable counts.
+
+    A batch is checked only whole: its leaves 0 to event_count - 1 and its
+    merkle_batch row, all under this tenant, the row under the service filter's
+    service if there is one.  The worker seals one batch per chain (tenant, service),
+    so its batches are whole unless an event or a row is missing.  Before that, a
+    batch held every chain its run delivered and its row went under the tenant and
+    service of its first event: a tenant holds such a batch whole only if the run
+    delivered no other tenant's events, and under a service filter only if that
+    event is of the filter's service.  A batch not held whole is unverifiable,
+    counted apart from signatures_failed: nothing shows it was tampered with, nor
+    that it is intact, so the result is not valid.
 
     Note: Cross-tenant verification is blocked (must match ctx.tenant_id).
     Events hashed before canonical_event existed cannot be rebuilt from their
@@ -395,40 +410,60 @@ async def verify_integrity(
     # Group events by batch_id to recompute Merkle root per batch
     from collections import defaultdict
     batch_leaves: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
+    batch_ingested_at: list[datetime] = []
     for ev in events:
         bid = ev.get("merkle_batch_id")
         leaf_idx = ev.get("merkle_leaf_idx")
         curr_hash = ev.get("curr_hash", "")
         if bid and leaf_idx is not None and curr_hash:
             batch_leaves[bid].append((leaf_idx, curr_hash, ev.get("event_id", "")))
+            batch_ingested_at.append(ev["ingested_at"])
 
-    # Fetch merkle_batch metadata for signature verification
-    try:
-        batches = await ch.get_merkle_batches(
-            tenant_id=ctx.tenant_id,
-            service=body.service,
-            limit=body.limit,
-        )
-    except Exception as exc:
-        batches = []
-        # Non-fatal for hash chain check; just can't verify signatures
-        _ = exc
+    # Fetch merkle_batch metadata for signature verification, and the leaves of
+    # batches the window holds only part of
+    batch_meta: dict[str, dict[str, Any]] = {}
+    if batch_leaves:
+        try:
+            # The worker creates a batch at the ingested_at of its events, under
+            # their service
+            batches = await ch.get_merkle_batches(
+                tenant_id=ctx.tenant_id,
+                created_from=min(batch_ingested_at),
+                created_to=max(batch_ingested_at),
+                service=body.service,
+            )
+            batch_meta = {b["batch_id"]: b for b in batches if b["batch_id"] in batch_leaves}
+            cut = [
+                bid for bid, leaves in batch_leaves.items()
+                if bid in batch_meta and len(leaves) < batch_meta[bid]["event_count"]
+            ]
+            if cut:
+                for bid in cut:
+                    batch_leaves[bid] = []
+                for leaf in await ch.get_merkle_leaves(tenant_id=ctx.tenant_id, batch_ids=cut):
+                    batch_leaves[leaf["merkle_batch_id"]].append(
+                        (leaf["merkle_leaf_idx"], leaf["curr_hash"], leaf["event_id"]),
+                    )
+        except Exception:
+            # Non-fatal for hash chain check; just can't verify signatures
+            batch_meta = {}
 
-    batch_meta = {b["batch_id"]: b for b in batches}
     sigs_verified = 0
     sigs_failed = 0
+    sigs_unverifiable = 0
     tsa_count = 0
 
     for bid, leaf_list in batch_leaves.items():
         # Sort by leaf index, then build ordered hash list
         leaf_list.sort(key=lambda x: x[0])
+        meta = batch_meta.get(bid)
+        if meta is None or [idx for idx, _, _ in leaf_list] != list(range(meta["event_count"])):
+            # Not held whole: the tenant lacks its row, or leaves its root covers
+            sigs_unverifiable += 1
+            continue
+
         leaf_hashes = [h for _, h, _ in leaf_list]
         recomputed_root = compute_merkle_root(leaf_hashes, hash_algorithm=settings.hash_algorithm)
-
-        meta = batch_meta.get(bid)
-        if meta is None:
-            sigs_failed += 1
-            continue
 
         stored_root = meta.get("merkle_root", "")
         sig_b64 = meta.get("signature", "")
@@ -463,13 +498,22 @@ async def verify_integrity(
 
     chain_valid = first_break_event_id is None
     all_sigs_ok = sigs_failed == 0
+    if not (chain_valid and all_sigs_ok):
+        message = "Integrity violation detected"
+    elif sigs_unverifiable:
+        message = (
+            f"Integrity not proven: {sigs_unverifiable} Merkle batch(es) could not be verified"
+        )
+    else:
+        message = "OK"
 
     return VerifyIntegrityResponse(
-        valid=chain_valid and all_sigs_ok,
+        valid=chain_valid and all_sigs_ok and sigs_unverifiable == 0,
         events_checked=len(events),
         first_break_event_id=first_break_event_id,
         signatures_verified=sigs_verified,
         signatures_failed=sigs_failed,
+        signatures_unverifiable=sigs_unverifiable,
         tsa_present=tsa_count,
-        message="OK" if (chain_valid and all_sigs_ok) else "Integrity violation detected",
+        message=message,
     )

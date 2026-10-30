@@ -424,27 +424,57 @@ async def get_events_for_verification(
 async def get_merkle_batches(
     *,
     tenant_id: str,
+    created_from: datetime,
+    created_to: datetime,
     service: str | None = None,
-    limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Fetch merkle_batch rows for integrity verification."""
-    conditions = ["tenant_id = {tenant_id:String}"]
-    params: dict[str, Any] = {"tenant_id": tenant_id}
+    """Fetch the tenant's merkle_batch rows created from ``created_from`` to ``created_to``.
+
+    Both bounds are inclusive, to the stored millisecond.  The worker creates a
+    run's batches at the ingested_at it stamps on their events, so the batches of
+    some events are among those created over the span of their ingested_at.  The
+    span is a range of the table's sort key, (tenant_id, created_at, batch_id).
+    With ``service``, only the rows filed under it: the span of a quiet service's
+    events can take in any number of a busy one's batches.
+    """
+    conditions = [
+        "tenant_id = {tenant_id:String}",
+        "created_at >= {created_from:DateTime64(3, 'UTC')}",
+        "created_at <= {created_to:DateTime64(3, 'UTC')}",
+    ]
+    params: dict[str, Any] = {
+        "tenant_id": tenant_id, "created_from": created_from, "created_to": created_to,
+    }
     if service:
         conditions.append("service = {service:String}")
         params["service"] = service
 
-    where = " AND ".join(conditions)
     sql = (
         f"SELECT {', '.join(MERKLE_BATCH_COLUMNS)} FROM audit.merkle_batch "
-        f"WHERE {where} "
-        f"ORDER BY created_at "
-        f"LIMIT {{limit:UInt32}}"
+        f"WHERE {' AND '.join(conditions)} "
+        "ORDER BY created_at"
     )
-    params["limit"] = limit
 
     result = await _query(sql, params)
     out: list[dict[str, Any]] = []
     for row in result.result_rows:
         out.append(dict(zip(MERKLE_BATCH_COLUMNS, row, strict=False)))
     return out
+
+
+async def get_merkle_leaves(*, tenant_id: str, batch_ids: list[str]) -> list[dict[str, Any]]:
+    """Every leaf the tenant has in the Merkle batches ``batch_ids``, whatever its service.
+
+    Each comes as {merkle_batch_id, merkle_leaf_idx, curr_hash, event_id}, in batch
+    and then leaf order.
+    """
+    if not batch_ids:
+        return []
+    sql = (
+        "SELECT merkle_batch_id, merkle_leaf_idx, curr_hash, event_id FROM audit.events "
+        "WHERE tenant_id = {tenant_id:String} AND merkle_batch_id IN {batch_ids:Array(String)} "
+        "ORDER BY merkle_batch_id, merkle_leaf_idx"
+    )
+    result = await _query(sql, {"tenant_id": tenant_id, "batch_ids": batch_ids})
+    columns = ("merkle_batch_id", "merkle_leaf_idx", "curr_hash", "event_id")
+    return [dict(zip(columns, row, strict=True)) for row in result.result_rows]

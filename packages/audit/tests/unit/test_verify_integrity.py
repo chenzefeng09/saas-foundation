@@ -36,6 +36,7 @@ from foundation_audit.api.v1.events import (
 from foundation_audit.config import Settings
 from foundation_audit.domain.base import FoundationContext
 from foundation_audit.schemas.event import AuditEvent
+from foundation_audit.services.hash_chain import compute_merkle_root
 from foundation_audit.services.ingest_service import IngestService
 from foundation_audit.worker.batch_processor import BatchProcessor
 
@@ -88,15 +89,26 @@ def _stored(column_type: str, values: list[Any]) -> list[Any]:
     return list(ch_type.read_column(buffer, len(values), QueryContext()))
 
 
+def _datetime64(text: str) -> datetime:
+    """A ``DateTime64(3, 'UTC')`` query parameter as the server reads it: naive UTC."""
+    return datetime.strptime(text, "%Y-%m-%d %H:%M:%S.%f")
+
+
 # The WHERE conditions of the adapter's verification queries, as the server applies them.
 _CONDITIONS: dict[str, Callable[[dict[str, Any], dict[str, Any]], bool]] = {
     "tenant_id = {tenant_id:String}": lambda row, p: row["tenant_id"] == p["tenant_id"],
     "service = {service:String}": lambda row, p: row["service"] == p["service"],
     "event_id >= {from_event_id:String}": lambda row, p: row["event_id"] >= p["from_event_id"],
+    "created_at >= {created_from:DateTime64(3, 'UTC')}":
+        lambda row, p: row["created_at"] >= _datetime64(p["created_from"]),
+    "created_at <= {created_to:DateTime64(3, 'UTC')}":
+        lambda row, p: row["created_at"] <= _datetime64(p["created_to"]),
+    "merkle_batch_id IN {batch_ids:Array(String)}":
+        lambda row, p: row["merkle_batch_id"] in p["batch_ids"],
 }
 _SELECT = re.compile(
     r"SELECT (?P<columns>.+) FROM (?P<table>\S+) WHERE (?P<where>.+) "
-    r"ORDER BY (?P<order>.+) LIMIT (?P<limit>\d+|\{limit:UInt32\})"
+    r"ORDER BY (?P<order>.+?)(?: LIMIT (?P<limit>\d+|\{limit:UInt32\}))?"
 )
 
 
@@ -145,7 +157,12 @@ class _ClickHouse:
         for key in reversed(select["order"].split(", ")):
             column, _, direction = key.partition(" ")
             rows.sort(key=operator.itemgetter(column), reverse=direction == "DESC")
-        limit = parameters["limit"] if select["limit"].startswith("{") else int(select["limit"])
+        if select["limit"] is None:
+            limit = len(rows)
+        elif select["limit"].startswith("{"):
+            limit = parameters["limit"]
+        else:
+            limit = int(select["limit"])
         columns = select["columns"].split(", ")
         return SimpleNamespace(
             column_names=tuple(columns),
@@ -336,6 +353,34 @@ async def _two_tenants_in_one_run() -> _ClickHouse:
     return clickhouse
 
 
+async def _as_one_batch_per_run(clickhouse: _ClickHouse) -> None:
+    """Re-seal the one run in ``clickhouse`` as the worker did before a batch per chain.
+
+    One batch over the whole run, leaves in outbox order, its root signed under the
+    first event's tenant, its row filed under that event's tenant and service.  The
+    chains stay as they are.
+    """
+    events = clickhouse.rows["audit.events"]  # as the run inserted them
+    batches = clickhouse.rows["audit.merkle_batch"]
+    assert {event["ingested_at"] for event in events} == {batch["created_at"] for batch in batches}
+    for leaf_idx, event in enumerate(events):
+        event["merkle_batch_id"], event["merkle_leaf_idx"] = "mrk_RUN", leaf_idx
+    root = compute_merkle_root([event["curr_hash"] for event in events])
+    signature, key_id = await _sign(root, tenant_id=events[0]["tenant_id"])
+    batches[:] = [{
+        **batches[0],
+        "batch_id": "mrk_RUN",
+        "tenant_id": events[0]["tenant_id"],
+        "service": events[0]["service"],
+        "event_count": len(events),
+        "first_event_id": events[0]["event_id"],
+        "last_event_id": events[-1]["event_id"],
+        "merkle_root": root,
+        "signature": signature,
+        "signature_key_id": key_id,
+    }]
+
+
 def _flip(hex_text: str) -> str:
     return hex_text[:-1] + ("1" if hex_text[-1] == "0" else "0")
 
@@ -358,6 +403,7 @@ class TestVerifyIntegrity:
             "first_break_event_id": None,
             "signatures_verified": 4,
             "signatures_failed": 0,
+            "signatures_unverifiable": 0,
             "tsa_present": 0,
             "message": "OK",
         }
@@ -396,6 +442,132 @@ class TestVerifyIntegrity:
         assert (result.valid, result.first_break_event_id) == (True, None)
         assert result.events_checked == 3  # 1, 3 and 4
         assert (result.signatures_verified, result.signatures_failed) == (2, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_the_limit_cuts_verifies_whole(self) -> None:
+        clickhouse, worker = _ClickHouse(), _worker()
+        outbox = await _outbox(_logins(1, 2, 3, 4, 5))
+        assert await _deliver(worker, outbox[:3], clickhouse) == 3
+        assert await _deliver(worker, outbox[3:], clickhouse) == 2
+
+        result = await _verify(clickhouse, limit=4)  # [1, 2, 3], and 4 of [4, 5]
+
+        assert (result.valid, result.events_checked) == (True, 4)
+        assert (result.signatures_verified, result.signatures_unverifiable) == (2, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_service_filter_and_limit_verify_the_batch_they_cut(self) -> None:
+        clickhouse = await _sealed()
+
+        result = await _verify(clickhouse, service="identity", limit=1)  # 1 of [1, 3]
+
+        assert (result.valid, result.events_checked) == (True, 1)
+        assert (result.signatures_verified, result.signatures_unverifiable) == (1, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_from_event_id_cuts_verifies_whole(self) -> None:
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(1, 2, 3)), clickhouse) == 3
+
+        result = await _verify(clickhouse, from_event_id=_evt(2))  # 2 and 3 of [1, 2, 3]
+
+        # The chain check still takes 2 for the first of its chain, a matter of its own.
+        assert (result.signatures_verified, result.signatures_unverifiable) == (1, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_leaf_the_limit_leaves_out_is_still_checked(self) -> None:
+        """A cut batch is recomputed from the leaves stored, not passed on what the window holds."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(1, 2, 3)), clickhouse) == 3
+        clickhouse.event(_evt(3))["curr_hash"] = "f" * 64
+
+        result = await _verify(clickhouse, limit=2)
+
+        assert not result.valid
+        assert result.first_break_event_id == _evt(1)  # the batch's first event
+        assert (result.signatures_verified, result.signatures_failed) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_sealed_over_two_tenants_is_unverifiable_for_either(self) -> None:
+        """What the worker stored before it sealed a batch per chain: neither holds it whole."""
+        clickhouse = await _two_tenants_in_one_run()
+        await _as_one_batch_per_run(clickhouse)  # its row is the first tenant's
+
+        for tenant_id in (_TENANT, _OTHER_TENANT):
+            result = await _verify(clickhouse, tenant_id=tenant_id)
+
+            assert result.model_dump() == {
+                **result.model_dump(),
+                "valid": False,
+                "first_break_event_id": None,  # the chains hold
+                "signatures_verified": 0,
+                "signatures_failed": 0,
+                "signatures_unverifiable": 1,
+                "message": "Integrity not proven: 1 Merkle batch(es) could not be verified",
+            }, tenant_id
+
+    @pytest.mark.parametrize("service", [None, "identity"])
+    @pytest.mark.asyncio
+    async def test_a_batch_sealed_over_one_tenant_s_services_verifies(
+        self, service: str | None,
+    ) -> None:
+        """What the worker stored before, for a run of one tenant: the tenant holds it whole.
+
+        Its row is under the service of the run's first event, identity.
+        """
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_emitted()), clickhouse) == 5
+        await _as_one_batch_per_run(clickhouse)
+
+        result = await _verify(clickhouse, service=service)
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
+        assert (result.signatures_verified, result.signatures_unverifiable) == (1, 0)
+
+    @pytest.mark.asyncio
+    async def test_such_a_batch_is_unverifiable_under_another_service_s_filter(self) -> None:
+        """A service filter reads the rows under its service only; this one is identity's."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_emitted()), clickhouse) == 5
+        await _as_one_batch_per_run(clickhouse)
+
+        result = await _verify(clickhouse, service="lifecycle")
+
+        assert (result.valid, result.first_break_event_id) == (False, None)
+        assert (result.signatures_verified, result.signatures_unverifiable) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_batch_that_lost_its_last_event_is_not_valid(self) -> None:
+        """No later event shows the chain's last one gone; its batch shows it unproven."""
+        clickhouse = _ClickHouse()
+        assert await _deliver(_worker(), await _outbox(_logins(1, 2, 3)), clickhouse) == 3
+        clickhouse.rows["audit.events"].remove(clickhouse.event(_evt(3)))
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (False, None)
+        assert (result.signatures_failed, result.signatures_unverifiable) == (0, 1)
+
+    @pytest.mark.asyncio
+    async def test_batches_whose_rows_clickhouse_refused_are_not_valid(self) -> None:
+        clickhouse = _ClickHouse()
+        clickhouse.refuse.append(("insert", "audit.merkle_batch"))
+        assert await _deliver(_worker(), await _outbox(_emitted()), clickhouse) == 5
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (False, None)
+        assert (result.signatures_failed, result.signatures_unverifiable) == (0, 2)
+
+    @pytest.mark.asyncio
+    async def test_batches_clickhouse_did_not_read_are_not_valid(self) -> None:
+        clickhouse = await _sealed()
+        clickhouse.refuse.append(("query", "audit.merkle_batch"))
+
+        result = await _verify(clickhouse)
+
+        assert (result.valid, result.first_break_event_id) == (False, None)
+        assert (result.signatures_failed, result.signatures_unverifiable) == (0, 4)
 
     @pytest.mark.asyncio
     async def test_a_chain_verifies_in_the_order_it_was_chained(self) -> None:
@@ -522,6 +694,7 @@ class TestVerifyIntegrity:
 
         assert not result.valid
         assert result.first_break_event_id == _evt(4)  # the next identity event
+        assert result.signatures_unverifiable == 1  # identity [1, 3] lost 3
 
     @pytest.mark.asyncio
     async def test_a_changed_merkle_root_fails_its_batch(self) -> None:

@@ -19,6 +19,8 @@ from foundation_audit.adapters.clickhouse import (
     _event_to_row,
     _insert,
     get_events_for_verification,
+    get_merkle_batches,
+    get_merkle_leaves,
     insert_events,
     insert_merkle_batches,
     query_events,
@@ -319,6 +321,71 @@ class TestQueryEventsTimeBounds:
         # Text: clickhouse-connect binds a datetime in whole seconds, a naive one as local time.
         assert params["occurred_from"] == "2026-10-30 12:00:00.250"
         assert params["occurred_to"] == "2026-10-30 12:00:00.250"
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestMerkleBatchReads:
+    @pytest.mark.asyncio
+    async def test_batches_are_read_over_a_range_of_the_sort_key(self) -> None:
+        """The batches of some events are those created over their ingested_at."""
+        result = MagicMock()
+        result.result_rows = []
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+        stored = datetime(2026, 10, 30, 12, 0, 0, 250000)  # naive UTC, as CH hands it back
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await get_merkle_batches(
+                tenant_id=_TENANT, created_from=stored, created_to=stored + timedelta(seconds=1),
+            )
+
+        (sql,), call_kwargs = client.query.call_args
+        assert sql.endswith(
+            "FROM audit.merkle_batch WHERE tenant_id = {tenant_id:String} "
+            "AND created_at >= {created_from:DateTime64(3, 'UTC')} "
+            "AND created_at <= {created_to:DateTime64(3, 'UTC')} ORDER BY created_at"
+        )
+        assert call_kwargs["parameters"] == {
+            "tenant_id": _TENANT,
+            "created_from": "2026-10-30 12:00:00.250",
+            "created_to": "2026-10-30 12:00:01.250",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_service_s_batches_are_read_under_it(self) -> None:
+        """The span of a quiet service's events can take in any number of a busy one's batches."""
+        result = MagicMock()
+        result.result_rows = []
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+        stored = datetime(2026, 10, 30, 12, 0, 0, 250000)
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await get_merkle_batches(
+                tenant_id=_TENANT, created_from=stored, created_to=stored, service="identity",
+            )
+
+        (sql,), call_kwargs = client.query.call_args
+        assert sql.endswith(
+            "AND created_at <= {created_to:DateTime64(3, 'UTC')} "
+            "AND service = {service:String} ORDER BY created_at"
+        )
+        assert call_kwargs["parameters"]["service"] == "identity"
+
+    @pytest.mark.asyncio
+    async def test_no_batches_have_no_leaves_to_read(self) -> None:
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            assert await get_merkle_leaves(tenant_id=_TENANT, batch_ids=[]) == []
+
+        client.query.assert_not_called()
 
 
 def _stored_ms(value: datetime) -> int:
