@@ -77,7 +77,46 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MfaChallengeResponse' }
         '400': { $ref: './_common.yaml#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/LoginRefused' }
+        '401':
+          description: |
+            登录被拒绝（401），按 `code` 区分原因，客户端应据此展示不同提示：
+            - `FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS`：邮箱或密码错误（计入失败次数，可能触发锁定）。
+            - `FOUNDATION.IDENTITY.AUTH.ACCOUNT_LOCKED`：失败次数过多，账号被临时锁定。
+            - `FOUNDATION.IDENTITY.AUTH.ACCOUNT_SETUP_REQUIRED`：密码**正确**，但账号在 Keycloak 中仍有
+              待完成的必需操作（密码过期 / 管理员要求重置密码 → `UPDATE_PASSWORD`，或 `VERIFY_EMAIL`、
+              `CONFIGURE_TOTP` 等）。密码授权无法执行这些交互步骤，因此不签发会话；不计入失败次数。
+              客户端不得提示「密码错误」，应引导用户通过设置 / 重置邮件完成更新或联系管理员。
+            - `FOUNDATION.IDENTITY.AUTH.LOGIN_DENIED_RISK`：异常登录风险评估拒绝。
+          headers:
+            WWW-Authenticate:
+              schema: { type: string }
+            X-Request-Id: { $ref: './_common.yaml#/components/headers/RequestIdHeader' }
+          content:
+            application/problem+json:
+              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+              examples:
+                invalid_credentials:
+                  value:
+                    type: https://errors.foundation.example.com/foundation/identity/auth/invalid_credentials
+                    title: Invalid credentials
+                    status: 401
+                    code: FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS
+                    detail: invalid_grant
+                    user_message: 邮箱或密码不正确，请重试。
+                    instance: /api/identity/v1/sessions
+                    request_id: req_01J5XXXXXXXXXXXXXXXXXXXXXX
+                    timestamp: '2026-05-22T10:00:00Z'
+                account_setup_required:
+                  value:
+                    type: https://errors.foundation.example.com/foundation/identity/auth/account_setup_required
+                    title: Account setup required
+                    status: 401
+                    code: FOUNDATION.IDENTITY.AUTH.ACCOUNT_SETUP_REQUIRED
+                    detail: Account is not fully set up (required actions pending)
+                    user_message: 账号需要先完成更新才能登录（例如密码已过期或管理员要求重置密码）。请使用设置邮件中的链接完成更新，或联系管理员为您发送密码重置邮件。
+                    instance: /api/identity/v1/sessions
+                    request_id: req_01J5XXXXXXXXXXXXXXXXXXXXXX
+                    timestamp: '2026-05-22T10:00:00Z'
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
         '429': { $ref: './_common.yaml#/components/responses/RateLimited' }
     get:
@@ -617,47 +656,6 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Session' }
-
-    LoginRefused:
-      description: |
-        登录被拒绝（401），按 `code` 区分原因，客户端应据此展示不同提示：
-        - `FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS`：邮箱或密码错误（计入失败次数，可能触发锁定）。
-        - `FOUNDATION.IDENTITY.AUTH.ACCOUNT_LOCKED`：失败次数过多，账号被临时锁定。
-        - `FOUNDATION.IDENTITY.AUTH.ACCOUNT_SETUP_REQUIRED`：密码**正确**，但账号在 Keycloak 中仍有
-          待完成的必需操作（密码过期 / 管理员要求重置密码 → `UPDATE_PASSWORD`，或 `VERIFY_EMAIL`、
-          `CONFIGURE_TOTP` 等）。密码授权无法执行这些交互步骤，因此不签发会话；不计入失败次数。
-          客户端不得提示「密码错误」，应引导用户通过设置 / 重置邮件完成更新或联系管理员。
-        - `FOUNDATION.IDENTITY.AUTH.LOGIN_DENIED_RISK`：异常登录风险评估拒绝。
-      headers:
-        WWW-Authenticate:
-          schema: { type: string }
-        X-Request-Id: { $ref: './_common.yaml#/components/headers/RequestIdHeader' }
-      content:
-        application/problem+json:
-          schema: { $ref: './_common.yaml#/components/schemas/Error' }
-          examples:
-            invalid_credentials:
-              value:
-                type: https://errors.foundation.example.com/foundation/identity/auth/invalid_credentials
-                title: Invalid credentials
-                status: 401
-                code: FOUNDATION.IDENTITY.AUTH.INVALID_CREDENTIALS
-                detail: invalid_grant
-                user_message: 邮箱或密码不正确，请重试。
-                instance: /api/identity/v1/sessions
-                request_id: req_01J5XXXXXXXXXXXXXXXXXXXXXX
-                timestamp: '2026-05-22T10:00:00Z'
-            account_setup_required:
-              value:
-                type: https://errors.foundation.example.com/foundation/identity/auth/account_setup_required
-                title: Account setup required
-                status: 401
-                code: FOUNDATION.IDENTITY.AUTH.ACCOUNT_SETUP_REQUIRED
-                detail: Account is not fully set up (required actions pending)
-                user_message: 账号需要先完成更新才能登录（例如密码已过期或管理员要求重置密码）。请使用设置邮件中的链接完成更新，或联系管理员为您发送密码重置邮件。
-                instance: /api/identity/v1/sessions
-                request_id: req_01J5XXXXXXXXXXXXXXXXXXXXXX
-                timestamp: '2026-05-22T10:00:00Z'
 
   schemas:
 

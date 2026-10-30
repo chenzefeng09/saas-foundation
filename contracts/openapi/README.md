@@ -48,14 +48,15 @@ contracts/openapi/
 
 ## 文件即契约：六条铁律
 
-> 这些规则由 `.spectral.yaml` 机器强制；任何 spec 提 PR 必须 `make lint` 全绿。
+> 这些规则由 `.spectral.yaml` 机器强制；任何 spec 提 PR 必须 `make lint` 无 error（warning 只提示）。
+> CI 的 contract-check 用同一份 ruleset、同一版 Spectral 和同一阈值，`make lint` 过了 CI 就过。
 
-1. **所有 path 带 `/v1` 前缀**（CONVENTIONS §2.2）；版本号 URL 显式带，禁止 header version
-2. **JSON 字段 `snake_case`**（CONVENTIONS §2.8）；枚举 `UPPER_SNAKE_CASE`（合规模式标识符例外）
-3. **错误响应必 $ref `_common.yaml`**；不允许 inline 定义错误 body
-4. **错误码格式 `FOUNDATION.<SVC>.<CAT>.<NAME>`** 四段
+1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`，CONVENTIONS §2.2），path 不再带版本；版本号 URL 显式带，禁止 header version
+2. **JSON 字段 `snake_case`**（CONVENTIONS §2.8；SCIM 资源 `Scim*` 沿用 RFC 7643 字段名）；枚举 `UPPER_SNAKE_CASE`（合规模式标识符例外）
+3. **错误响应必 $ref `_common.yaml`**；不允许 inline 定义错误 body。要自定义描述可以内联响应，但 body 必须是 `application/problem+json`，并 $ref `_common.yaml` 的 `Error` / `ValidationError`
+4. **错误码格式 `FOUNDATION.<SVC>.<CAT>.<NAME>`** 四段；各服务共用的码 `<SVC>` 为 `_`（[errors.md](../../docs/errors.md) §3.1、§12）
 5. **所有 operation 必须有 `operationId`**（camelCase，给 SDK 生成器用）；必须 unique
-6. **所有非公开端点声明 `security: [bearerAuth]`**；公开端点必须显式 `security: []`
+6. **spec 根级声明 `security`（如 `[bearerAuth]`）**，覆盖所有端点；公开端点必须显式 `security: []`
 
 ---
 
@@ -159,8 +160,8 @@ CI 强制在合并 PR 时跑 `make diff-base`；任何 breaking change → 阻�
 | 命令 | 说明 |
 |---|---|
 | `make help` | 列所有 target |
-| `make lint` | 全部 spec spectral 校验 |
-| `make lint-one SVC=identity` | 单个 spec 校验 |
+| `make lint` | 全部 spec（含 `_common.yaml`、`_template.yaml`）spectral 校验 |
+| `make lint-one SVC=identity` | 单个 spec 连同 `_common.yaml` 校验，与 CI 的 contract-check 相同 |
 | `make bundle` | 把 `$ref` 展开为可独立分发的 yaml |
 | `make sdk-all` | 生成 py + ts + go 三套 SDK |
 | `make diff-base` | 对比 main 分支识破坏性变更 |
@@ -198,7 +199,7 @@ CI 强制在合并 PR 时跑 `make diff-base`；任何 breaking change → 阻�
 
 ## 工具版本要求
 
-- [Spectral CLI](https://github.com/stoplightio/spectral) ≥ 6.11
+- [Spectral CLI](https://github.com/stoplightio/spectral) 6.17.0（`make lint` 与 CI 都经 `npx` 用这一版，只需 Node.js 20+）
 - [Redocly CLI](https://github.com/Redocly/redocly-cli) ≥ 1.16
 - [oasdiff](https://github.com/tufin/oasdiff) ≥ 1.10
 - [openapi-generator-cli](https://github.com/OpenAPITools/openapi-generator) ≥ 7.5 （Docker 拉镜像即可）

@@ -29,19 +29,26 @@ SPECS := \
 SPEC_FILES := $(addprefix $(SPECS_DIR)/,$(addsuffix .yaml,$(SPECS)))
 BUNDLE_FILES := $(addprefix $(BUNDLE_DIR)/,$(addsuffix .yaml,$(SPECS)))
 
+# The CLI version and threshold CI's contract-check uses
+# (.github/workflows/service-ci.yml): errors fail, warnings are advice.
+# `make lint SPECTRAL=spectral` uses an installed CLI instead.
+SPECTRAL ?= npx -y @stoplight/spectral-cli@6.17.0
+SPECTRAL_LINT := $(SPECTRAL) lint --ruleset .spectral.yaml --fail-severity=error
+
 .PHONY: help
 help:
 	@echo "OpenAPI Contracts — Available targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: lint
-lint: ## Spectral 校验所有 spec
-	@command -v spectral >/dev/null 2>&1 || { echo "Install spectral: npm i -g @stoplight/spectral-cli"; exit 1; }
-	@cd $(SPECS_DIR) && spectral lint --ruleset .spectral.yaml _common.yaml $(addsuffix .yaml,$(SPECS))
+lint: ## Spectral 校验所有 spec（含 _common.yaml 与 _template.yaml）
+	@command -v $(firstword $(SPECTRAL)) >/dev/null 2>&1 || { echo "$(firstword $(SPECTRAL)) not found: install Node.js 20+, or set SPECTRAL"; exit 1; }
+	@cd $(SPECS_DIR) && $(SPECTRAL_LINT) _common.yaml _template.yaml $(addsuffix .yaml,$(SPECS))
 
 .PHONY: lint-one
-lint-one: ## Spectral 校验单个 spec：make lint-one SVC=identity
-	@cd $(SPECS_DIR) && spectral lint --ruleset .spectral.yaml $(SVC).yaml
+lint-one: ## Spectral 校验单个 spec（连同 _common.yaml，与 CI 相同）：make lint-one SVC=identity
+	@command -v $(firstword $(SPECTRAL)) >/dev/null 2>&1 || { echo "$(firstword $(SPECTRAL)) not found: install Node.js 20+, or set SPECTRAL"; exit 1; }
+	@cd $(SPECS_DIR) && $(SPECTRAL_LINT) _common.yaml $(SVC).yaml
 
 .PHONY: bundle
 bundle: ## redocly bundle 把 $ref 内联展开

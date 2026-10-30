@@ -269,14 +269,14 @@ The Foundation is **contract-first**: the OpenAPI specs are the source of truth,
 
 ### The six machine-enforced spec rules
 
-These are enforced by `.spectral.yaml`; any spec PR must pass `make lint` (all green):
+These are enforced by `contracts/openapi/.spectral.yaml`; any spec PR must pass `make lint` without errors (warnings are advice). CI's contract-check uses the same ruleset, Spectral version and threshold:
 
-1. **Every path carries a `/v1` prefix** — the version is explicit in the URL; header versioning is forbidden.
-2. **JSON fields are `snake_case`; enums are `UPPER_SNAKE_CASE`** (compliance-mode identifiers are the documented exception).
-3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed.
-4. **Error codes are the four-segment `FOUNDATION.<SVC>.<CAT>.<NAME>`.**
+1. **The version ends the `servers` URL** (`/api/<service>/v1`) and paths do not repeat it — the version is explicit in the URL; header versioning is forbidden.
+2. **JSON fields are `snake_case`; enums are `UPPER_SNAKE_CASE`** (SCIM resources keep their RFC 7643 attribute names, and compliance-mode identifiers are the documented enum exception).
+3. **Error responses must `$ref` `_common.yaml`** — inline error bodies are not allowed. A response inlined for its own description still has an `application/problem+json` body that `$ref`s `_common.yaml`'s `Error` or `ValidationError`.
+4. **Error codes are the four-segment `FOUNDATION.<SVC>.<CAT>.<NAME>`**, with `_` as `<SVC>` for the codes all services share.
 5. **Every operation has a unique camelCase `operationId`** (consumed by the SDK generators).
-6. **Every non-public endpoint declares `security: [bearerAuth]`**; public endpoints must declare `security: []` explicitly.
+6. **Every spec declares root `security` (e.g. `[bearerAuth]`)**, which covers every endpoint; public endpoints must declare `security: []` explicitly.
 
 Breaking changes are caught by `oasdiff` (`make diff-base` against `main`); any breaking change blocks the PR and requires a `BREAKING:` commit footer plus a major version bump (compatibility policy in [CONVENTIONS.md §5](./CONVENTIONS.md)).
 

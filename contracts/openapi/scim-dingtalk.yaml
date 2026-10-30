@@ -34,7 +34,7 @@ tags:
 
 paths:
 
-  /v1/healthz:
+  /healthz:
     get:
       tags: [health]
       operationId: getHealthz
@@ -46,7 +46,7 @@ paths:
             application/json:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
-  /v1/ServiceProviderConfig:
+  /ServiceProviderConfig:
     get:
       tags: [scim-users]
       summary: SCIM Service Provider Config（RFC 7644 §5）
@@ -60,7 +60,7 @@ paths:
                 type: object
                 additionalProperties: true
 
-  /v1/Schemas:
+  /Schemas:
     get:
       tags: [scim-users]
       summary: 列 SCIM schemas
@@ -74,7 +74,7 @@ paths:
                 type: object
                 additionalProperties: true
 
-  /v1/Users:
+  /Users:
     get:
       tags: [scim-users]
       summary: SCIM 列用户
@@ -112,7 +112,7 @@ paths:
               schema: { $ref: '#/components/schemas/ScimUser' }
         '409': { $ref: './_common.yaml#/components/responses/Conflict' }
 
-  /v1/Users/{scim_id}:
+  /Users/{scim_id}:
     parameters:
       - name: scim_id
         in: path
@@ -163,7 +163,7 @@ paths:
         '204': { description: ok }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
-  /v1/Groups:
+  /Groups:
     get:
       tags: [scim-groups]
       operationId: scimListGroups
@@ -198,7 +198,7 @@ paths:
             application/scim+json:
               schema: { $ref: '#/components/schemas/ScimGroup' }
 
-  /v1/Bulk:
+  /Bulk:
     post:
       tags: [scim-bulk]
       operationId: scimBulk
@@ -219,7 +219,7 @@ paths:
                 additionalProperties: true
 
   # --------------------------- DingTalk adapter (internal admin endpoints) --
-  /v1/dingtalk/sync:trigger:
+  /dingtalk/sync:trigger:
     post:
       tags: [dingtalk]
       summary: 手动触发钉钉全量同步（定时任务也会跑）
@@ -244,7 +244,7 @@ paths:
                 properties:
                   sync_run_id: { type: string }
 
-  /v1/dingtalk/sync-runs/{run_id}:
+  /dingtalk/sync-runs/{run_id}:
     parameters:
       - name: run_id
         in: path
@@ -261,7 +261,7 @@ paths:
               schema: { $ref: '#/components/schemas/DingtalkSyncRun' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
-  /v1/dingtalk/webhook:
+  /dingtalk/webhook:
     post:
       tags: [dingtalk]
       summary: 接收钉钉 webhook（员工变更通知）

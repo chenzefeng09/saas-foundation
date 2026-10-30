@@ -1,8 +1,10 @@
 # =============================================================================
 # Spectral ruleset — saas-foundation OpenAPI 强制规则
 # =============================================================================
-# 跑法：make openapi-lint （或 npx spectral lint contracts/openapi/*.yaml）
+# 跑法：make lint（或 make lint-one SVC=<service>）
 # CI 强制：任何规则触发 error → 阻断合并
+# CI's contract-check and the repo-root .spectral.yaml use this file too, so a
+# spec that passes `make lint` passes CI.
 # =============================================================================
 
 extends:
@@ -15,25 +17,42 @@ formats:
 rules:
 
   # --------------------------------------------------------------------------
-  # CONVENTIONS §2.2 URL 路径：所有 path 必须带 v1 前缀（_common.yaml 占位除外）
+  # CONVENTIONS §2.2 URL 路径：/api/<service>/<version>/<resource>
+  # The version is part of the server URL (/api/identity/v1, /scim/v2), as in
+  # _template.yaml, and appears in the URL once: paths do not repeat it.
   # --------------------------------------------------------------------------
-  foundation-paths-must-have-version:
-    description: All paths must begin with /v1 or /v2 (versioned API per CONVENTIONS §2.2)
+  foundation-server-url-version:
+    description: Server URLs must end in the API version, e.g. /api/identity/v1 (CONVENTIONS §2.2)
+    severity: error
+    given:
+      - $.servers[*].url
+      - $.paths[*].servers[*].url
+      - $.paths[*][get,put,post,delete,options,head,patch,trace].servers[*].url
+    then:
+      function: pattern
+      functionOptions:
+        match: '/v[0-9]+$'
+
+  foundation-paths-unversioned:
+    description: Paths must not start with a version; the server URL carries it (CONVENTIONS §2.2)
     severity: error
     given: $.paths
     then:
       field: '@key'
       function: pattern
       functionOptions:
-        match: '^(/v[0-9]+/|/_common|/healthz|/readyz|/metrics)'
+        notMatch: '^/v[0-9]+(/|$)'
 
   # --------------------------------------------------------------------------
   # CONVENTIONS §2.8 JSON 字段命名 snake_case
+  # Except the SCIM resources (Scim*): RFC 7643/7644 fix their attribute names
+  # (userName, externalId, totalResults, Resources, Operations), and that is
+  # what IdPs such as Entra ID and Okta send.
   # --------------------------------------------------------------------------
   foundation-property-snake-case:
-    description: JSON property names must be snake_case
+    description: JSON property names must be snake_case (SCIM resources keep their RFC 7643 names)
     severity: error
-    given: $.components.schemas..properties[*]~
+    given: $.components.schemas[?(!@property.match(/^Scim/))]..properties[*]~
     then:
       function: pattern
       functionOptions:
@@ -53,25 +72,33 @@ rules:
         match: '^([A-Z][A-Z0-9_]*|equal_protection_[34]|finance_jrt0071|pipl|gdpr|hipaa|soc2|iso27001)$'
 
   # --------------------------------------------------------------------------
-  # 错误码格式 FOUNDATION.<SVC>.<CAT>.<NAME> 四段
+  # 错误码格式 FOUNDATION.<SVC>.<CAT>.<NAME> 四段（CONVENTIONS §4、errors.md §3.1）
+  # <SVC> is `_` for the codes all services share (errors.md §12). The Error
+  # schema must carry the regex tests/conformance/test_c4_error_format.py holds
+  # every response to; spectral:oas then checks each example against it.
   # --------------------------------------------------------------------------
   foundation-error-code-format:
-    description: Error code must match FOUNDATION.<SVC>.<CAT>.<NAME> 4-segment pattern
+    description: The Error schema's code must use the FOUNDATION.<SVC>.<CAT>.<NAME> pattern (errors.md §3.1)
     severity: error
-    given: $.components.schemas..code.pattern
+    given: $.components.schemas.Error.properties.code
     then:
-      function: pattern
-      functionOptions:
-        match: '\\^\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\\\\\.\\[A-Z\\]\\[A-Z_\\]\\+\\$'
+      - field: pattern
+        function: truthy
+      - field: pattern
+        function: enumeration
+        functionOptions:
+          values:
+            - '^FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+$'
 
   # --------------------------------------------------------------------------
   # 所有 path 必须有 operationId（SDK 生成必需）
+  # Built-in rules are re-levelled with a bare severity. An object such as
+  # `{severity: error}` declares a new rule instead, which needs given/then,
+  # and Spectral then refuses to load the whole ruleset.
   # --------------------------------------------------------------------------
-  operation-operationId:
-    severity: error
+  operation-operationId: error
 
-  operation-operationId-unique:
-    severity: error
+  operation-operationId-unique: error
 
   # --------------------------------------------------------------------------
   # operationId 必须 camelCase（生成 SDK 方法名）
@@ -86,33 +113,77 @@ rules:
         match: '^[a-z][a-zA-Z0-9]*$'
 
   # --------------------------------------------------------------------------
-  # 4xx / 5xx 响应必须用 $ref 引用 _common
+  # 4xx / 5xx 响应必须用 $ref 引用 _common（README 铁律 3：不允许 inline 定义错误 body）
+  # An error response is one of _common.yaml's responses, or an inline response
+  # (to give it a description of its own) whose RFC 9457 body is _common.yaml's
+  # Error or ValidationError. Both rules read the spec as written: in the
+  # resolved document every $ref has already been replaced by its target.
   # --------------------------------------------------------------------------
   foundation-error-responses-must-be-ref:
-    description: 4xx/5xx responses must use $ref to common responses
+    description: A 4xx/5xx response $ref must point at _common.yaml's responses
     severity: error
-    given: $.paths..responses[?(@property.match(/^[45]/))]
+    resolved: false
+    given: $.paths[*][get,put,post,delete,options,head,patch,trace].responses[?(@property.match(/^[45]/) && @.$ref)].$ref
+    then:
+      function: pattern
+      functionOptions:
+        match: '^\./_common\.yaml#/components/responses/[A-Za-z]+$'
+
+  # HEAD answers have no body, so they are left out.
+  foundation-error-inline-body:
+    description: An inline 4xx/5xx response must have an application/problem+json body that $refs _common.yaml's Error or ValidationError (errors.md §2)
+    severity: error
+    resolved: false
+    given: $.paths[*][get,put,post,delete,options,patch,trace].responses[?(@property.match(/^[45]/) && !@.$ref)]
     then:
       function: schema
       functionOptions:
         schema:
           type: object
-          required: [$ref]
+          required: [content]
           properties:
-            $ref:
-              type: string
-              pattern: '^./_common\.yaml#/components/responses/'
+            content:
+              type: object
+              required: [application/problem+json]
+              additionalProperties: false
+              properties:
+                application/problem+json:
+                  type: object
+                  required: [schema]
+                  properties:
+                    schema:
+                      type: object
+                      required: [$ref]
+                      properties:
+                        $ref:
+                          type: string
+                          pattern: '^\./_common\.yaml#/components/schemas/(Error|ValidationError)$'
 
   # --------------------------------------------------------------------------
   # 所有非公开 path 必须声明 security
   # 公开路径：/healthz、/readyz、/metrics、登录端点（需显式 security: []）
+  # A spec with paths sets a root security requirement, so an operation is
+  # protected unless it opts out, visibly, with its own `security: []`.
   # --------------------------------------------------------------------------
   foundation-security-required:
-    description: All non-public paths must require auth; declare security explicitly
+    description: A spec with paths must set root security; public operations opt out with security []
     severity: error
-    given: $.paths..[get,put,post,delete,options,head,patch].security
+    given: $
     then:
-      function: defined
+      function: schema
+      functionOptions:
+        schema:
+          if:
+            required: [paths]
+          then:
+            required: [security]
+            properties:
+              security:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  minProperties: 1
 
   # --------------------------------------------------------------------------
   # 所有时间字段必须 format: date-time
@@ -139,20 +210,52 @@ rules:
       function: defined
 
   # --------------------------------------------------------------------------
+  # CONVENTIONS §2.6: the gateway fills in X-Request-Id and clients may send
+  # it; _template.yaml declares _common.yaml's RequestId, on the operation or
+  # on its path. The document is resolved, so the parameter is matched by name.
+  # --------------------------------------------------------------------------
+  foundation-request-id-param:
+    description: Operations should declare the X-Request-Id header (_common.yaml's RequestId), themselves or on their path
+    message: Declare X-Request-Id (_common.yaml's RequestId) on this path or on each of its operations
+    severity: warn
+    given: $.paths[*]
+    then:
+      function: schema
+      functionOptions:
+        schema:
+          # not/not reports a path once, instead of once per failing branch.
+          not:
+            not:
+              anyOf:
+                - &declares-request-id
+                  type: object
+                  required: [parameters]
+                  properties:
+                    parameters:
+                      type: array
+                      contains:
+                        type: object
+                        required: [name, in]
+                        properties:
+                          name: { const: X-Request-Id }
+                          in: { const: header }
+                - properties:
+                    get: *declares-request-id
+                    put: *declares-request-id
+                    post: *declares-request-id
+                    delete: *declares-request-id
+                    patch: *declares-request-id
+
+  # --------------------------------------------------------------------------
   # info 块必填
   # --------------------------------------------------------------------------
-  info-contact:
-    severity: warn
-  info-description:
-    severity: error
-  info-license:
-    severity: warn
+  info-contact: warn
+  info-description: error
+  info-license: warn
 
   # --------------------------------------------------------------------------
   # 标准 spectral 规则保留
   # --------------------------------------------------------------------------
-  no-$ref-siblings:
-    severity: error
+  no-$ref-siblings: error
 
-  oas3-server-not-example.com:
-    severity: hint    # 模板里用 example.com 是有意的
+  oas3-server-not-example.com: hint    # 模板里用 example.com 是有意的

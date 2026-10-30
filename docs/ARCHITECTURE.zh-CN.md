@@ -269,14 +269,14 @@ Foundation 是**契约优先（contract-first）**：OpenAPI spec 是真相源�
 
 ### 六条机器强制的 spec 铁律
 
-由 `.spectral.yaml` 强制；任何 spec PR 都必须 `make lint` 全绿：
+由 `contracts/openapi/.spectral.yaml` 强制；任何 spec PR 都必须 `make lint` 无 error（warning 只提示）。CI 的 contract-check 用同一份 ruleset、同一版 Spectral 和同一阈值：
 
-1. **所有 path 带 `/v1` 前缀**——版本在 URL 中显式声明；禁止 header 版本。
-2. **JSON 字段 `snake_case`；枚举 `UPPER_SNAKE_CASE`**（合规模式标识符为已声明的例外）。
-3. **错误响应必须 `$ref` `_common.yaml`**——不允许内联错误 body。
-4. **错误码为四段 `FOUNDATION.<SVC>.<CAT>.<NAME>`。**
+1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`），path 不再重复——版本在 URL 中显式声明；禁止 header 版本。
+2. **JSON 字段 `snake_case`；枚举 `UPPER_SNAKE_CASE`**（SCIM 资源沿用 RFC 7643 字段名；合规模式标识符为已声明的枚举例外）。
+3. **错误响应必须 `$ref` `_common.yaml`**——不允许内联错误 body。为自定义描述而内联的响应，body 仍是 `application/problem+json`，并 `$ref` `_common.yaml` 的 `Error` 或 `ValidationError`。
+4. **错误码为四段 `FOUNDATION.<SVC>.<CAT>.<NAME>`**，各服务共用的码 `<SVC>` 为 `_`。
 5. **每个 operation 都有唯一的 camelCase `operationId`**（供 SDK 生成器使用）。
-6. **每个非公开端点声明 `security: [bearerAuth]`**；公开端点必须显式声明 `security: []`。
+6. **每个 spec 在根级声明 `security`（如 `[bearerAuth]`）**，覆盖所有端点；公开端点必须显式声明 `security: []`。
 
 破坏性变更由 `oasdiff` 捕获（`make diff-base` 对比 `main`）；任何破坏性变更都阻断 PR，并要求 `BREAKING:` commit footer 加主版本号递增（兼容性策略见 [CONVENTIONS.md §5](./CONVENTIONS.md)）。
 
