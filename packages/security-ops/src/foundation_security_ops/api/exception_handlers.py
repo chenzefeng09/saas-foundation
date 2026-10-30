@@ -48,10 +48,14 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=ec.http_status,
             media_type="application/problem+json",
             content=_body(
-                code=ec.code, title=ec.title, status=ec.http_status,
-                detail=exc.detail, instance=r.url.path,
+                code=ec.code,
+                title=ec.title,
+                status=ec.http_status,
+                detail=exc.detail,
+                instance=r.url.path,
                 request_id=getattr(r.state, "request_id", ""),
-                user_message=exc.user_message, extra=exc.extra,
+                user_message=exc.user_message,
+                extra=exc.extra,
             ),
         )
 
@@ -70,7 +74,9 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=ec.http_status,
             media_type="application/problem+json",
             content=_body(
-                code=ec.code, title=ec.title, status=ec.http_status,
+                code=ec.code,
+                title=ec.title,
+                status=ec.http_status,
                 detail=f"Validation failed for {len(errors)} field(s)",
                 instance=r.url.path,
                 request_id=getattr(r.state, "request_id", ""),
@@ -86,8 +92,11 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=ec.http_status,
             media_type="application/problem+json",
             content=_body(
-                code=ec.code, title=ec.title, status=ec.http_status,
-                detail=ec.default_detail, instance=r.url.path,
+                code=ec.code,
+                title=ec.title,
+                status=ec.http_status,
+                detail=ec.default_detail,
+                instance=r.url.path,
                 request_id=getattr(r.state, "request_id", ""),
                 user_message=ec.default_user_message,
             ),

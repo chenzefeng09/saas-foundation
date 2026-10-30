@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -23,7 +23,7 @@ class _ScalarsResult:
     def scalar_one_or_none(self) -> Any:
         return self._rows[0] if self._rows else None
 
-    def scalars(self) -> "_ScalarsResult":
+    def scalars(self) -> _ScalarsResult:
         return self
 
 

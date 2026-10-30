@@ -1,7 +1,7 @@
 """Security-ops domain models.
 
 Tables (schema = security_ops):
-  - scan_run         CI 扫描记录（SAST/SCA/DAST/IMAGE_VULN/IAC/SECRET/LICENSE）
+  - scan_run         CI 扫描记录 (SAST/SCA/DAST/IMAGE_VULN/IAC/SECRET/LICENSE)
   - vulnerability    统一漏洞跟踪 + SLA 截止
   - incident         应急响应事件
   - sbom_record      SBOM 元数据 + attestation 位置
@@ -31,10 +31,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from foundation_security_ops.domain.base import Base
 
-
 # ---------------------------------------------------------------------------
 # scan_run
 # ---------------------------------------------------------------------------
+
 
 class ScanRun(Base):
     __tablename__ = "scan_run"
@@ -61,21 +61,21 @@ class ScanRun(Base):
     s3_location: Mapped[str | None] = mapped_column(Text)
     # {"critical": 0, "high": 2, "medium": 5, "low": 10}
     findings_count: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # vulnerability
 # ---------------------------------------------------------------------------
 
+
 class Vulnerability(Base):
     __tablename__ = "vulnerability"
     __table_args__ = (
         Index(
             "idx_vuln_status_due",
-            "status", "due_at",
+            "status",
+            "due_at",
             postgresql_where="status NOT IN ('CLOSED','RISK_ACCEPTED','EXEMPTED')",
         ),
         Index("idx_vuln_severity_status", "severity", "status"),
@@ -102,14 +102,13 @@ class Vulnerability(Base):
     exception_id: Mapped[str | None] = mapped_column(String(40))
     risk_acceptance_id: Mapped[str | None] = mapped_column(String(40))
     notes_md: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # incident
 # ---------------------------------------------------------------------------
+
 
 class Incident(Base):
     __tablename__ = "incident"
@@ -139,14 +138,13 @@ class Incident(Base):
     regulators_notified: Mapped[bool | None] = mapped_column(Boolean)
     affected_tenants: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     audit_event_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # sbom_record — SBOM 元数据存储
 # ---------------------------------------------------------------------------
+
 
 class SbomRecord(Base):
     __tablename__ = "sbom_record"
@@ -165,14 +163,13 @@ class SbomRecord(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Syft / cosign / adapter
     generator_tool: Mapped[str] = mapped_column(String(50), nullable=False, default="syft")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # sbom_watch — Grype watch 注册
 # ---------------------------------------------------------------------------
+
 
 class SbomWatch(Base):
     __tablename__ = "sbom_watch"
@@ -190,6 +187,7 @@ class SbomWatch(Base):
 # license_finding — License 扫描结果
 # ---------------------------------------------------------------------------
 
+
 class LicenseFinding(Base):
     __tablename__ = "license_finding"
     __table_args__ = (
@@ -205,14 +203,13 @@ class LicenseFinding(Base):
     # ALLOWED / BLOCKED / REVIEW_REQUIRED
     verdict: Mapped[str] = mapped_column(String(20), nullable=False)
     exception_id: Mapped[str | None] = mapped_column(String(40))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # drill — 演练记录
 # ---------------------------------------------------------------------------
+
 
 class Drill(Base):
     __tablename__ = "drill"
@@ -230,14 +227,13 @@ class Drill(Base):
     s3_location: Mapped[str | None] = mapped_column(Text)
     participants: Mapped[list[str] | None] = mapped_column(ARRAY(String))
     scenario_runbook: Mapped[str | None] = mapped_column(String(500))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------
 # outbox — transactional event publishing
 # ---------------------------------------------------------------------------
+
 
 class Outbox(Base):
     __tablename__ = "security_ops_event_outbox"

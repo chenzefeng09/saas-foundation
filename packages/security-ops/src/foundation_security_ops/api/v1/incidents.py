@@ -124,7 +124,8 @@ async def update_incident(
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
     inc = await svc.update_incident(
-        session, inc_id,
+        session,
+        inc_id,
         status=body.status,
         ic=body.ic,
         customers_notified=body.customers_notified,
@@ -148,7 +149,8 @@ async def resolve_incident(
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
     inc = await svc.resolve_incident(
-        session, inc_id,
+        session,
+        inc_id,
         root_cause=body.root_cause,
         pir_s3_key=body.pir_s3_key,
         request_id=request_id,

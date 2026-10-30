@@ -224,16 +224,12 @@ def upgrade() -> None:
         _enable_platform_rls(table)
 
     # ── Grants ────────────────────────────────────────────────────────────────
-    op.execute(
-        "GRANT USAGE ON SCHEMA security_ops TO app_user, app_admin, app_observability"
-    )
+    op.execute("GRANT USAGE ON SCHEMA security_ops TO app_user, app_admin, app_observability")
     op.execute(
         "GRANT SELECT, INSERT, UPDATE, DELETE "
         "ON ALL TABLES IN SCHEMA security_ops TO app_user, app_admin"
     )
-    op.execute(
-        "GRANT SELECT ON ALL TABLES IN SCHEMA security_ops TO app_observability"
-    )
+    op.execute("GRANT SELECT ON ALL TABLES IN SCHEMA security_ops TO app_observability")
 
 
 def downgrade() -> None:

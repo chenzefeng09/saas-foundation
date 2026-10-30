@@ -66,7 +66,8 @@ def verify_attestation(image_ref: str, *, timeout: int = 60) -> bool:
             [  # noqa: S607
                 "cosign",
                 "verify-attestation",
-                "--type", "cyclonedx",
+                "--type",
+                "cyclonedx",
                 image_ref,
             ],
             capture_output=True,
@@ -92,10 +93,7 @@ def diff_sbom(sbom_a: bytes, sbom_b: bytes) -> dict:
         except json.JSONDecodeError:
             return {}
         comps = doc.get("components", [])
-        return {
-            f"{c.get('name', '')}@{c.get('version', '')}": c.get("purl", "")
-            for c in comps
-        }
+        return {f"{c.get('name', '')}@{c.get('version', '')}": c.get("purl", "") for c in comps}
 
     comps_a = _components(sbom_a)
     comps_b = _components(sbom_b)
