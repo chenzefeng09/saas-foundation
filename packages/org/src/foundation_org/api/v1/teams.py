@@ -34,7 +34,16 @@ def _require_actor(ctx: FoundationContext) -> str:
 
 @router.get("", response_model=CursorPage[TeamRead], operation_id="listTeams")
 async def list_teams(
-    org_unit_id: str | None = Query(default=None, pattern=OU_ID_PATTERN),
+    org_unit_id: str | None = Query(
+        default=None, alias="filter.org_unit_id", pattern=OU_ID_PATTERN
+    ),
+    legacy_org_unit_id: str | None = Query(
+        default=None,
+        alias="org_unit_id",
+        pattern=OU_ID_PATTERN,
+        deprecated=True,
+        description="Deprecated alias of filter.org_unit_id (CONVENTIONS §2.5).",
+    ),
     include_archived: bool = Query(default=False),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -45,7 +54,7 @@ async def list_teams(
     rows, next_cursor = await svc.list(
         session,
         tenant_id=ctx.tenant_id,
-        org_unit_id=org_unit_id,
+        org_unit_id=org_unit_id if org_unit_id is not None else legacy_org_unit_id,
         include_archived=include_archived,
         cursor=cursor,
         limit=limit,
