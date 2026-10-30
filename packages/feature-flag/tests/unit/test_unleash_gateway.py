@@ -855,9 +855,10 @@ class TestAdminApiPaths:
         assert not any("/strategies" in u for u in rec.posts())
         assert rec.deletes() == []
         # Still does probe + create + env on
-        assert "http://localhost:4242/api/admin/features/billing.saas_mode" in [
-            u for m, u in rec.calls if m == "GET"
-        ]
+        assert (
+            "http://localhost:4242/api/admin/projects/default/features/"
+            "billing.saas_mode" in [u for m, u in rec.calls if m == "GET"]
+        )
         assert (
             "http://localhost:4242/api/admin/projects/default/features"
             in rec.posts()
