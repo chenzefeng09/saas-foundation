@@ -31,14 +31,20 @@ on:
         required: false
         type: number
         default: 80
+      docker-context:
+        description: "Docker build context (default: working-directory). Services whose Dockerfile copies sibling path deps build from packages/."
+        required: false
+        type: string
+        default: ""
     secrets:
       CODECOV_TOKEN:
         required: false
 
+# A called workflow cannot ask for more than its caller grants: ci.yml grants
+# contents + security-events only, so anything more is a startup_failure.
 permissions:
   contents: read
   security-events: write
-  pull-requests: write
 
 jobs:
   # ===========================================================================
@@ -128,6 +134,12 @@ jobs:
       - name: Bootstrap DB roles (mimic init/postgres/01-roles.sql)
         env:
           PGPASSWORD: postgres_change_me
+          # 01-roles.sql reads the role passwords from these (psql backticks);
+          # unset, every role gets a NULL password and cannot log in.
+          APP_USER_PASSWORD: app_user_change_me
+          APP_ADMIN_PASSWORD: app_admin_change_me
+          APP_MIGRATOR_PASSWORD: app_migrator_change_me
+          APP_OBSERVABILITY_PASSWORD: app_obs_change_me
         run: |
           psql -h localhost -U postgres -d foundation \
             -f deploy/docker-compose/init/postgres/01-roles.sql || true
@@ -177,6 +189,10 @@ jobs:
       - name: Bootstrap DB
         env:
           PGPASSWORD: postgres_change_me
+          APP_USER_PASSWORD: app_user_change_me
+          APP_ADMIN_PASSWORD: app_admin_change_me
+          APP_MIGRATOR_PASSWORD: app_migrator_change_me
+          APP_OBSERVABILITY_PASSWORD: app_obs_change_me
         run: |
           psql -h localhost -U postgres -d foundation \
             -f deploy/docker-compose/init/postgres/01-roles.sql
@@ -234,7 +250,8 @@ jobs:
       - name: Build
         uses: docker/build-push-action@v6
         with:
-          context: ${{ inputs.working-directory }}
+          context: ${{ inputs.docker-context || inputs.working-directory }}
+          file: ${{ inputs.working-directory }}/Dockerfile
           push: false
           tags: foundation/${{ inputs.service-name }}:ci-${{ github.sha }}
           cache-from: type=gha

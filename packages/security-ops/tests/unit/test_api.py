@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from foundation_security_ops.domain.base import foundation_context
 from foundation_security_ops.domain.models import (
     Drill,
     Incident,
@@ -18,47 +18,62 @@ from foundation_security_ops.domain.models import (
 )
 from foundation_security_ops.main import create_app
 
-
 # ─── App factory with overridden DI ─────────────────────────────────────────
 
 
 def _make_scan(id: str = "scan_TEST01", status: str = "PASSED") -> ScanRun:
     now = datetime.now(UTC)
     return ScanRun(
-        id=id, type="SAST", tool="semgrep", target="repo:test",
-        started_at=now, status=status, findings_count={"high": 0},
+        id=id,
+        type="SAST",
+        tool="semgrep",
+        target="repo:test",
+        started_at=now,
+        status=status,
+        findings_count={"high": 0},
     )
 
 
 def _make_vuln(id: str = "vuln_TEST01") -> Vulnerability:
     now = datetime.now(UTC)
     return Vulnerability(
-        id=id, source="SAST", title="SQL Injection",
-        severity="HIGH", status="OPEN",
-        found_at=now, due_at=now + timedelta(days=7),
+        id=id,
+        source="SAST",
+        title="SQL Injection",
+        severity="HIGH",
+        status="OPEN",
+        found_at=now,
+        due_at=now + timedelta(days=7),
     )
 
 
 def _make_incident(id: str = "inc_TEST01") -> Incident:
     now = datetime.now(UTC)
     return Incident(
-        id=id, severity="HIGH", category="OUTAGE",
-        title="DB down", detected_at=now,
-        reported_by="oncall", status="DETECTED",
+        id=id,
+        severity="HIGH",
+        category="OUTAGE",
+        title="DB down",
+        detected_at=now,
+        reported_by="oncall",
+        status="DETECTED",
     )
 
 
 def _make_watch(image_ref: str = "myapp:v1") -> SbomWatch:
     return SbomWatch(
-        id="sbomwatch_T1", image_ref=image_ref,
+        id="sbomwatch_T1",
+        image_ref=image_ref,
         registered_at=datetime.now(UTC),
-        notify=[], new_cves_count=0,
+        notify=[],
+        new_cves_count=0,
     )
 
 
 def _make_drill(id: str = "drill_TEST01") -> Drill:
     return Drill(
-        id=id, kind="TABLETOP",
+        id=id,
+        kind="TABLETOP",
         scheduled_at=datetime.now(UTC) + timedelta(days=7),
         status="SCHEDULED",
     )
@@ -118,9 +133,7 @@ class TestScanRunsApi:
 
     def test_report_scan_run(self, client):
         now = datetime.now(UTC).isoformat()
-        client._mock_svc.report_scan_run = AsyncMock(
-            return_value=(_make_scan(), [])
-        )
+        client._mock_svc.report_scan_run = AsyncMock(return_value=(_make_scan(), []))
         resp = client.post(
             "/api/security-ops/v1/scans/runs",
             json={
@@ -157,11 +170,13 @@ class TestVulnerabilitiesApi:
         assert resp.json()["id"] == "vuln_TEST01"
 
     def test_sla_dashboard(self, client):
-        client._mock_svc.sla_dashboard = AsyncMock(return_value={
-            "overdue_by_severity": {"CRITICAL": 2},
-            "by_owner": {},
-            "mttr_days": {},
-        })
+        client._mock_svc.sla_dashboard = AsyncMock(
+            return_value={
+                "overdue_by_severity": {"CRITICAL": 2},
+                "by_owner": {},
+                "mttr_days": {},
+            }
+        )
         resp = client.get("/api/security-ops/v1/vulnerabilities/sla-dashboard")
         assert resp.status_code == 200
         assert resp.json()["overdue_by_severity"]["CRITICAL"] == 2
@@ -324,3 +339,47 @@ class TestDeleteEndpoints:
         resp = client.delete("/api/security-ops/v1/drills/drill_TEST01")
         assert resp.status_code == 204
         client._mock_svc.delete_drill.assert_awaited_once()
+
+
+# ─── Request context headers ─────────────────────────────────────────────────
+
+
+class TestContextHeaders:
+    def test_unknown_actor_is_rejected_before_the_route(self, client):
+        client._mock_svc.list_incidents = AsyncMock(return_value=[])
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Actor": "ROOT"})
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["code"] == "FOUNDATION.SECURITY_OPS.INPUT.INVALID_FORMAT"
+        assert data["detail"] == "Invalid X-Actor"
+        client._mock_svc.list_incidents.assert_not_awaited()
+
+    @pytest.mark.parametrize("actor", ["USER", "SERVICE", "SYSTEM", "MIGRATOR", "ADMIN"])
+    def test_known_actor_reaches_the_route_context(self, client, actor):
+        seen = []
+
+        async def _list_incidents(*_args, **_kwargs):
+            seen.append(foundation_context.get())
+            return []
+
+        client._mock_svc.list_incidents = AsyncMock(side_effect=_list_incidents)
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Actor": actor})
+        assert resp.status_code == 200
+        assert [ctx.actor for ctx in seen] == [actor]
+
+    def test_actor_defaults_to_service(self, client):
+        seen = []
+
+        async def _list_incidents(*_args, **_kwargs):
+            seen.append(foundation_context.get())
+            return []
+
+        client._mock_svc.list_incidents = AsyncMock(side_effect=_list_incidents)
+        resp = client.get("/api/security-ops/v1/incidents")
+        assert resp.status_code == 200
+        assert [ctx.actor for ctx in seen] == ["SERVICE"]
+
+    def test_malformed_tenant_id_is_rejected(self, client):
+        resp = client.get("/api/security-ops/v1/incidents", headers={"X-Tenant-Id": "acme"})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid X-Tenant-Id"

@@ -8,7 +8,8 @@ COPY lifecycle /lifecycle
 COPY feature-flag /feature-flag
 
 WORKDIR /app
-COPY security-ops/pyproject.toml security-ops/poetry.lock* ./
+# README.md: pyproject declares it, so installing the project below needs it.
+COPY security-ops/pyproject.toml security-ops/poetry.lock* security-ops/README.md ./
 RUN poetry install --only main --no-root --no-directory
 COPY security-ops/src ./src
 RUN poetry install --only main --sync

@@ -111,6 +111,7 @@ def _flag_enabled(name: str) -> bool:
         from foundation_feature_flag.services.feature_flag_service import (
             FeatureFlagService,
         )
+
         svc = FeatureFlagService()
         return bool(svc.is_enabled(name))
     except Exception as exc:
@@ -218,7 +219,9 @@ class SecurityOpsService:
                 continue
             vuln = Vulnerability(
                 id=_new_id("vuln"),
-                source=source if source in {"SAST", "SCA", "DAST", "IMAGE_VULN", "IAC", "SECRET"} else "SAST",
+                source=source
+                if source in {"SAST", "SCA", "DAST", "IMAGE_VULN", "IAC", "SECRET"}
+                else "SAST",
                 source_ref=scan.id,
                 title=f"[{tool}] {count} {severity.title()} findings in {target}",
                 severity=severity,
@@ -230,13 +233,27 @@ class SecurityOpsService:
             new_vulns.append(vuln)
 
         if status.upper() == "FAILED":
-            self._emit(session, None, "foundation.security_ops.scan.failed",
-                       {"scan_id": scan.id, "tool": tool, "target": target,
-                        "findings_count": findings_count}, request_id)
+            self._emit(
+                session,
+                None,
+                "foundation.security_ops.scan.failed",
+                {
+                    "scan_id": scan.id,
+                    "tool": tool,
+                    "target": target,
+                    "findings_count": findings_count,
+                },
+                request_id,
+            )
 
         for v in new_vulns:
-            self._emit(session, None, "foundation.security_ops.vuln.opened",
-                       {"vuln_id": v.id, "severity": v.severity, "source": v.source}, request_id)
+            self._emit(
+                session,
+                None,
+                "foundation.security_ops.vuln.opened",
+                {"vuln_id": v.id, "severity": v.severity, "source": v.source},
+                request_id,
+            )
 
         await session.flush()
         return scan, new_vulns
@@ -305,8 +322,13 @@ class SecurityOpsService:
             vuln.status = status.upper()
             if status.upper() in ("CLOSED",):
                 vuln.closed_at = datetime.now(UTC)
-                self._emit(session, None, "foundation.security_ops.vuln.closed",
-                           {"vuln_id": vuln_id, "severity": vuln.severity}, request_id)
+                self._emit(
+                    session,
+                    None,
+                    "foundation.security_ops.vuln.closed",
+                    {"vuln_id": vuln_id, "severity": vuln.severity},
+                    request_id,
+                )
         if assignee is not None:
             vuln.assignee = assignee
         if fix_pr_url is not None:
@@ -334,9 +356,13 @@ class SecurityOpsService:
         approval_id = _new_id("rapproval")
         vuln.risk_acceptance_id = approval_id
         vuln.status = "RISK_ACCEPTED"
-        self._emit(session, None, "foundation.security_ops.vuln.risk_accepted",
-                   {"vuln_id": vuln_id, "approval_id": approval_id,
-                    "rationale": rationale}, request_id)
+        self._emit(
+            session,
+            None,
+            "foundation.security_ops.vuln.risk_accepted",
+            {"vuln_id": vuln_id, "approval_id": approval_id, "rationale": rationale},
+            request_id,
+        )
         await session.flush()
         return approval_id
 
@@ -346,17 +372,23 @@ class SecurityOpsService:
         SDK: vuln.sla_dashboard()
         """
         now = datetime.now(UTC)
-        all_open = list((await session.scalars(
-            select(Vulnerability).where(
-                Vulnerability.status.not_in(["CLOSED", "RISK_ACCEPTED", "EXEMPTED"])
-            )
-        )).all())
+        all_open = list(
+            (
+                await session.scalars(
+                    select(Vulnerability).where(
+                        Vulnerability.status.not_in(["CLOSED", "RISK_ACCEPTED", "EXEMPTED"])
+                    )
+                )
+            ).all()
+        )
 
         overdue_by_severity: dict[str, int] = {}
         by_owner: dict[str, dict[str, int]] = {}
-        closed_vulns = list((await session.scalars(
-            select(Vulnerability).where(Vulnerability.status == "CLOSED")
-        )).all())
+        closed_vulns = list(
+            (
+                await session.scalars(select(Vulnerability).where(Vulnerability.status == "CLOSED"))
+            ).all()
+        )
 
         for v in all_open:
             if sla.is_overdue(v.due_at, now):
@@ -374,10 +406,7 @@ class SecurityOpsService:
                 delta = (v.closed_at - v.found_at).total_seconds() / 86400
                 mttr_sums[v.severity] = mttr_sums.get(v.severity, 0.0) + delta
                 mttr_counts[v.severity] = mttr_counts.get(v.severity, 0) + 1
-        mttr_days = {
-            sev: round(mttr_sums[sev] / mttr_counts[sev], 1)
-            for sev in mttr_sums
-        }
+        mttr_days = {sev: round(mttr_sums[sev] / mttr_counts[sev], 1) for sev in mttr_sums}
 
         return {
             "overdue_by_severity": overdue_by_severity,
@@ -401,6 +430,7 @@ class SecurityOpsService:
         Always persists an SbomRecord regardless of tool availability.
         """
         from foundation_security_ops.services.sbom_adapter import SbomFormat
+
         safe_fmt: SbomFormat = "cyclonedx-json" if "cyclonedx" in fmt.lower() else "spdx-json"
 
         is_stub = False
@@ -412,6 +442,7 @@ class SecurityOpsService:
             is_stub = True
 
         import json as _json
+
         try:
             doc = _json.loads(raw)
             component_count = len(doc.get("components", []))
@@ -427,9 +458,13 @@ class SecurityOpsService:
             generator_tool="syft-stub" if is_stub else "syft",
         )
         session.add(record)
-        self._emit(session, None, "foundation.security_ops.sbom.generated",
-                   {"sbom_id": record.id, "image_ref": image_ref, "is_stub": is_stub},
-                   request_id)
+        self._emit(
+            session,
+            None,
+            "foundation.security_ops.sbom.generated",
+            {"sbom_id": record.id, "image_ref": image_ref, "is_stub": is_stub},
+            request_id,
+        )
         await session.flush()
         return raw, record
 
@@ -447,9 +482,9 @@ class SecurityOpsService:
     ) -> SbomWatch:
         """SDK sbom.watch_register(image_ref, notify=[...])."""
         # Upsert pattern — check existing
-        existing = (await session.scalars(
-            select(SbomWatch).where(SbomWatch.image_ref == image_ref)
-        )).first()
+        existing = (
+            await session.scalars(select(SbomWatch).where(SbomWatch.image_ref == image_ref))
+        ).first()
         if existing:
             if notify is not None:
                 existing.notify = notify
@@ -471,11 +506,13 @@ class SecurityOpsService:
         return list((await session.scalars(select(SbomWatch))).all())
 
     async def get_sbom_for_image(self, session: AsyncSession, image_ref: str) -> SbomRecord | None:
-        return (await session.scalars(
-            select(SbomRecord)
-            .where(SbomRecord.image_ref == image_ref)
-            .order_by(SbomRecord.generated_at.desc())
-        )).first()
+        return (
+            await session.scalars(
+                select(SbomRecord)
+                .where(SbomRecord.image_ref == image_ref)
+                .order_by(SbomRecord.generated_at.desc())
+            )
+        ).first()
 
     # ───────────────────────────────────────────────────────── Incidents ───
 
@@ -508,9 +545,18 @@ class SecurityOpsService:
             affected_tenants=affected_tenants or [],
         )
         session.add(incident)
-        self._emit(session, None, "foundation.security_ops.incident.declared",
-                   {"inc_id": incident.id, "severity": incident.severity,
-                    "category": incident.category, "title": title}, request_id)
+        self._emit(
+            session,
+            None,
+            "foundation.security_ops.incident.declared",
+            {
+                "inc_id": incident.id,
+                "severity": incident.severity,
+                "category": incident.category,
+                "title": title,
+            },
+            request_id,
+        )
         await session.flush()
         return incident
 
@@ -569,8 +615,13 @@ class SecurityOpsService:
         inc.root_cause = root_cause
         inc.pir_s3_key = pir_s3_key
         inc.s3_location = _encode_s3_location([pir_s3_key])
-        self._emit(session, None, "foundation.security_ops.incident.resolved",
-                   {"inc_id": inc_id, "root_cause": root_cause}, request_id)
+        self._emit(
+            session,
+            None,
+            "foundation.security_ops.incident.resolved",
+            {"inc_id": inc_id, "root_cause": root_cause},
+            request_id,
+        )
         await session.flush()
         return inc
 
@@ -632,8 +683,13 @@ class SecurityOpsService:
         if pir_s3_key:
             drill.pir_s3_key = pir_s3_key
             drill.s3_location = _encode_s3_location([pir_s3_key])
-        self._emit(session, None, "foundation.security_ops.drill.completed",
-                   {"drill_id": drill_id, "kind": drill.kind}, request_id)
+        self._emit(
+            session,
+            None,
+            "foundation.security_ops.drill.completed",
+            {"drill_id": drill_id, "kind": drill.kind},
+            request_id,
+        )
         await session.flush()
         return drill
 
@@ -710,6 +766,7 @@ class SecurityOpsService:
         s3_location: list[str] | None = None
         if s3_loc_raw:
             import json as _json
+
             try:
                 decoded = _json.loads(s3_loc_raw)
                 if isinstance(decoded, list):
@@ -736,39 +793,63 @@ class SecurityOpsService:
         await session.flush()
 
     async def delete_scan_run(
-        self, session: AsyncSession, scan_id: str, *, request_id: str,
+        self,
+        session: AsyncSession,
+        scan_id: str,
+        *,
+        request_id: str,
         deleted_by: str = "system",
     ) -> None:
         row = await session.get(ScanRun, scan_id)
         if row is None:
             raise FoundationError(SCAN_NOT_FOUND, f"ScanRun {scan_id!r} not found")
         await self._soft_delete_then_drop(
-            session, row=row, resource_type_id=self._RT_SCAN_RUN,
-            model=ScanRun, request_id=request_id, deleted_by=deleted_by,
+            session,
+            row=row,
+            resource_type_id=self._RT_SCAN_RUN,
+            model=ScanRun,
+            request_id=request_id,
+            deleted_by=deleted_by,
         )
 
     async def delete_incident(
-        self, session: AsyncSession, inc_id: str, *, request_id: str,
+        self,
+        session: AsyncSession,
+        inc_id: str,
+        *,
+        request_id: str,
         deleted_by: str = "system",
     ) -> None:
         row = await session.get(Incident, inc_id)
         if row is None:
             raise FoundationError(INCIDENT_NOT_FOUND, f"Incident {inc_id!r} not found")
         await self._soft_delete_then_drop(
-            session, row=row, resource_type_id=self._RT_INCIDENT,
-            model=Incident, request_id=request_id, deleted_by=deleted_by,
+            session,
+            row=row,
+            resource_type_id=self._RT_INCIDENT,
+            model=Incident,
+            request_id=request_id,
+            deleted_by=deleted_by,
         )
 
     async def delete_drill(
-        self, session: AsyncSession, drill_id: str, *, request_id: str,
+        self,
+        session: AsyncSession,
+        drill_id: str,
+        *,
+        request_id: str,
         deleted_by: str = "system",
     ) -> None:
         row = await session.get(Drill, drill_id)
         if row is None:
             raise FoundationError(DRILL_NOT_FOUND, f"Drill {drill_id!r} not found")
         await self._soft_delete_then_drop(
-            session, row=row, resource_type_id=self._RT_DRILL,
-            model=Drill, request_id=request_id, deleted_by=deleted_by,
+            session,
+            row=row,
+            resource_type_id=self._RT_DRILL,
+            model=Drill,
+            request_id=request_id,
+            deleted_by=deleted_by,
         )
 
     # ──────────────────────────────────────────── Internal helpers ───────
@@ -782,10 +863,12 @@ class SecurityOpsService:
         request_id: str,
     ) -> None:
         agg = payload.get("inc_id") or payload.get("vuln_id") or payload.get("scan_id") or ""
-        session.add(Outbox(
-            tenant_id=tenant_id,
-            event_type=event_type,
-            aggregate_id=str(agg),
-            payload=payload,
-            request_id=request_id,
-        ))
+        session.add(
+            Outbox(
+                tenant_id=tenant_id,
+                event_type=event_type,
+                aggregate_id=str(agg),
+                payload=payload,
+                request_id=request_id,
+            )
+        )

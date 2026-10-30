@@ -15,7 +15,7 @@ from typing import Final
 # ── fix SLA in days, keyed by severity ─────────────────────────────────────
 
 _FIX_DAYS: Final[dict[str, int]] = {
-    "CRITICAL": 1,   # 24 h
+    "CRITICAL": 1,  # 24 h
     "HIGH": 7,
     "MEDIUM": 30,
     "LOW": 60,

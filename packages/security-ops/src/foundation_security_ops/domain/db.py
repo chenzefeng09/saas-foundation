@@ -19,6 +19,10 @@ log = get_logger(__name__)
 _engine: AsyncEngine | None = None
 _sm: async_sessionmaker[AsyncSession] | None = None
 
+# set_config(name, value, is_local => true) is SET LOCAL with bound parameters, so
+# header-derived values (tenant / user / actor) never become part of the SQL text.
+_SET_LOCAL = text("SELECT set_config(:name, :value, true)")
+
 
 def _rsn() -> str:
     return f"__asyncpg_{uuid.uuid4().hex[:12]}__"
@@ -58,15 +62,12 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
     async with _sm() as session:
         async with session.begin():
             if ctx is not None:
-                await session.execute(
-                    text(f"SET LOCAL app.tenant_id = '{ctx.tenant_id}'")  # nosemgrep: avoid-sqlalchemy-text
-                )
-                await session.execute(
-                    text(f"SET LOCAL app.user_id = '{ctx.user_id or ''}'")  # nosemgrep: avoid-sqlalchemy-text
-                )
-                await session.execute(
-                    text(f"SET LOCAL app.actor = '{ctx.actor}'")  # nosemgrep: avoid-sqlalchemy-text
-                )
+                for name, value in (
+                    ("app.tenant_id", ctx.tenant_id),
+                    ("app.user_id", ctx.user_id or ""),
+                    ("app.actor", ctx.actor),
+                ):
+                    await session.execute(_SET_LOCAL, {"name": name, "value": value})
             yield session
 
 

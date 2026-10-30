@@ -1,5 +1,5 @@
 # =============================================================================
-# Main CI — 所有 16 个 service 的 lint + test + build
+# Main CI — 所有 17 个 service 的 lint + test + build
 # =============================================================================
 name: CI
 on:
@@ -26,7 +26,8 @@ jobs:
         run: |
           missing=0
           for svc in identity authz org billing audit lifecycle notification search \
-                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection; do
+                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection \
+                     security-ops; do
             if [ ! -f "packages/$svc/src/foundation_$(echo $svc | tr '-' '_')/main.py" ]; then
               echo "::error::packages/$svc missing main.py"
               missing=1
@@ -36,10 +37,11 @@ jobs:
       - name: Check all services have Dockerfile
         run: |
           for svc in identity authz org billing audit lifecycle notification search \
-                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection; do
+                     api-platform llm-gateway feature-flag dlp crypto compliance pam data-protection \
+                     security-ops; do
             [ -f "packages/$svc/Dockerfile" ] || { echo "::error::$svc missing Dockerfile"; exit 1; }
           done
-          echo "All 16 services have Dockerfile"
+          echo "All 17 services have Dockerfile"
 
   # ---------------------------------------------------------------------------
   # 分批跑 service CI（并行 4 个一批，避免 Actions 限流）
@@ -95,3 +97,20 @@ jobs:
       service-name: ${{ matrix.service }}
       working-directory: packages/${{ matrix.service }}
       coverage-min: 0
+
+  ci-batch-5:
+    name: Batch 5 — Security Ops
+    needs: [quick-checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [security-ops]
+    uses: ./.github/workflows/service-ci.yml
+    with:
+      service-name: ${{ matrix.service }}
+      working-directory: packages/${{ matrix.service }}
+      # Path deps on ../storage, ../feature-flag and ../lifecycle: the Dockerfile
+      # builds from packages/, the same context deploy/docker-compose/dev.yml uses.
+      docker-context: packages
+      # CONVENTIONS §10.1: unit tier coverage >= 80%.
+      coverage-min: 80

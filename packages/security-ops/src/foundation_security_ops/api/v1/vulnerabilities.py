@@ -94,7 +94,8 @@ async def update_vulnerability(
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
     vuln = await svc.update_vulnerability(
-        session, vuln_id,
+        session,
+        vuln_id,
         status=body.status,
         assignee=body.assignee,
         fix_pr_url=body.fix_pr_url,
@@ -119,7 +120,8 @@ async def request_risk_acceptance(
     request_id: str = Depends(current_request_id),
 ) -> dict[str, Any]:
     approval_id = await svc.request_risk_acceptance(
-        session, vuln_id,
+        session,
+        vuln_id,
         rationale=body.rationale,
         mitigations=body.mitigations,
         expires_at=body.expires_at,

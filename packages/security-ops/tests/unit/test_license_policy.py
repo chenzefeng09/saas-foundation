@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from foundation_security_ops.services.license_policy import (
     evaluate_license,
     is_allowed,

@@ -126,6 +126,7 @@ class TestReportScanRun:
     ):
         """storage-v1 §7.2: flag ON → bad key raises VALIDATION_FAILED."""
         from unittest.mock import patch
+
         from foundation_security_ops.errors import VALIDATION_FAILED, FoundationError
 
         with patch(
@@ -155,9 +156,7 @@ class TestReportScanRun:
         """Well-formed storage-v1 key passes validation; s3_location captured."""
         from unittest.mock import patch
 
-        valid_key = (
-            "foundation-workspace::tenants/tnt_T1/security-ops/scan/scan_X/sarif.json"
-        )
+        valid_key = "foundation-workspace::tenants/tnt_T1/security-ops/scan/scan_X/sarif.json"
         with patch(
             "foundation_security_ops.services.security_ops_service._flag_enabled",
             return_value=True,
@@ -210,9 +209,13 @@ class TestVulnerabilityLifecycle:
     async def test_get_existing_vuln(self, svc, fake_session, request_id):
         now = datetime.now(UTC)
         vuln = Vulnerability(
-            id="vuln_TEST01", source="SAST", title="SQL Injection",
-            severity="HIGH", status="OPEN",
-            found_at=now, due_at=now + timedelta(days=7),
+            id="vuln_TEST01",
+            source="SAST",
+            title="SQL Injection",
+            severity="HIGH",
+            status="OPEN",
+            found_at=now,
+            due_at=now + timedelta(days=7),
         )
         fake_session.put(vuln)
 
@@ -227,14 +230,19 @@ class TestVulnerabilityLifecycle:
     async def test_update_vuln_assigns(self, svc, fake_session, request_id):
         now = datetime.now(UTC)
         vuln = Vulnerability(
-            id="vuln_ASSIGN", source="SCA", title="Log4Shell",
-            severity="CRITICAL", status="OPEN",
-            found_at=now, due_at=now + timedelta(days=1),
+            id="vuln_ASSIGN",
+            source="SCA",
+            title="Log4Shell",
+            severity="CRITICAL",
+            status="OPEN",
+            found_at=now,
+            due_at=now + timedelta(days=1),
         )
         fake_session.put(vuln)
 
         updated = await svc.update_vulnerability(
-            fake_session, "vuln_ASSIGN",
+            fake_session,
+            "vuln_ASSIGN",
             assignee="alice@example.com",
             request_id=request_id,
         )
@@ -243,14 +251,19 @@ class TestVulnerabilityLifecycle:
     async def test_close_vuln_sets_closed_at(self, svc, fake_session, request_id):
         now = datetime.now(UTC)
         vuln = Vulnerability(
-            id="vuln_CLOSE", source="PENTEST", title="XSS",
-            severity="MEDIUM", status="IN_FIX",
-            found_at=now, due_at=now + timedelta(days=30),
+            id="vuln_CLOSE",
+            source="PENTEST",
+            title="XSS",
+            severity="MEDIUM",
+            status="IN_FIX",
+            found_at=now,
+            due_at=now + timedelta(days=30),
         )
         fake_session.put(vuln)
 
         updated = await svc.update_vulnerability(
-            fake_session, "vuln_CLOSE",
+            fake_session,
+            "vuln_CLOSE",
             status="CLOSED",
             request_id=request_id,
         )
@@ -260,14 +273,19 @@ class TestVulnerabilityLifecycle:
     async def test_risk_acceptance(self, svc, fake_session, request_id):
         now = datetime.now(UTC)
         vuln = Vulnerability(
-            id="vuln_RISK", source="CVE_MONITOR", title="CVE-2025-9999",
-            severity="MEDIUM", status="OPEN",
-            found_at=now, due_at=now + timedelta(days=30),
+            id="vuln_RISK",
+            source="CVE_MONITOR",
+            title="CVE-2025-9999",
+            severity="MEDIUM",
+            status="OPEN",
+            found_at=now,
+            due_at=now + timedelta(days=30),
         )
         fake_session.put(vuln)
 
         approval_id = await svc.request_risk_acceptance(
-            fake_session, "vuln_RISK",
+            fake_session,
+            "vuln_RISK",
             rationale="This dependency is only used in test tooling, not shipped in production.",
             mitigations=["Isolated test environment", "No network access"],
             expires_at=None,
@@ -293,16 +311,22 @@ class TestSlaDashboard:
         now = datetime.now(UTC)
         # One overdue CRITICAL (due in the past)
         overdue_vuln = Vulnerability(
-            id="vuln_OD1", source="SAST", title="Overdue Critical",
-            severity="CRITICAL", status="OPEN",
+            id="vuln_OD1",
+            source="SAST",
+            title="Overdue Critical",
+            severity="CRITICAL",
+            status="OPEN",
             found_at=now - timedelta(days=5),
             due_at=now - timedelta(days=2),  # 2 days overdue
             assignee="bob@example.com",
         )
         # One not-yet-due HIGH
         fresh_vuln = Vulnerability(
-            id="vuln_OD2", source="SCA", title="Fresh High",
-            severity="HIGH", status="OPEN",
+            id="vuln_OD2",
+            source="SCA",
+            title="Fresh High",
+            severity="HIGH",
+            status="OPEN",
             found_at=now,
             due_at=now + timedelta(days=6),
         )
@@ -354,14 +378,19 @@ class TestIncidentLifecycle:
 
     async def test_update_incident_status(self, svc, fake_session, request_id):
         inc = Incident(
-            id="inc_TEST01", severity="HIGH", category="OUTAGE",
-            title="DB down", detected_at=datetime.now(UTC),
-            reported_by="oncall", status="DETECTED",
+            id="inc_TEST01",
+            severity="HIGH",
+            category="OUTAGE",
+            title="DB down",
+            detected_at=datetime.now(UTC),
+            reported_by="oncall",
+            status="DETECTED",
         )
         fake_session.put(inc)
 
         updated = await svc.update_incident(
-            fake_session, "inc_TEST01",
+            fake_session,
+            "inc_TEST01",
             status="INVESTIGATING",
             request_id=request_id,
         )
@@ -369,9 +398,13 @@ class TestIncidentLifecycle:
 
     async def test_containment_sets_timestamp(self, svc, fake_session, request_id):
         inc = Incident(
-            id="inc_CONT", severity="CRITICAL", category="RANSOMWARE",
-            title="Ransomware attack", detected_at=datetime.now(UTC),
-            reported_by="security@example.com", status="INVESTIGATING",
+            id="inc_CONT",
+            severity="CRITICAL",
+            category="RANSOMWARE",
+            title="Ransomware attack",
+            detected_at=datetime.now(UTC),
+            reported_by="security@example.com",
+            status="INVESTIGATING",
         )
         fake_session.put(inc)
 
@@ -383,14 +416,19 @@ class TestIncidentLifecycle:
 
     async def test_resolve_incident(self, svc, fake_session, request_id):
         inc = Incident(
-            id="inc_RESOLVE", severity="HIGH", category="OUTAGE",
-            title="DB failover", detected_at=datetime.now(UTC),
-            reported_by="oncall", status="CONTAINED",
+            id="inc_RESOLVE",
+            severity="HIGH",
+            category="OUTAGE",
+            title="DB failover",
+            detected_at=datetime.now(UTC),
+            reported_by="oncall",
+            status="CONTAINED",
         )
         fake_session.put(inc)
 
         resolved = await svc.resolve_incident(
-            fake_session, "inc_RESOLVE",
+            fake_session,
+            "inc_RESOLVE",
             root_cause="Primary DB OOM-killed; standby promoted in 4 minutes.",
             pir_s3_key="s3://bucket/pir/inc_RESOLVE.pdf",
             request_id=request_id,
@@ -476,13 +514,16 @@ class TestDrillService:
     async def test_complete_drill(self, svc, fake_session, request_id):
         future = datetime.now(UTC) + timedelta(days=7)
         drill = Drill(
-            id="drill_TEST", kind="PLAYBOOK_DRILL",
-            scheduled_at=future, status="RUNNING",
+            id="drill_TEST",
+            kind="PLAYBOOK_DRILL",
+            scheduled_at=future,
+            status="RUNNING",
         )
         fake_session.put(drill)
 
         completed = await svc.complete_drill(
-            fake_session, "drill_TEST",
+            fake_session,
+            "drill_TEST",
             pir_s3_key="s3://bucket/pir/drill_TEST.pdf",
             request_id=request_id,
         )
@@ -505,8 +546,13 @@ class TestDeleteRoutesToLifecycle:
         self, svc, fake_session, request_id, monkeypatch
     ):
         scan = ScanRun(
-            id="scan_DEL01", type="SAST", tool="semgrep", target="repo:x",
-            started_at=datetime.now(UTC), status="PASSED", findings_count={},
+            id="scan_DEL01",
+            type="SAST",
+            tool="semgrep",
+            target="repo:x",
+            started_at=datetime.now(UTC),
+            status="PASSED",
+            findings_count={},
             s3_location='["foundation-workspace::tenants/_platform/security-ops/scan/scan_DEL01/sarif.json"]',
         )
         fake_session.put(scan)
@@ -516,8 +562,10 @@ class TestDeleteRoutesToLifecycle:
         async def _fake_soft_delete(self_, session, **kwargs):
             captured.update(kwargs)
             from foundation_lifecycle.domain.models import RecycleBin
+
             return RecycleBin(
-                id="bin_X", tenant_id=kwargs["tenant_id"],
+                id="bin_X",
+                tenant_id=kwargs["tenant_id"],
                 resource_type_id=kwargs["resource_type_id"],
                 resource_id=kwargs["resource_id"],
                 deleted_by=kwargs["deleted_by"],
@@ -525,6 +573,7 @@ class TestDeleteRoutesToLifecycle:
             )
 
         from foundation_lifecycle.services.lifecycle_service import LifecycleService
+
         monkeypatch.setattr(LifecycleService, "soft_delete", _fake_soft_delete)
 
         await svc.delete_scan_run(fake_session, "scan_DEL01", request_id=request_id)
@@ -539,9 +588,13 @@ class TestDeleteRoutesToLifecycle:
         self, svc, fake_session, request_id, monkeypatch
     ):
         inc = Incident(
-            id="inc_DEL01", severity="HIGH", category="OUTAGE",
-            title="x", detected_at=datetime.now(UTC),
-            reported_by="oncall", status="DETECTED",
+            id="inc_DEL01",
+            severity="HIGH",
+            category="OUTAGE",
+            title="x",
+            detected_at=datetime.now(UTC),
+            reported_by="oncall",
+            status="DETECTED",
             s3_location=None,
         )
         fake_session.put(inc)
@@ -551,8 +604,10 @@ class TestDeleteRoutesToLifecycle:
         async def _fake_soft_delete(self_, session, **kwargs):
             captured.update(kwargs)
             from foundation_lifecycle.domain.models import RecycleBin
+
             return RecycleBin(
-                id="bin_Y", tenant_id=kwargs["tenant_id"],
+                id="bin_Y",
+                tenant_id=kwargs["tenant_id"],
                 resource_type_id=kwargs["resource_type_id"],
                 resource_id=kwargs["resource_id"],
                 deleted_by=kwargs["deleted_by"],
@@ -560,17 +615,18 @@ class TestDeleteRoutesToLifecycle:
             )
 
         from foundation_lifecycle.services.lifecycle_service import LifecycleService
+
         monkeypatch.setattr(LifecycleService, "soft_delete", _fake_soft_delete)
 
         await svc.delete_incident(fake_session, "inc_DEL01", request_id=request_id)
         assert captured["s3_location"] is None
 
-    async def test_delete_drill_happy_path(
-        self, svc, fake_session, request_id, monkeypatch
-    ):
+    async def test_delete_drill_happy_path(self, svc, fake_session, request_id, monkeypatch):
         drill = Drill(
-            id="drill_DEL01", kind="TABLETOP",
-            scheduled_at=datetime.now(UTC), status="SCHEDULED",
+            id="drill_DEL01",
+            kind="TABLETOP",
+            scheduled_at=datetime.now(UTC),
+            status="SCHEDULED",
         )
         fake_session.put(drill)
 
@@ -578,8 +634,10 @@ class TestDeleteRoutesToLifecycle:
 
         async def _fake_soft_delete(self_, session, **kwargs):
             from foundation_lifecycle.domain.models import RecycleBin
+
             return RecycleBin(
-                id="bin_Z", tenant_id=kwargs["tenant_id"],
+                id="bin_Z",
+                tenant_id=kwargs["tenant_id"],
                 resource_type_id=kwargs["resource_type_id"],
                 resource_id=kwargs["resource_id"],
                 deleted_by=kwargs["deleted_by"],
@@ -593,6 +651,4 @@ class TestDeleteRoutesToLifecycle:
 
     async def test_delete_scan_run_missing_raises(self, svc, fake_session, request_id):
         with pytest.raises(FoundationError, match="not found"):
-            await svc.delete_scan_run(
-                fake_session, "scan_NONE", request_id=request_id
-            )
+            await svc.delete_scan_run(fake_session, "scan_NONE", request_id=request_id)

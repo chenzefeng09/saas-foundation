@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from foundation_security_ops.api.v1 import health, scans, vulnerabilities, sbom, incidents, drills
+from foundation_security_ops.api.v1 import drills, health, incidents, sbom, scans, vulnerabilities
 
 api_v1 = APIRouter()
 api_v1.include_router(health.router, tags=["health"])

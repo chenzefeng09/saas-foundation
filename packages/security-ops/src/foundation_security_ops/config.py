@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     service_name: str = "security-ops"
     env: Literal["dev", "staging", "production"] = "dev"
-    http_host: str = "0.0.0.0"
+    http_host: str = "0.0.0.0"  # noqa: S104  intentional for container deploys
     http_port: int = 8019
     api_prefix: str = "/api/security-ops/v1"
 
