@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta, timezone
+import struct
+from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from clickhouse_connect.datatypes.registry import get_from_name
+from clickhouse_connect.driver.insert import InsertContext
 
 from foundation_audit.adapters.clickhouse import (
     EVENTS_COLUMNS,
     MERKLE_BATCH_COLUMNS,
     _event_to_row,
+    _insert,
     get_events_for_verification,
+    insert_events,
+    insert_merkle_batch,
     query_events,
 )
 
@@ -98,14 +105,14 @@ class TestEventToRow:
         expected_size = len(json.dumps(payload, ensure_ascii=False).encode())
         assert row[size_idx] == expected_size
 
-    def test_occurred_at_naive_datetime(self) -> None:
-        """occurred_at must be stored as naive datetime (CH stores UTC naive)."""
-        event = self._make_event()
+    def test_occurred_at_utc_datetime(self) -> None:
+        """occurred_at is aware UTC: clickhouse-connect takes a naive one for local time."""
+        event = self._make_event(occurred_at="2026-01-01T20:00:00+08:00")
         row = _event_to_row(event)
         idx = EVENTS_COLUMNS.index("occurred_at")
         dt = row[idx]
-        assert isinstance(dt, datetime)
-        assert dt.tzinfo is None  # naive UTC
+        assert dt == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        assert dt.tzinfo is UTC
 
     def test_occurred_at_from_string(self) -> None:
         """occurred_at string is parsed correctly."""
@@ -227,28 +234,30 @@ _KEYSET_TAIL = (
 )
 
 
+async def _sent_query(**kwargs: Any) -> tuple[str, dict[str, Any]]:
+    """The SQL and parameters that query_events hands clickhouse-connect."""
+    result = MagicMock()
+    result.result_rows = []
+    client = MagicMock()
+    client.query = MagicMock(return_value=result)
+    with patch(
+        "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+        new=AsyncMock(return_value=client),
+    ):
+        await query_events(tenant_id=_TENANT, **kwargs)
+    (sql,), call_kwargs = client.query.call_args
+    return sql, call_kwargs["parameters"]
+
+
 @pytest.mark.usefixtures("local_time_not_utc")
 class TestQueryEventsKeyset:
     """query_events resumes after the full sort key (occurred_at, event_id)."""
-
-    async def _query(self, **kwargs: Any) -> tuple[str, dict[str, Any]]:
-        result = MagicMock()
-        result.result_rows = []
-        client = MagicMock()
-        client.query = MagicMock(return_value=result)
-        with patch(
-            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
-            new=AsyncMock(return_value=client),
-        ):
-            await query_events(tenant_id=_TENANT, **kwargs)
-        (sql,), call_kwargs = client.query.call_args
-        return sql, call_kwargs["parameters"]
 
     @pytest.mark.asyncio
     async def test_resumes_after_the_full_sort_key(self) -> None:
         stored = datetime(2026, 10, 30, 12, 0, 0, 250000)  # naive UTC, as CH hands it back
 
-        sql, params = await self._query(after=(stored, _EVT), limit=3)
+        sql, params = await _sent_query(after=(stored, _EVT), limit=3)
 
         assert sql.endswith("WHERE tenant_id = {tenant_id:String} " + _KEYSET_TAIL)
         # Bound as text: clickhouse-connect would drop the milliseconds of a datetime.
@@ -260,19 +269,150 @@ class TestQueryEventsKeyset:
     async def test_keyset_bound_is_the_utc_instant(self) -> None:
         ts = datetime(2026, 10, 30, 20, 0, 0, 250000, tzinfo=timezone(timedelta(hours=8)))
 
-        _, params = await self._query(after=(ts, _EVT))
+        _, params = await _sent_query(after=(ts, _EVT))
 
         assert params["after_ts"] == "2026-10-30 12:00:00.250"
 
     @pytest.mark.asyncio
     async def test_first_page_has_no_keyset_bound(self) -> None:
-        sql, params = await self._query(limit=3)
+        sql, params = await _sent_query(limit=3)
 
         assert sql.endswith(
             "WHERE tenant_id = {tenant_id:String} "
             "ORDER BY tenant_id, occurred_at, event_id LIMIT {limit:UInt32}"
         )
         assert "after_ts" not in params
+
+
+_UTC8 = timezone(timedelta(hours=8))
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# One instant, 2026-10-30 12:00:00.250 UTC, spelled the ways it reaches the adapter.
+_INSTANT = datetime(2026, 10, 30, 12, 0, 0, 250000, tzinfo=UTC)
+_SPELLINGS: list[datetime | str] = [
+    "2026-10-30T12:00:00.250Z",
+    "2026-10-30T20:00:00.250+08:00",
+    "2026-10-30T07:00:00.250-05:00",
+    "2026-10-30T12:00:00.250",  # no offset: UTC
+    datetime(2026, 10, 30, 20, 0, 0, 250000, tzinfo=_UTC8),
+    datetime(2026, 10, 30, 12, 0, 0, 250000),  # naive: UTC, as CH hands it back
+]
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestQueryEventsTimeBounds:
+    """occurred_from / occurred_to are bound as the UTC instant, to the millisecond."""
+
+    @pytest.mark.parametrize(
+        "bound",
+        [
+            datetime(2026, 10, 30, 12, 0, 0, 250000, tzinfo=UTC),
+            datetime(2026, 10, 30, 20, 0, 0, 250999, tzinfo=_UTC8),  # cut to the ms, as stored
+            datetime(2026, 10, 30, 12, 0, 0, 250000),  # naive: UTC
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_bounds_are_the_utc_instant(self, bound: datetime) -> None:
+        sql, params = await _sent_query(occurred_from=bound, occurred_to=bound)
+
+        assert "AND occurred_at >= {occurred_from:DateTime64(3, 'UTC')} " in sql
+        assert "AND occurred_at <= {occurred_to:DateTime64(3, 'UTC')} " in sql
+        # Text: clickhouse-connect binds a datetime in whole seconds, a naive one as local time.
+        assert params["occurred_from"] == "2026-10-30 12:00:00.250"
+        assert params["occurred_to"] == "2026-10-30 12:00:00.250"
+
+
+def _stored_ms(value: datetime) -> int:
+    """Epoch ms that clickhouse-connect sends for ``value`` in a DateTime64(3, 'UTC') column."""
+    ch_type = get_from_name("DateTime64(3, 'UTC')")
+    dest = bytearray()
+    ch_type.write_column([value], dest, InsertContext("t", ["c"], [ch_type]))
+    (ms,) = struct.unpack("<q", dest)
+    return int(ms)
+
+
+def _epoch_ms(ts: datetime) -> int:
+    return (ts - _EPOCH) // timedelta(milliseconds=1)
+
+
+async def _inserted(insert: Callable[[], Awaitable[None]]) -> list[dict[str, Any]]:
+    """The rows ``insert`` hands clickhouse-connect, as {column: value}."""
+    client = MagicMock()
+    with patch(
+        "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+        new=AsyncMock(return_value=client),
+    ):
+        await insert()
+    (_table, data), call_kwargs = client.insert.call_args
+    return [dict(zip(call_kwargs["column_names"], row, strict=True)) for row in data]
+
+
+def _event(**overrides: Any) -> dict[str, Any]:
+    return {"event_id": _EVT, "tenant_id": _TENANT, "service": "identity", **overrides}
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestInsertedInstants:
+    """Every datetime is stored as the UTC instant it names, to the millisecond.
+
+    ClickHouse keeps a DateTime64 as ticks since the epoch.  ``_stored_ms`` runs
+    clickhouse-connect's own serialiser, which reads a naive datetime as host local
+    time, so these pass only if no naive datetime reaches it.
+    """
+
+    @pytest.mark.parametrize("value", _SPELLINGS)
+    @pytest.mark.asyncio
+    async def test_event_times(self, value: datetime | str) -> None:
+        (row,) = await _inserted(
+            lambda: insert_events([_event(occurred_at=value, ingested_at=value)]),
+        )
+
+        assert _stored_ms(row["occurred_at"]) == _epoch_ms(_INSTANT)
+        assert _stored_ms(row["ingested_at"]) == _epoch_ms(_INSTANT)
+
+    @pytest.mark.asyncio
+    async def test_missing_event_times_are_now(self) -> None:
+        (row,) = await _inserted(lambda: insert_events([_event()]))
+
+        now = _epoch_ms(datetime.now(UTC))
+        assert abs(_stored_ms(row["occurred_at"]) - now) < 60_000
+        assert abs(_stored_ms(row["ingested_at"]) - now) < 60_000
+
+    @pytest.mark.asyncio
+    async def test_retention_date_is_the_utc_day(self) -> None:
+        (row,) = await _inserted(
+            lambda: insert_events([_event(occurred_at="2026-10-31T03:00:00+08:00")]),
+        )
+
+        assert row["retention_until"] == date(2026, 10, 30)
+
+    @pytest.mark.parametrize("value", _SPELLINGS)
+    @pytest.mark.asyncio
+    async def test_merkle_batch_times(self, value: datetime | str) -> None:
+        times = {"created_at": value, "sealed_at": value, "tsa_timestamp": value}
+
+        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1", **times}))
+
+        assert _stored_ms(row["created_at"]) == _epoch_ms(_INSTANT)
+        assert _stored_ms(row["sealed_at"]) == _epoch_ms(_INSTANT)
+        assert _stored_ms(row["tsa_timestamp"]) == _epoch_ms(_INSTANT)
+
+    @pytest.mark.asyncio
+    async def test_merkle_batch_without_tsa(self) -> None:
+        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1"}))
+
+        assert row["tsa_timestamp"] is None
+        now = _epoch_ms(datetime.now(UTC))
+        assert abs(_stored_ms(row["created_at"]) - now) < 60_000
+        assert abs(_stored_ms(row["sealed_at"]) - now) < 60_000
+
+    @pytest.mark.asyncio
+    async def test_any_naive_datetime_is_stored_as_utc(self) -> None:
+        """_insert itself holds for a column the row builders do not know yet."""
+        naive = datetime(2026, 10, 30, 12, 0, 0, 250000)
+
+        (row,) = await _inserted(lambda: _insert("audit.events", [[naive]], ["occurred_at"]))
+
+        assert _stored_ms(row["occurred_at"]) == _epoch_ms(_INSTANT)
 
 
 class TestMerkleBatchColumns:
