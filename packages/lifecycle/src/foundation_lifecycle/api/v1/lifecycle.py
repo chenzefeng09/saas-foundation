@@ -54,8 +54,10 @@ async def restore(
     session: AsyncSession = Depends(db_session), svc: LifecycleService = Depends(lifecycle_service),
     request_id: str = Depends(current_request_id),
 ) -> dict:
+    # No body, `{}` and `{"restored_by": null}` all mean "the caller restored it".
+    restored_by = (body.restored_by if body else None) or ctx.user_id or ""
     await svc.restore(session, tenant_id=ctx.tenant_id, bin_id=bin_id,
-        restored_by=body.restored_by if body else ctx.user_id or "", request_id=request_id)
+        restored_by=restored_by, request_id=request_id)
     return {"restored": True}
 
 @router.post("/recycle-bin/{bin_id}:hard-delete", operation_id="hardDelete")
