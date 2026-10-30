@@ -10,6 +10,7 @@ from foundation_lifecycle.adapters.org_client import OrgClient
 from foundation_lifecycle.config import get_settings
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
 from foundation_lifecycle.domain.db import admin_session_scope, session_scope
+from foundation_lifecycle.errors import PERMISSION_DENIED, FoundationError
 from foundation_lifecycle.services.large_attachment_service import LargeAttachmentService
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
 from foundation_lifecycle.services.legal_hold_service import LegalHoldService
@@ -20,6 +21,18 @@ def current_context() -> FoundationContext:
     ctx = foundation_context.get()
     if ctx is None: raise HTTPException(status_code=401, detail="Tenant context missing")
     return ctx
+
+def current_user_id(ctx: FoundationContext = Depends(current_context)) -> str:
+    """The user the request is authenticated as: who acted, for routes that record it.
+
+    The gateway sets ``X-User-Id`` from the verified token (CONVENTIONS §3.2); a
+    ``*_by`` field in a body only says whom the client names. A request without a
+    user (a service-account token) is refused instead of being recorded as nobody.
+    """
+    if not ctx.user_id:
+        raise FoundationError(PERMISSION_DENIED,
+                              detail="A user must perform this action; X-User-Id is missing.")
+    return ctx.user_id
 
 def current_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")

@@ -112,7 +112,8 @@ paths:
       tags: [recycle-bin]
       summary: Restore a recycle-bin entry
       description: |
-        Without a body (or without `restored_by`) the caller is recorded as the restorer.
+        The authenticated caller (`X-User-Id`) is recorded as the restorer; a request
+        without a user is refused with 403. No body is needed.
       operationId: restoreItem
       requestBody:
         content:
@@ -120,7 +121,11 @@ paths:
             schema:
               type: object
               properties:
-                restored_by: { type: string, nullable: true }
+                restored_by:
+                  type: string
+                  nullable: true
+                  deprecated: true
+                  description: Ignored. The restorer is always the caller.
       responses:
         '200':
           description: ok
@@ -149,17 +154,28 @@ paths:
         Refused with 409 while a legal hold covers the resource. Issues a destruction
         certificate when the resource type requires one. Idempotent: an entry that is
         already destroyed returns 200.
+
+        The authenticated caller (`X-User-Id`) is recorded as the one who destroyed it;
+        a request without a user is refused with 403. No body is needed. The certificate
+        names no witness: one the caller names has confirmed nothing, and there is no
+        step yet in which a witness confirms with a request of their own.
       operationId: purgeItem
       requestBody:
-        required: true
         content:
           application/json:
             schema:
               type: object
-              required: [destroyed_by]
               properties:
-                destroyed_by: { type: string }
-                witness_user_id: { type: string, nullable: true }
+                destroyed_by:
+                  type: string
+                  nullable: true
+                  deprecated: true
+                  description: Ignored. Who destroyed it is always the caller.
+                witness_user_id:
+                  type: string
+                  nullable: true
+                  deprecated: true
+                  description: Ignored. The certificate names no witness the caller picks.
       responses:
         '200':
           description: ok
@@ -236,16 +252,21 @@ paths:
     post:
       tags: [legal-hold]
       summary: Release a legal hold
+      description: |
+        The authenticated caller (`X-User-Id`) is recorded as the releaser; a request
+        without a user is refused with 403. No body is needed.
       operationId: releaseLegalHold
       requestBody:
-        required: true
         content:
           application/json:
             schema:
               type: object
-              required: [released_by]
               properties:
-                released_by: { type: string }
+                released_by:
+                  type: string
+                  nullable: true
+                  deprecated: true
+                  description: Ignored. The releaser is always the caller.
       responses:
         '200':
           description: ok
