@@ -3,7 +3,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
-from foundation_lifecycle.domain.models import LegalHold, ResourceType, RecycleBin
+from foundation_lifecycle.domain.models import ApprovalRequest, LegalHold, ResourceType, RecycleBin
 
 
 def make_resource_type(*, rt_id: str = "user_data", service: str = "identity",
@@ -41,3 +41,22 @@ def make_legal_hold(*, hold_id: str = "lhd_test1",
     if placed_at is not None:  # otherwise left to the server default, like a fresh row
         hold.placed_at = placed_at
     return hold
+
+
+def make_approval_request(*, approval_id: str = "apr_test1",
+                          tenant_id: str = "tnt_01J0000000000000000000TNT1",
+                          operation: str = "HARD_DELETE",
+                          target_id: str = "bin_test1",
+                          requested_by: str = "usr_requester",
+                          status: str = "PENDING",
+                          requested_at: datetime | None = None,
+                          expires_at: datetime | None = None) -> ApprovalRequest:
+    """A request opened ``requested_at`` (default now) whose window closes ``expires_at``
+    (default 30 minutes later)."""
+    if requested_at is None:
+        requested_at = datetime.now(UTC)
+    if expires_at is None:
+        expires_at = requested_at + timedelta(minutes=30)
+    return ApprovalRequest(id=approval_id, tenant_id=tenant_id, operation=operation,
+                           target_id=target_id, requested_by=requested_by,
+                           requested_at=requested_at, expires_at=expires_at, status=status)

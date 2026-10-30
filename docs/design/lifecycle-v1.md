@@ -97,6 +97,7 @@
 | `lifecycle.backup_plan` | 备份方案 | ✅ |
 | `lifecycle.backup_run` | 备份执行记录 | ✅ |
 | `lifecycle.restore_request` | 恢复请求 | ✅ |
+| `lifecycle.approval_request` | 四眼审批申请（立即硬删 / 解除 LH），见 §4.4 | ✅ |
 
 ### 3.2 `lifecycle.resource_type`
 
@@ -372,6 +373,51 @@ PENDING → RUNNING → SUCCEEDED
                  ↘ BLOCKED_BY_LEGAL_HOLD → 自动延期，下次 retry
 ```
 
+### 4.4 四眼审批（立即硬删 / 解除 LH）
+
+§4.1 的「直接硬删」和 §4.2 的「解除」都要 4 眼：第二个人用**自己的请求**批准（pam-v1 §4），申请人不能自批（pam-v1 §14 #4）。由申请人在请求体里填一个"见证人"不算 4 眼，所以这两个操作都分成两步：
+
+```
+POST /recycle-bin/{bin_id}:hard-delete      ─┐  申请人（X-User-Id）
+POST /legal-holds/{hold_id}:release         ─┘  只开一张审批单，202 + approval_request
+                    │
+                    ▼
+             [PENDING] ── 窗口（默认 30 分钟，pam-v1 §4.3）内无人处理 ──→ [EXPIRED]
+              │      │
+   另一人 approve    任何人 reject（含申请人撤回）
+              ▼      ▼
+       [APPROVED]  [REJECTED]
+   同一请求内执行：硬删（出销毁证明）/ 解除 LH
+```
+
+- 只覆盖人工发起的硬删和解除；回收站到期的定时清理（§9）不走审批。
+- 每个目标同时只有一张 PENDING 单（部分唯一索引 `ar_pending_target_uq`）：再次申请返回已开的那张，不论是谁开的；已过期的单在下一次申请时置为 EXPIRED，并由新单取代。
+- 过期不靠定时任务：`PENDING` 且 `expires_at <= now()` 即视为 EXPIRED（读接口与 `filter.status` 都按此算）。
+- 批准即执行，执行前重新做该操作自身的检查：期间被加了 LH → 409，条目已被恢复 → 404；两种情况审批单都保持 PENDING。批准与拒绝都对审批单 `SELECT … FOR UPDATE`，两个决定先后进行，不会重复执行。
+- 记录：`destroyed_by` / `released_by` = 申请人；销毁证明的见证人 = 批准人。目标已销毁 / 已解除时，申请接口直接返回 200 `{destroyed|released: true}`。
+- 数据库也守着这条规则：`CHECK (status <> 'APPROVED' OR (decided_by IS NOT NULL AND decided_by <> requested_by))`。
+- 事件（outbox）：`foundation.lifecycle.approval.requested` / `.approved` / `.rejected`。
+
+```sql
+CREATE TABLE lifecycle.approval_request (
+    id            TEXT PRIMARY KEY,                    -- "apr_<ULID>"
+    tenant_id     TEXT NOT NULL REFERENCES tenant.tenant(id) ON DELETE CASCADE,
+    operation     TEXT NOT NULL CHECK (operation IN ('HARD_DELETE','RELEASE_LEGAL_HOLD')),
+    target_id     TEXT NOT NULL,                       -- bin_id / hold_id
+    requested_by  TEXT NOT NULL,
+    requested_at  TIMESTAMPTZ NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,                -- requested_at + 审批窗口
+    status        TEXT NOT NULL DEFAULT 'PENDING'
+                  CHECK (status IN ('PENDING','APPROVED','REJECTED','EXPIRED')),
+    decided_by    TEXT,                                -- 批准人（硬删时即见证人）/ 拒绝人
+    decided_at    TIMESTAMPTZ,
+    CHECK (status <> 'APPROVED' OR (decided_by IS NOT NULL AND decided_by <> requested_by))
+);
+CREATE UNIQUE INDEX ar_pending_target_uq ON lifecycle.approval_request (tenant_id, operation, target_id)
+    WHERE status = 'PENDING';
+CREATE INDEX ar_tenant_requested_idx ON lifecycle.approval_request (tenant_id, requested_at);
+```
+
 ---
 
 ## 5. 关键 API
@@ -385,9 +431,13 @@ PENDING → RUNNING → SUCCEEDED
 | `/retention-overrides` | GET / PUT | `lifecycle.retention.update` |
 | `/recycle-bin` | GET | `lifecycle.recycle_bin.list` |
 | `/recycle-bin/{id}/restore` | POST | `lifecycle.recycle_bin.restore` |
-| `/recycle-bin/{id}/purge-now` | POST | `lifecycle.recycle_bin.purge`（4 眼 + 无 LH） |
+| `/recycle-bin/{id}/purge-now` | POST | `lifecycle.recycle_bin.purge`（4 眼 + 无 LH）；已实现为 `:hard-delete`，只开审批单（§4.4） |
 | `/legal-holds` | GET / POST | `lifecycle.legal_hold.*`（HIGH） |
-| `/legal-holds/{id}/release` | POST | `lifecycle.legal_hold.release`（HIGH + 4 眼） |
+| `/legal-holds/{id}/release` | POST | `lifecycle.legal_hold.release`（HIGH + 4 眼）；已实现为 `:release`，只开审批单（§4.4） |
+| `/approval-requests` | GET | 审批单列表（`filter.status` / `filter.operation`） |
+| `/approval-requests/{id}` | GET | 同 |
+| `/approval-requests/{id}/approve` | POST | 第二人批准并执行（不可自批，§4.4） |
+| `/approval-requests/{id}/reject` | POST | 拒绝 / 申请人撤回 |
 | `/destruction-jobs` | GET | `lifecycle.destruction_job.read` |
 | `/destruction-jobs/{id}` | GET | 同 |
 | `/destruction-certificates` | GET | `lifecycle.cert.read` |
@@ -714,3 +764,4 @@ WHERE tenant_id = $1
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-05-22 | 0.1.0 | 初版（P2 #11） |
+| 2026-10-30 | 0.1.1 | §4.4 四眼审批：人工硬删与解除 LH 只开审批单（202），由另一人批准后执行；批准人为销毁证明见证人；新表 `lifecycle.approval_request` |

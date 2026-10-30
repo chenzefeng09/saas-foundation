@@ -130,11 +130,16 @@ class LifecycleService:
         destroyed_by: str, witness_user_id: str | None, request_id: str,
         storage_client: StorageClient | None = None,
     ) -> None:
+        """Destroy a recycle-bin entry now.
+
+        Only an approved request reaches this (ApprovalService.approve), so an entry
+        restored or destroyed since it was requested is refused, not destroyed or
+        witnessed again.
+        """
         entry = await session.get(RecycleBin, bin_id)
-        if entry is None or entry.tenant_id != tenant_id:
+        if (entry is None or entry.tenant_id != tenant_id
+                or entry.restored_at is not None or entry.hard_deleted_at is not None):
             raise FoundationError(RESOURCE_NOT_IN_BIN, extra={"bin_id": bin_id})
-        if entry.hard_deleted_at is not None:
-            return  # already destroyed
 
         # Check legal hold
         active_lh = await session.scalar(

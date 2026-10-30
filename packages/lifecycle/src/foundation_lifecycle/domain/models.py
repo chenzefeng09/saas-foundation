@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer,
+    BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer,
     SmallInteger, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -141,6 +141,45 @@ class DestructionCertificate(Base):
     certificate_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256
     certificate_pdf_uri: Mapped[str | None] = mapped_column(String(500))
     audit_event_id: Mapped[str | None] = mapped_column(String(30))
+
+
+# ---------------------------------------------------------------------------
+# ApprovalRequest — four-eyes: a hard-delete or legal-hold release waiting for a
+# second person to approve it (lifecycle-v1 §4.4)
+# ---------------------------------------------------------------------------
+class ApprovalRequest(Base):
+    __tablename__ = "approval_request"
+    __table_args__ = (
+        # One open request per target: asking again returns it instead of opening another.
+        Index("ar_pending_target_uq", "tenant_id", "operation", "target_id", unique=True,
+              postgresql_where="status = 'PENDING'"),
+        Index("ar_tenant_requested_idx", "tenant_id", "requested_at"),
+        CheckConstraint("operation IN ('HARD_DELETE', 'RELEASE_LEGAL_HOLD')",
+                        name="ck_approval_request_operation"),
+        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED')",
+                        name="ck_approval_request_status"),
+        # Four-eyes, kept by the database too: an approval names an approver other than
+        # the requester.
+        CheckConstraint(
+            "status <> 'APPROVED' OR (decided_by IS NOT NULL AND decided_by <> requested_by)",
+            name="ck_approval_request_four_eyes"),
+        {"schema": "lifecycle"},
+    )
+
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)  # "apr_<ULID>"
+    tenant_id: Mapped[str] = mapped_column(
+        String(30), ForeignKey("tenant.tenant.id", ondelete="CASCADE"), nullable=False)
+    # HARD_DELETE acts on a recycle-bin entry (target_id = bin_id), RELEASE_LEGAL_HOLD on a hold.
+    operation: Mapped[str] = mapped_column(String(30), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(30), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="PENDING",
+        comment="PENDING / APPROVED / REJECTED / EXPIRED")
+    decided_by: Mapped[str | None] = mapped_column(String(30))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # ---------------------------------------------------------------------------

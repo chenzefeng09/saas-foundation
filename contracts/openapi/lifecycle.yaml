@@ -27,6 +27,8 @@ tags:
     description: 软删回收站
   - name: legal-hold
     description: 法律保留
+  - name: approvals
+    description: 四眼审批（立即硬删、解除法律保留需第二人批准）
   - name: backups
     description: 备份与恢复演练
   - name: destruction-certs
@@ -149,16 +151,19 @@ paths:
         schema: { type: string }
     post:
       tags: [recycle-bin]
-      summary: Hard-delete a recycle-bin entry now
+      summary: Ask for a recycle-bin entry to be hard-deleted now
       description: |
-        Refused with 409 while a legal hold covers the resource. Issues a destruction
-        certificate when the resource type requires one. Idempotent: an entry that is
-        already destroyed returns 200.
+        Hard-deleting takes two people (lifecycle-v1 §4.4). This call destroys nothing:
+        it opens an approval request for the entry and answers 202. A second user
+        carries it out with `POST /approval-requests/{approval_id}/approve` within the
+        approval window (30 minutes by default) and is the witness the destruction
+        certificate names. While the entry has a request pending, asking again returns
+        that request, whoever opened it. An entry that is already destroyed returns 200.
+        Refused with 409 while a legal hold covers the resource.
 
-        The authenticated caller (`X-User-Id`) is recorded as the one who destroyed it;
-        a request without a user is refused with 403. No body is needed. The certificate
-        names no witness: one the caller names has confirmed nothing, and there is no
-        step yet in which a witness confirms with a request of their own.
+        The authenticated caller (`X-User-Id`) is recorded as the requester and, once a
+        second user approves, as the one who destroyed it; a request without a user is
+        refused with 403. No body is needed.
       operationId: purgeItem
       requestBody:
         content:
@@ -170,22 +175,32 @@ paths:
                   type: string
                   nullable: true
                   deprecated: true
-                  description: Ignored. Who destroyed it is always the caller.
+                  description: Ignored. The requester is always the caller.
                 witness_user_id:
                   type: string
                   nullable: true
                   deprecated: true
-                  description: Ignored. The certificate names no witness the caller picks.
+                  description: Ignored. The witness is the user who approves the request.
       responses:
+        '202':
+          description: Waiting for a second user to approve
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [destroyed, approval_request]
+                properties:
+                  destroyed: { type: boolean, enum: [false] }
+                  approval_request: { $ref: '#/components/schemas/ApprovalRequest' }
         '200':
-          description: ok
+          description: Already destroyed
           content:
             application/json:
               schema:
                 type: object
                 required: [destroyed]
                 properties:
-                  destroyed: { type: boolean }
+                  destroyed: { type: boolean, enum: [true] }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
@@ -251,10 +266,18 @@ paths:
         schema: { type: string }
     post:
       tags: [legal-hold]
-      summary: Release a legal hold
+      summary: Ask for a legal hold to be released
       description: |
-        The authenticated caller (`X-User-Id`) is recorded as the releaser; a request
-        without a user is refused with 403. No body is needed.
+        Releasing a hold takes two people (lifecycle-v1 §4.4). This call releases
+        nothing: it opens an approval request for the hold and answers 202. A second
+        user carries it out with `POST /approval-requests/{approval_id}/approve` within
+        the approval window (30 minutes by default). While the hold has a request
+        pending, asking again returns that request, whoever opened it. A hold that is
+        already released returns 200.
+
+        The authenticated caller (`X-User-Id`) is recorded as the requester and, once a
+        second user approves, as the releaser; a request without a user is refused with
+        403. No body is needed.
       operationId: releaseLegalHold
       requestBody:
         content:
@@ -266,21 +289,140 @@ paths:
                   type: string
                   nullable: true
                   deprecated: true
-                  description: Ignored. The releaser is always the caller.
+                  description: Ignored. The requester is always the caller.
       responses:
+        '202':
+          description: Waiting for a second user to approve
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released, approval_request]
+                properties:
+                  released: { type: boolean, enum: [false] }
+                  approval_request: { $ref: '#/components/schemas/ApprovalRequest' }
         '200':
-          description: ok
+          description: Already released
           content:
             application/json:
               schema:
                 type: object
                 required: [released]
                 properties:
-                  released: { type: boolean }
+                  released: { type: boolean, enum: [true] }
         '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  # --------------------------- Four-eyes approvals --------------------------
+  /approval-requests:
+    get:
+      tags: [approvals]
+      summary: List approval requests
+      description: Newest first. A pending request whose window has closed is listed as EXPIRED.
+      operationId: listApprovalRequests
+      parameters:
+        - name: filter.status
+          in: query
+          description: Only requests in this status (ANDed with the other filters)
+          schema: { type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED] }
+        - name: filter.operation
+          in: query
+          description: Only requests for this operation (ANDed with the other filters)
+          schema: { type: string, enum: [HARD_DELETE, RELEASE_LEGAL_HOLD] }
+        - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApprovalRequest' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /approval-requests/{approval_id}:
+    parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [approvals]
+      operationId: getApprovalRequest
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /approval-requests/{approval_id}/approve:
+    parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [approvals]
+      summary: Approve a request, which carries it out
+      description: |
+        The authenticated caller (`X-User-Id`) approves as the second person, and the
+        operation takes effect in this same call: the recycle-bin entry is destroyed,
+        with the caller as the certificate's witness and the requester as the one who
+        destroyed it, or the legal hold is released, with the requester as the releaser.
+        No body.
+
+        Refused with 403 when the caller is the requester (`SELF_APPROVAL_FORBIDDEN`) or
+        no user is given, and with 409 when the request was already decided or its
+        window has closed (`APPROVAL_NOT_PENDING`). The operation's own checks run again:
+        a legal hold placed on the resource meanwhile refuses the destruction with 409,
+        and an entry restored meanwhile with 404; either way the request stays pending.
+      operationId: approveRequest
+      responses:
+        '200':
+          description: Approved and carried out
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+
+  /approval-requests/{approval_id}/reject:
+    parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [approvals]
+      summary: Reject a request
+      description: |
+        Nothing is destroyed or released. Anyone may reject, the requester too, which
+        withdraws the request; the caller (`X-User-Id`) is recorded as who decided, and
+        a request without a user is refused with 403. Refused with 409 when the request
+        was already decided or its window has closed. No body.
+      operationId: rejectRequest
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
 
   # --------------------------- Backups --------------------------------------
   /backups:
@@ -461,6 +603,36 @@ components:
         resource_id: { type: string }
         reason: { type: string, minLength: 10 }
         case_reference: { type: string, minLength: 3, nullable: true }
+
+    ApprovalRequest:
+      type: object
+      description: |
+        A hard-delete or legal-hold release waiting for, or decided by, a second user
+        (lifecycle-v1 §4.4).
+      required: [id, operation, target_id, status, requested_by, requested_at, expires_at, decided_by, decided_at]
+      properties:
+        id: { type: string, pattern: '^apr_[0-9A-Z]{26}$' }
+        operation: { type: string, enum: [HARD_DELETE, RELEASE_LEGAL_HOLD] }
+        target_id:
+          type: string
+          description: the recycle-bin entry (bin_id) to destroy, or the legal hold (hold_id) to release
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED, EXPIRED]
+          description: EXPIRED once the window closes with nobody deciding
+        requested_by:
+          type: string
+          description: who asked; once approved, recorded as who destroyed or released
+        requested_at: { type: string, format: date-time }
+        expires_at:
+          type: string
+          format: date-time
+          description: the approval window closes then
+        decided_by:
+          type: string
+          nullable: true
+          description: who approved or rejected; for HARD_DELETE the approver is the certificate's witness
+        decided_at: { type: string, format: date-time, nullable: true }
 
     Backup:
       type: object

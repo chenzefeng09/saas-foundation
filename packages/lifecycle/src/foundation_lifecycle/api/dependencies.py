@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
+from datetime import timedelta
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from foundation_lifecycle.config import get_settings
 from foundation_lifecycle.domain.base import FoundationContext, foundation_context
 from foundation_lifecycle.domain.db import admin_session_scope, session_scope
 from foundation_lifecycle.errors import PERMISSION_DENIED, FoundationError
+from foundation_lifecycle.services.approval_service import ApprovalService
 from foundation_lifecycle.services.large_attachment_service import LargeAttachmentService
 from foundation_lifecycle.services.lifecycle_service import LifecycleService
 from foundation_lifecycle.services.legal_hold_service import LegalHoldService
@@ -54,6 +56,14 @@ async def admin_db_session() -> AsyncIterator[AsyncSession]:
 def lifecycle_service() -> LifecycleService: return LifecycleService()
 
 def legal_hold_service() -> LegalHoldService: return LegalHoldService()
+
+def approval_service(
+    lifecycle: LifecycleService = Depends(lifecycle_service),
+    holds: LegalHoldService = Depends(legal_hold_service),
+) -> ApprovalService:
+    """Carries out an approved operation through the same services the other routes use."""
+    return ApprovalService(lifecycle=lifecycle, holds=holds,
+                           window=timedelta(minutes=get_settings().approval_window_minutes))
 
 def storage_quota_service() -> StorageQuotaService: return StorageQuotaService()
 

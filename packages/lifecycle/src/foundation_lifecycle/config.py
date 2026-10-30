@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     sweep_interval_minutes: int = 60  # every hour in dev
     sweep_batch_size: int = 500
 
+    # Four-eyes: a hard-delete or legal-hold release nobody else approves within
+    # this many minutes expires (pam-v1 §4.3).
+    approval_window_minutes: int = Field(default=30, ge=1)
+
     # Storage quota reconcile cron (Phase 3). Scans every tenant_storage_quota
     # row, recomputes used_bytes via S3 listing, and warns if the drift is
     # over reconcile_drift_alert_pct.
