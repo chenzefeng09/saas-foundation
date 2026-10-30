@@ -40,6 +40,15 @@ def _ec(category: str, name: str, http: int, title: str, detail: str, user_msg: 
     )
 
 
+# --- AUTH (401) ---
+TENANT_CONTEXT_MISSING: Final = _ec(
+    "AUTH", "TENANT_CONTEXT_MISSING", 401,
+    "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).",
+    "缺少租户上下文。",
+)
+
+
 # --- POLICY (403) ---
 PERMISSION_DENIED: Final = _ec(
     "POLICY", "PERMISSION_DENIED", 403,

@@ -6,10 +6,14 @@ Uses TestClient to spin up the app without any external services.
 from __future__ import annotations
 
 import os
+import re
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+# docs/errors.md §3.1, as contracts/openapi/_common.yaml's Error.code pattern.
+CODE_FORMAT = re.compile(r"FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+")
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,20 @@ class TestMiddleware:
             },
         )
         assert resp.status_code == 400
+
+    def test_missing_tenant_id_returns_problem_json_401(self) -> None:
+        """No X-Tenant-Id: RFC 9457 401, not FastAPI's {"detail": ...}."""
+        client = self._make_client()
+        path = "/api/audit/v1/events:query"
+        resp = client.post(path, json={})
+        assert resp.status_code == 401
+        assert resp.headers["content-type"].startswith("application/problem+json")
+        body = resp.json()
+        assert body["code"] == "FOUNDATION.AUDIT.AUTH.TENANT_CONTEXT_MISSING"
+        assert CODE_FORMAT.fullmatch(body["code"])
+        assert body["status"] == 401
+        assert body["instance"] == path
+        assert body["request_id"] == resp.headers["X-Request-Id"]
 
 
 # ---------------------------------------------------------------------------

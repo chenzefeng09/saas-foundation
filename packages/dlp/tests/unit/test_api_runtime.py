@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +21,8 @@ from tests.conftest import FakeAsyncSession
 
 TENANT_ID = "tnt_01J0000000000000000000TNT1"
 USER_ID = "usr_01J0000000000000000000USR1"
+# docs/errors.md §3.1, as contracts/openapi/_common.yaml's Error.code pattern.
+CODE_FORMAT = re.compile(r"FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+")
 
 
 class _Rows:
@@ -369,6 +372,13 @@ def test_core_scan_requires_tenant_context() -> None:
     )
 
     assert response.status_code == 401
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["code"] == "FOUNDATION.DLP.AUTH.TENANT_CONTEXT_MISSING"
+    assert CODE_FORMAT.fullmatch(body["code"])
+    assert body["status"] == 401
+    assert body["instance"] == "/api/dlp/v1/core/scan"
+    assert body["request_id"] == response.headers["X-Request-Id"]
 
 
 def test_classify_file_returns_sdk_response() -> None:

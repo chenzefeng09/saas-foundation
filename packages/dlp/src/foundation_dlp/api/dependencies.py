@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_dlp.config import get_settings
@@ -16,6 +16,7 @@ from foundation_dlp.errors import (
     CLEARANCE_UNAVAILABLE,
     DLP_DENIED,
     IDENTITY_CONTEXT_MISSING,
+    TENANT_CONTEXT_MISSING,
     FoundationError,
 )
 from foundation_dlp.services.clearance_provider import (
@@ -31,7 +32,7 @@ _LEVELS = frozenset({"L1", "L2", "L3", "L4", "L5"})
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
     if ctx is None:
-        raise HTTPException(status_code=401, detail="Tenant context missing")
+        raise FoundationError(TENANT_CONTEXT_MISSING)
     return ctx
 
 

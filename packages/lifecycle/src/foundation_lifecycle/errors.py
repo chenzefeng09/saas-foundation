@@ -23,7 +23,13 @@ class FoundationError(Exception):
 def _ec(cat: str, name: str, http: int, title: str, detail: str, user: str) -> ErrorCode:
     return ErrorCode(code=f"FOUNDATION.LIFECYCLE.{cat}.{name}", http_status=http, title=title, default_detail=detail, default_user_message=user)
 
+TENANT_CONTEXT_MISSING: Final = _ec(
+    "AUTH", "TENANT_CONTEXT_MISSING", 401, "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).", "缺少租户上下文。")
 PERMISSION_DENIED: Final = _ec("POLICY", "PERMISSION_DENIED", 403, "Permission denied", "No lifecycle permission.", "您没有生命周期管理权限。")
+INSUFFICIENT_SCOPE: Final = _ec(
+    "POLICY", "INSUFFICIENT_SCOPE", 403, "Insufficient scope",
+    "The request lacks a scope this operation requires.", "当前凭证缺少执行该操作所需的权限范围。")
 TENANT_MISMATCH: Final = _ec("POLICY", "TENANT_MISMATCH", 403, "Tenant mismatch", "Resource belongs to different tenant.", "租户不匹配。")
 VALIDATION_FAILED: Final = _ec("INPUT", "VALIDATION_FAILED", 422, "Validation failed", "Input failed validation.", "输入校验未通过。")
 RESOURCE_TYPE_NOT_FOUND: Final = _ec("RESOURCE", "RESOURCE_TYPE_NOT_FOUND", 404, "Resource type not found", "Resource type is not registered.", "资源类型未注册。")

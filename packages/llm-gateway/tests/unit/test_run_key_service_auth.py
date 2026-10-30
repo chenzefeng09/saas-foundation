@@ -11,6 +11,7 @@ session and the service replaced by fakes.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -37,6 +38,9 @@ TOKEN = "test-llm-gateway-service-token-0123456789"
 MINT = ("/tenant-keys/ephemeral", {"run_id": "run_A", "ttl_seconds": 660})
 REVOKE = ("/tenant-keys/revoke-run", {"run_id": "run_A"})
 PERMISSION_DENIED = "FOUNDATION.LLM_GATEWAY.AUTH.PERMISSION_DENIED"
+TENANT_CONTEXT_MISSING = "FOUNDATION.LLM_GATEWAY.AUTH.TENANT_CONTEXT_MISSING"
+# docs/errors.md §3.1, as contracts/openapi/_common.yaml's Error.code pattern.
+CODE_FORMAT = re.compile(r"FOUNDATION\.[A-Z_]+\.[A-Z_]+\.[A-Z_]+")
 
 
 class _Session:
@@ -131,7 +135,14 @@ async def test_without_a_tenant_the_request_is_unauthenticated(
     path, body = route
     resp = await gateway.post(path, body, {"Authorization": "Bearer some-jwt", **SERVICE})
 
+    # The contract's Unauthorized response: RFC 9457, not FastAPI's {"detail": ...}.
     assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    problem = resp.json()
+    assert problem["code"] == TENANT_CONTEXT_MISSING
+    assert CODE_FORMAT.fullmatch(problem["code"])
+    assert problem["status"] == 401
+    assert problem["instance"] == f"{PREFIX}{path}"
     assert gateway.sessions_opened == 0
 
 

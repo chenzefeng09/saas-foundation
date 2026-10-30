@@ -127,6 +127,12 @@ REFRESH_TOKEN_REUSED: Final = _ec(
     "have been revoked as a precaution.",
     "检测到登录凭证异常复用，出于安全考虑已注销全部会话，请重新登录。",
 )
+TENANT_CONTEXT_MISSING: Final = _ec(
+    "AUTH", "TENANT_CONTEXT_MISSING", 401,
+    "Tenant context missing",
+    "The request carries no tenant context (X-Tenant-Id).",
+    "缺少租户上下文。",
+)
 
 # --- POLICY (403) ---
 PERMISSION_DENIED: Final = _ec(

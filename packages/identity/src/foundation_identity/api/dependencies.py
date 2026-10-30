@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_identity.adapters.audit_publisher import AuditPublisher, get_audit_publisher
@@ -21,6 +21,7 @@ from foundation_identity.adapters.password_hasher import PasswordHasher, get_pas
 from foundation_identity.adapters.redis_cache import RedisCacheAdapter, get_redis_cache
 from foundation_identity.domain.base import FoundationContext, foundation_context
 from foundation_identity.domain.db import session_scope
+from foundation_identity.errors import TENANT_CONTEXT_MISSING, FoundationError
 from foundation_identity.services.mfa_service import MfaService
 from foundation_identity.services.password_policy_service import PasswordPolicyService
 from foundation_identity.services.risk_evaluator import (
@@ -36,7 +37,7 @@ def current_context() -> FoundationContext:
     ctx = foundation_context.get()
     if ctx is None:
         # Middleware should have populated this; if it didn't, the path is mis-configured.
-        raise HTTPException(status_code=401, detail="Tenant context missing")
+        raise FoundationError(TENANT_CONTEXT_MISSING)
     return ctx
 
 

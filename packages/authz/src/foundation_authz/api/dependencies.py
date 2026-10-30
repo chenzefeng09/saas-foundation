@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foundation_authz.adapters.audit_publisher import AuditPublisher, get_audit_publisher
@@ -15,7 +15,7 @@ from foundation_authz.adapters.security_attributes import (
 )
 from foundation_authz.domain.base import FoundationContext, foundation_context
 from foundation_authz.domain.db import session_scope
-from foundation_authz.errors import PERMISSION_DENIED, FoundationError
+from foundation_authz.errors import PERMISSION_DENIED, TENANT_CONTEXT_MISSING, FoundationError
 from foundation_authz.services.binding_service import BindingService
 from foundation_authz.services.check_service import CheckService
 from foundation_authz.services.permission_registry import PermissionRegistry
@@ -25,7 +25,7 @@ from foundation_authz.services.role_service import RoleService
 def current_context() -> FoundationContext:
     ctx = foundation_context.get()
     if ctx is None:
-        raise HTTPException(status_code=401, detail="Tenant context missing")
+        raise FoundationError(TENANT_CONTEXT_MISSING)
     return ctx
 
 
