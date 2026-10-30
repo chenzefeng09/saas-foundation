@@ -30,7 +30,7 @@ export class LifecycleResource {
 
   async listLegalHolds(params?: { resourceId?: string }): Promise<Record<string, unknown>> {
     return this.t.request("GET", "/api/lifecycle/v1/legal-holds", {
-      params: { resource_id: params?.resourceId },
+      params: { "filter.resource_id": params?.resourceId },
     });
   }
 

@@ -74,13 +74,22 @@ class LegalHoldService:
 
     async def list_holds(
         self, session: AsyncSession, *, tenant_id: str,
+        resource_type_id: str | None = None, resource_id: str | None = None,
         cursor: str | None = None, limit: int = 50,
     ) -> tuple[list[LegalHold], str | None]:
-        """Active holds, newest first, keyset-paged on (placed_at, id); see services.pagination."""
+        """Active holds, newest first, keyset-paged on (placed_at, id); see services.pagination.
+
+        ``resource_type_id`` / ``resource_id`` narrow the list to holds on that type / resource.
+        """
         stmt = select(LegalHold).where(
             LegalHold.tenant_id == tenant_id,
             LegalHold.released_at.is_(None),
         )
+        # ``is not None``: an empty filter matches no resource, it does not widen to all holds.
+        if resource_type_id is not None:
+            stmt = stmt.where(LegalHold.resource_type_id == resource_type_id)
+        if resource_id is not None:
+            stmt = stmt.where(LegalHold.resource_id == resource_id)
         if cursor:
             placed_at, hold_id = decode_cursor(cursor, id_prefix=_HOLD_ID_PREFIX)
             stmt = stmt.where(tuple_(LegalHold.placed_at, LegalHold.id) < (placed_at, hold_id))

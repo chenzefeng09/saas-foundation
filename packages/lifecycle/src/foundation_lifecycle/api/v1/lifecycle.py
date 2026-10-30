@@ -122,11 +122,14 @@ async def check_hold(
 
 @router.get("/legal-holds", operation_id="listLegalHolds")
 async def list_holds(
+    resource_type_id: str | None = Query(default=None, alias="filter.resource_type"),
+    resource_id: str | None = Query(default=None, alias="filter.resource_id"),
     cursor: str | None = Query(default=None), limit: int = Query(default=50, ge=1, le=200),
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session), svc: LegalHoldService = Depends(legal_hold_service),
 ) -> dict:
-    items, next_cursor = await svc.list_holds(session, tenant_id=ctx.tenant_id, cursor=cursor, limit=limit)
+    items, next_cursor = await svc.list_holds(session, tenant_id=ctx.tenant_id,
+        resource_type_id=resource_type_id, resource_id=resource_id, cursor=cursor, limit=limit)
     return {"items": [{"id": i.id, "resource_type": i.resource_type_id, "resource_id": i.resource_id,
                         "reason": i.reason, "placed_at": i.placed_at.isoformat()} for i in items],
             "next_cursor": next_cursor}
