@@ -129,6 +129,12 @@ jobs:
       - name: Bootstrap DB roles (mimic init/postgres/01-roles.sql)
         env:
           PGPASSWORD: postgres_change_me
+          # 01-roles.sql reads the role passwords from these (psql backticks);
+          # unset, every role gets a NULL password and cannot log in.
+          APP_USER_PASSWORD: app_user_change_me
+          APP_ADMIN_PASSWORD: app_admin_change_me
+          APP_MIGRATOR_PASSWORD: app_migrator_change_me
+          APP_OBSERVABILITY_PASSWORD: app_obs_change_me
         run: |
           psql -h localhost -U postgres -d foundation \
             -f deploy/docker-compose/init/postgres/01-roles.sql || true
@@ -178,6 +184,10 @@ jobs:
       - name: Bootstrap DB
         env:
           PGPASSWORD: postgres_change_me
+          APP_USER_PASSWORD: app_user_change_me
+          APP_ADMIN_PASSWORD: app_admin_change_me
+          APP_MIGRATOR_PASSWORD: app_migrator_change_me
+          APP_OBSERVABILITY_PASSWORD: app_obs_change_me
         run: |
           psql -h localhost -U postgres -d foundation \
             -f deploy/docker-compose/init/postgres/01-roles.sql
