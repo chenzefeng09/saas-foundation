@@ -451,7 +451,8 @@ components:
 
     RoleId:
       type: string
-      pattern: '^role_[0-9A-Z]{26}$'
+      pattern: '^rol_[0-9A-Z]{26}$'
+      example: rol_01J5XXXXXXXXXXXXXXXXXXXXXX
 
     ResourceId:
       type: string

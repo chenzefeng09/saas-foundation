@@ -16,6 +16,9 @@ from foundation_authz.api.dependencies import (
 from foundation_authz.domain.base import FoundationContext
 from foundation_authz.errors import PERMISSION_DENIED, FoundationError
 from foundation_authz.schemas.binding import (
+    BINDING_STATUSES,
+    DEFAULT_LIST_STATUSES,
+    BindingStatus,
     CreateBindingRequest,
     RoleBindingRead,
 )
@@ -25,6 +28,17 @@ from foundation_authz.services.check_service import CheckService
 
 router = APIRouter(prefix="/bindings", tags=["bindings"])
 
+# filter.status follows the list-filter convention (comma-separated values).
+_STATUS_ALTERNATION = "|".join(BINDING_STATUSES)
+_STATUS_FILTER_PATTERN = rf"^({_STATUS_ALTERNATION})(,({_STATUS_ALTERNATION}))*$"
+
+
+def _parse_status_filter(raw: str | None) -> frozenset[BindingStatus]:
+    if raw is None:
+        return DEFAULT_LIST_STATUSES
+    # The Query pattern has already rejected anything outside BINDING_STATUSES.
+    return frozenset(s for s in BINDING_STATUSES if s in raw.split(","))
+
 
 @router.get("", response_model=CursorPage[RoleBindingRead], operation_id="listBindings")
 async def list_bindings(
@@ -33,6 +47,16 @@ async def list_bindings(
     principal_kind: str | None = Query(default=None, alias="filter.principal_kind"),
     principal_id: str | None = Query(default=None, alias="filter.principal_id"),
     role_id: str | None = Query(default=None, alias="filter.role_id"),
+    status_filter: str | None = Query(
+        default=None,
+        alias="filter.status",
+        pattern=_STATUS_FILTER_PATTERN,
+        description=(
+            "Comma-separated binding states to return: ACTIVE, EXPIRED, REVOKED. "
+            "Defaults to ACTIVE; revoked bindings are only listed when REVOKED is "
+            "requested explicitly."
+        ),
+    ),
     ctx: FoundationContext = Depends(current_context),
     session: AsyncSession = Depends(db_session),
     svc: BindingService = Depends(binding_service),
@@ -45,6 +69,7 @@ async def list_bindings(
         principal_kind=principal_kind,
         principal_id=principal_id,
         role_id=role_id,
+        statuses=_parse_status_filter(status_filter),
     )
     return CursorPage[RoleBindingRead](
         items=[RoleBindingRead.model_validate(r) for r in rows],

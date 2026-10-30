@@ -58,9 +58,11 @@ class RoleService:
         if cursor:
             stmt = stmt.where(Role.id > cursor)
         stmt = stmt.order_by(Role.id).limit(limit + 1)
-        rows = (await session.scalars(stmt)).all()
-        next_cursor = rows[-1].id if len(rows) > limit else None
-        return list(rows[:limit]), next_cursor
+        rows = list((await session.scalars(stmt)).all())
+        page = rows[:limit]
+        # Cursor = last id returned (next page selects id > cursor); see BindingService.list.
+        next_cursor = page[-1].id if len(rows) > limit else None
+        return page, next_cursor
 
     async def get(self, session: AsyncSession, *, tenant_id: str, role_id: str) -> Role:
         r = await session.get(Role, role_id)
