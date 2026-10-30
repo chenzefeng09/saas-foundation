@@ -1,0 +1,192 @@
+{
+  "service": "notification",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "list_templates",
+      "python": [
+        {
+          "method": "list_templates",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listTemplates",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/notification/v1/templates"
+      }
+    },
+    {
+      "id": "send",
+      "python": [
+        {
+          "method": "send",
+          "args": [],
+          "kwargs": {
+            "event_type": "user.login",
+            "recipients": [
+              "v_recipients[]"
+            ],
+            "channel": "v_channel",
+            "template": "v_template",
+            "context": {
+              "purpose": "billing"
+            },
+            "priority": "high"
+          }
+        },
+        {
+          "method": "send_async",
+          "args": [],
+          "kwargs": {
+            "event_type": "user.login",
+            "recipients": [
+              "v_recipients[]"
+            ],
+            "channel": "v_channel",
+            "template": "v_template",
+            "context": {
+              "purpose": "billing"
+            },
+            "priority": "high"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "send",
+          "args": [
+            {
+              "eventType": "user.login",
+              "recipients": [
+                "v_recipients[]"
+              ],
+              "channel": "v_channel",
+              "template": "v_template",
+              "context": {
+                "purpose": "billing"
+              },
+              "priority": "high"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/notification/v1/send",
+        "json": {
+          "event_type": "user.login",
+          "recipients": [
+            "v_recipients[]"
+          ],
+          "channel": "v_channel",
+          "template": "v_template",
+          "context": {
+            "purpose": "billing"
+          },
+          "priority": "high"
+        }
+      }
+    },
+    {
+      "id": "send:defaults",
+      "python": [
+        {
+          "method": "send",
+          "args": [],
+          "kwargs": {
+            "event_type": "user.login",
+            "recipients": [
+              "v_recipients[]"
+            ]
+          }
+        },
+        {
+          "method": "send_async",
+          "args": [],
+          "kwargs": {
+            "event_type": "user.login",
+            "recipients": [
+              "v_recipients[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "send",
+          "args": [
+            {
+              "eventType": "user.login",
+              "recipients": [
+                "v_recipients[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/notification/v1/send",
+        "json": {
+          "event_type": "user.login",
+          "recipients": [
+            "v_recipients[]"
+          ],
+          "channel": "email",
+          "template": null,
+          "context": {},
+          "priority": "normal"
+        }
+      }
+    },
+    {
+      "id": "send_batch",
+      "python": [
+        {
+          "method": "send_batch",
+          "args": [],
+          "kwargs": {
+            "notifications": [
+              {
+                "k": "v"
+              }
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "sendBatch",
+          "args": [
+            [
+              {
+                "k": "v"
+              }
+            ]
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/notification/v1/send-batch",
+        "json": {
+          "notifications": [
+            {
+              "k": "v"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

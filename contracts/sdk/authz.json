@@ -1,0 +1,300 @@
+{
+  "service": "authz",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "bind_role",
+      "python": [
+        {
+          "method": "bind_role",
+          "args": [],
+          "kwargs": {
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "role_id": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "scope_kind": "TENANT",
+            "scope_id": "v_scope_id",
+            "expires_at": "2027-01-01T00:00:00Z",
+            "grant_reason": "quarter-end close"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "bindRole",
+          "args": [
+            {
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "roleId": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "scopeKind": "TENANT",
+              "scopeId": "v_scope_id",
+              "expiresAt": "2027-01-01T00:00:00Z",
+              "grantReason": "quarter-end close"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/bindings",
+        "json": {
+          "principal_kind": "USER",
+          "principal_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "role_id": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "scope_kind": "TENANT",
+          "scope_id": "v_scope_id",
+          "expires_at": "2027-01-01T00:00:00Z",
+          "grant_reason": "quarter-end close"
+        }
+      }
+    },
+    {
+      "id": "bind_role:defaults",
+      "python": [
+        {
+          "method": "bind_role",
+          "args": [],
+          "kwargs": {
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "role_id": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "bindRole",
+          "args": [
+            {
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "roleId": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/bindings",
+        "json": {
+          "principal_kind": "USER",
+          "principal_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "role_id": "rol_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "scope_kind": "TENANT"
+        }
+      }
+    },
+    {
+      "id": "check",
+      "python": [
+        {
+          "method": "check",
+          "args": [],
+          "kwargs": {
+            "action": "billing.invoice.read",
+            "resource_type": "document",
+            "resource_id": "doc_42",
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          }
+        },
+        {
+          "method": "check_async",
+          "args": [],
+          "kwargs": {
+            "action": "billing.invoice.read",
+            "resource_type": "document",
+            "resource_id": "doc_42",
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "check",
+          "args": [
+            {
+              "action": "billing.invoice.read",
+              "resourceType": "document",
+              "resourceId": "doc_42",
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/check",
+        "json": {
+          "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "action": "billing.invoice.read",
+          "resource_type": "document",
+          "resource_id": "doc_42"
+        }
+      }
+    },
+    {
+      "id": "check:defaults",
+      "python": [
+        {
+          "method": "check",
+          "args": [],
+          "kwargs": {
+            "action": "billing.invoice.read",
+            "resource_type": "document"
+          }
+        },
+        {
+          "method": "check_async",
+          "args": [],
+          "kwargs": {
+            "action": "billing.invoice.read",
+            "resource_type": "document"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "check",
+          "args": [
+            {
+              "action": "billing.invoice.read",
+              "resourceType": "document"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/check",
+        "json": {
+          "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "action": "billing.invoice.read",
+          "resource_type": "document"
+        }
+      }
+    },
+    {
+      "id": "create_role",
+      "python": [
+        {
+          "method": "create_role",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "permissions": [
+              "billing.invoice.read"
+            ],
+            "display_name": "Ada Lovelace",
+            "description": "Payments engineering"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createRole",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "permissions": [
+                "billing.invoice.read"
+              ],
+              "displayName": "Ada Lovelace",
+              "description": "Payments engineering"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/roles",
+        "json": {
+          "name": "invoice_reader",
+          "display_name": "Ada Lovelace",
+          "permissions": [
+            "billing.invoice.read"
+          ],
+          "description": "Payments engineering"
+        }
+      }
+    },
+    {
+      "id": "create_role:defaults",
+      "python": [
+        {
+          "method": "create_role",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "permissions": [
+              "billing.invoice.read"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createRole",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "permissions": [
+                "billing.invoice.read"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/authz/v1/roles",
+        "json": {
+          "name": "invoice_reader",
+          "display_name": "invoice_reader",
+          "permissions": [
+            "billing.invoice.read"
+          ]
+        }
+      }
+    },
+    {
+      "id": "list_permissions",
+      "python": [
+        {
+          "method": "list_permissions",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listPermissions",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/authz/v1/permissions"
+      }
+    },
+    {
+      "id": "list_roles",
+      "python": [
+        {
+          "method": "list_roles",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listRoles",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/authz/v1/roles"
+      }
+    }
+  ]
+}

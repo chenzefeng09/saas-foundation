@@ -1,0 +1,309 @@
+{
+  "service": "data-protection",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "check_cross_border",
+      "python": [
+        {
+          "method": "check_cross_border",
+          "args": [],
+          "kwargs": {
+            "destination_country": "v_destination_country",
+            "data_categories": [
+              "PII"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "checkCrossBorder",
+          "args": [
+            {
+              "destinationCountry": "v_destination_country",
+              "dataCategories": [
+                "PII"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/cross-border/check",
+        "json": {
+          "destination_country": "v_destination_country",
+          "data_categories": [
+            "PII"
+          ]
+        }
+      }
+    },
+    {
+      "id": "get_data_residency",
+      "python": [
+        {
+          "method": "get_data_residency",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getDataResidency",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/data-protection/v1/data-residency"
+      }
+    },
+    {
+      "id": "get_destruction_status",
+      "python": [
+        {
+          "method": "get_destruction_status",
+          "args": [
+            "v_request_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getDestructionStatus",
+          "args": [
+            "v_request_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/data-protection/v1/destruction/v_request_id"
+      }
+    },
+    {
+      "id": "get_masking_rules",
+      "python": [
+        {
+          "method": "get_masking_rules",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getMaskingRules",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/data-protection/v1/masking-rules"
+      }
+    },
+    {
+      "id": "mask",
+      "python": [
+        {
+          "method": "mask",
+          "args": [],
+          "kwargs": {
+            "data": {
+              "email": "ada@example.com",
+              "phone": "+44 20 7946 0958"
+            },
+            "rules": [
+              {
+                "field": "email",
+                "method": "mask"
+              }
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "mask",
+          "args": [
+            {
+              "data": {
+                "email": "ada@example.com",
+                "phone": "+44 20 7946 0958"
+              },
+              "rules": [
+                {
+                  "field": "email",
+                  "method": "mask"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/mask",
+        "json": {
+          "data": {
+            "email": "ada@example.com",
+            "phone": "+44 20 7946 0958"
+          },
+          "rules": [
+            {
+              "field": "email",
+              "method": "mask"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mask_field",
+      "python": [
+        {
+          "method": "mask_field",
+          "args": [],
+          "kwargs": {
+            "field_name": "v_field_name",
+            "value": "v_value",
+            "mask_type": "v_mask_type"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "maskField",
+          "args": [
+            {
+              "fieldName": "v_field_name",
+              "value": "v_value",
+              "maskType": "v_mask_type"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/mask-field",
+        "json": {
+          "field_name": "v_field_name",
+          "value": "v_value",
+          "mask_type": "v_mask_type"
+        }
+      }
+    },
+    {
+      "id": "mask_field:defaults",
+      "python": [
+        {
+          "method": "mask_field",
+          "args": [],
+          "kwargs": {
+            "field_name": "v_field_name",
+            "value": "v_value"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "maskField",
+          "args": [
+            {
+              "fieldName": "v_field_name",
+              "value": "v_value"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/mask-field",
+        "json": {
+          "field_name": "v_field_name",
+          "value": "v_value",
+          "mask_type": "default"
+        }
+      }
+    },
+    {
+      "id": "request_destruction",
+      "python": [
+        {
+          "method": "request_destruction",
+          "args": [],
+          "kwargs": {
+            "resource_ids": [
+              "v_resource_ids[]"
+            ],
+            "method": "v_method"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestDestruction",
+          "args": [
+            {
+              "resourceIds": [
+                "v_resource_ids[]"
+              ],
+              "method": "v_method"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/destruction",
+        "json": {
+          "resource_ids": [
+            "v_resource_ids[]"
+          ],
+          "method": "v_method"
+        }
+      }
+    },
+    {
+      "id": "request_destruction:defaults",
+      "python": [
+        {
+          "method": "request_destruction",
+          "args": [],
+          "kwargs": {
+            "resource_ids": [
+              "v_resource_ids[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "requestDestruction",
+          "args": [
+            {
+              "resourceIds": [
+                "v_resource_ids[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/data-protection/v1/destruction",
+        "json": {
+          "resource_ids": [
+            "v_resource_ids[]"
+          ],
+          "method": "crypto_shred"
+        }
+      }
+    }
+  ]
+}

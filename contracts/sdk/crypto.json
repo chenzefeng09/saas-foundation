@@ -1,0 +1,704 @@
+{
+  "service": "crypto",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "create_kek",
+      "python": [
+        {
+          "method": "create_kek",
+          "args": [],
+          "kwargs": {
+            "label": "payments.pii",
+            "purpose": "FIELD_ENCRYPT",
+            "algorithm": "AES-256-GCM",
+            "auto_rotate_days": 7
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createKek",
+          "args": [
+            {
+              "label": "payments.pii",
+              "purpose": "FIELD_ENCRYPT",
+              "algorithm": "AES-256-GCM",
+              "autoRotateDays": 7
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/keks",
+        "json": {
+          "label": "payments.pii",
+          "algorithm_id": "AES-256-GCM",
+          "purpose": "FIELD_ENCRYPT",
+          "auto_rotate_days": 7
+        }
+      }
+    },
+    {
+      "id": "create_kek:defaults",
+      "python": [
+        {
+          "method": "create_kek",
+          "args": [],
+          "kwargs": {
+            "label": "payments.pii",
+            "purpose": "FIELD_ENCRYPT"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createKek",
+          "args": [
+            {
+              "label": "payments.pii",
+              "purpose": "FIELD_ENCRYPT"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/keks",
+        "json": {
+          "label": "payments.pii",
+          "algorithm_id": "AES-256-GCM",
+          "purpose": "FIELD_ENCRYPT"
+        }
+      }
+    },
+    {
+      "id": "decrypt",
+      "python": [
+        {
+          "method": "decrypt",
+          "args": [
+            {
+              "schema_version": 1,
+              "algorithm": "AES-256-GCM",
+              "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "kek_version": 1,
+              "wrapped_dek_b64": "d3JhcHBlZA==",
+              "nonce_b64": "bm9uY2Vub25jZQ==",
+              "ciphertext_b64": "Y2lwaGVydGV4dA==",
+              "aad": {
+                "purpose": "billing"
+              }
+            }
+          ],
+          "kwargs": {
+            "context": {
+              "purpose": "billing"
+            }
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "decrypt",
+          "args": [
+            {
+              "envelope": {
+                "schema_version": 1,
+                "algorithm": "AES-256-GCM",
+                "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+                "kek_version": 1,
+                "wrapped_dek_b64": "d3JhcHBlZA==",
+                "nonce_b64": "bm9uY2Vub25jZQ==",
+                "ciphertext_b64": "Y2lwaGVydGV4dA==",
+                "aad": {
+                  "purpose": "billing"
+                }
+              },
+              "context": {
+                "purpose": "billing"
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/decrypt",
+        "json": {
+          "envelope": {
+            "schema_version": 1,
+            "algorithm": "AES-256-GCM",
+            "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "kek_version": 1,
+            "wrapped_dek_b64": "d3JhcHBlZA==",
+            "nonce_b64": "bm9uY2Vub25jZQ==",
+            "ciphertext_b64": "Y2lwaGVydGV4dA==",
+            "aad": {
+              "purpose": "billing"
+            }
+          },
+          "expected_context": {
+            "purpose": "billing"
+          }
+        }
+      }
+    },
+    {
+      "id": "decrypt:defaults",
+      "python": [
+        {
+          "method": "decrypt",
+          "args": [
+            {
+              "schema_version": 1,
+              "algorithm": "AES-256-GCM",
+              "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "kek_version": 1,
+              "wrapped_dek_b64": "d3JhcHBlZA==",
+              "nonce_b64": "bm9uY2Vub25jZQ==",
+              "ciphertext_b64": "Y2lwaGVydGV4dA==",
+              "aad": {
+                "purpose": "billing"
+              }
+            }
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "decrypt",
+          "args": [
+            {
+              "envelope": {
+                "schema_version": 1,
+                "algorithm": "AES-256-GCM",
+                "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+                "kek_version": 1,
+                "wrapped_dek_b64": "d3JhcHBlZA==",
+                "nonce_b64": "bm9uY2Vub25jZQ==",
+                "ciphertext_b64": "Y2lwaGVydGV4dA==",
+                "aad": {
+                  "purpose": "billing"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/decrypt",
+        "json": {
+          "envelope": {
+            "schema_version": 1,
+            "algorithm": "AES-256-GCM",
+            "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "kek_version": 1,
+            "wrapped_dek_b64": "d3JhcHBlZA==",
+            "nonce_b64": "bm9uY2Vub25jZQ==",
+            "ciphertext_b64": "Y2lwaGVydGV4dA==",
+            "aad": {
+              "purpose": "billing"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "encrypt",
+      "python": [
+        {
+          "method": "encrypt",
+          "args": [
+            "4111 1111 1111 1111"
+          ],
+          "kwargs": {
+            "kek_label": "payments.pii",
+            "context": {
+              "purpose": "billing"
+            }
+          }
+        },
+        {
+          "method": "encrypt_async",
+          "args": [
+            "4111 1111 1111 1111"
+          ],
+          "kwargs": {
+            "kek_label": "payments.pii",
+            "context": {
+              "purpose": "billing"
+            }
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "encrypt",
+          "args": [
+            {
+              "plaintext": "4111 1111 1111 1111",
+              "kekLabel": "payments.pii",
+              "context": {
+                "purpose": "billing"
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/encrypt",
+        "json": {
+          "key_label": "payments.pii",
+          "plaintext_b64": "NDExMSAxMTExIDExMTEgMTExMQ==",
+          "context": {
+            "purpose": "billing"
+          }
+        }
+      }
+    },
+    {
+      "id": "encrypt:defaults",
+      "python": [
+        {
+          "method": "encrypt",
+          "args": [
+            "4111 1111 1111 1111"
+          ],
+          "kwargs": {}
+        },
+        {
+          "method": "encrypt_async",
+          "args": [
+            "4111 1111 1111 1111"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "encrypt",
+          "args": [
+            {
+              "plaintext": "4111 1111 1111 1111"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/encrypt",
+        "json": {
+          "key_label": "default",
+          "plaintext_b64": "NDExMSAxMTExIDExMTEgMTExMQ=="
+        }
+      }
+    },
+    {
+      "id": "hash_password",
+      "python": [
+        {
+          "method": "hash_password",
+          "args": [
+            "correct horse battery staple"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "hashPassword",
+          "args": [
+            "correct horse battery staple"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/password-hash",
+        "json": {
+          "password": "correct horse battery staple"
+        }
+      }
+    },
+    {
+      "id": "list_algorithms",
+      "python": [
+        {
+          "method": "list_algorithms",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listAlgorithms",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/crypto/v1/algorithms"
+      }
+    },
+    {
+      "id": "list_keks",
+      "python": [
+        {
+          "method": "list_keks",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listKeks",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/crypto/v1/keks"
+      }
+    },
+    {
+      "id": "rewrap",
+      "python": [
+        {
+          "method": "rewrap",
+          "args": [
+            {
+              "schema_version": 1,
+              "algorithm": "AES-256-GCM",
+              "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "kek_version": 1,
+              "wrapped_dek_b64": "d3JhcHBlZA==",
+              "nonce_b64": "bm9uY2Vub25jZQ==",
+              "ciphertext_b64": "Y2lwaGVydGV4dA==",
+              "aad": {
+                "purpose": "billing"
+              }
+            }
+          ],
+          "kwargs": {
+            "target_kek_version": 7
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "rewrap",
+          "args": [
+            {
+              "envelope": {
+                "schema_version": 1,
+                "algorithm": "AES-256-GCM",
+                "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+                "kek_version": 1,
+                "wrapped_dek_b64": "d3JhcHBlZA==",
+                "nonce_b64": "bm9uY2Vub25jZQ==",
+                "ciphertext_b64": "Y2lwaGVydGV4dA==",
+                "aad": {
+                  "purpose": "billing"
+                }
+              },
+              "targetKekVersion": 7
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/rewrap",
+        "json": {
+          "envelope": {
+            "schema_version": 1,
+            "algorithm": "AES-256-GCM",
+            "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "kek_version": 1,
+            "wrapped_dek_b64": "d3JhcHBlZA==",
+            "nonce_b64": "bm9uY2Vub25jZQ==",
+            "ciphertext_b64": "Y2lwaGVydGV4dA==",
+            "aad": {
+              "purpose": "billing"
+            }
+          },
+          "target_kek_version": 7
+        }
+      }
+    },
+    {
+      "id": "rewrap:defaults",
+      "python": [
+        {
+          "method": "rewrap",
+          "args": [
+            {
+              "schema_version": 1,
+              "algorithm": "AES-256-GCM",
+              "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "kek_version": 1,
+              "wrapped_dek_b64": "d3JhcHBlZA==",
+              "nonce_b64": "bm9uY2Vub25jZQ==",
+              "ciphertext_b64": "Y2lwaGVydGV4dA==",
+              "aad": {
+                "purpose": "billing"
+              }
+            }
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "rewrap",
+          "args": [
+            {
+              "envelope": {
+                "schema_version": 1,
+                "algorithm": "AES-256-GCM",
+                "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+                "kek_version": 1,
+                "wrapped_dek_b64": "d3JhcHBlZA==",
+                "nonce_b64": "bm9uY2Vub25jZQ==",
+                "ciphertext_b64": "Y2lwaGVydGV4dA==",
+                "aad": {
+                  "purpose": "billing"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/rewrap",
+        "json": {
+          "envelope": {
+            "schema_version": 1,
+            "algorithm": "AES-256-GCM",
+            "kek_id": "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "kek_version": 1,
+            "wrapped_dek_b64": "d3JhcHBlZA==",
+            "nonce_b64": "bm9uY2Vub25jZQ==",
+            "ciphertext_b64": "Y2lwaGVydGV4dA==",
+            "aad": {
+              "purpose": "billing"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "rotate_kek",
+      "python": [
+        {
+          "method": "rotate_kek",
+          "args": [
+            "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "rotateKek",
+          "args": [
+            "kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/keks/kek_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/rotate"
+      }
+    },
+    {
+      "id": "sign",
+      "python": [
+        {
+          "method": "sign",
+          "args": [
+            "invoice 2026-17 total 42.00"
+          ],
+          "kwargs": {
+            "key_label": "payments.signing",
+            "prehash": true,
+            "detached": true
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "sign",
+          "args": [
+            {
+              "data": "invoice 2026-17 total 42.00",
+              "keyLabel": "payments.signing",
+              "prehash": true,
+              "detached": true
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/sign",
+        "json": {
+          "key_label": "payments.signing",
+          "data_b64": "aW52b2ljZSAyMDI2LTE3IHRvdGFsIDQyLjAw",
+          "prehash": true,
+          "detached": true
+        }
+      }
+    },
+    {
+      "id": "sign:defaults",
+      "python": [
+        {
+          "method": "sign",
+          "args": [
+            "invoice 2026-17 total 42.00"
+          ],
+          "kwargs": {
+            "key_label": "payments.signing"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "sign",
+          "args": [
+            {
+              "data": "invoice 2026-17 total 42.00",
+              "keyLabel": "payments.signing"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/sign",
+        "json": {
+          "key_label": "payments.signing",
+          "data_b64": "aW52b2ljZSAyMDI2LTE3IHRvdGFsIDQyLjAw"
+        }
+      }
+    },
+    {
+      "id": "verify",
+      "python": [
+        {
+          "method": "verify",
+          "args": [],
+          "kwargs": {
+            "data": "invoice 2026-17 total 42.00",
+            "signature": "c2lnbmF0dXJl",
+            "key_label": "payments.signing",
+            "kek_version": 7,
+            "prehash": true
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "verify",
+          "args": [
+            {
+              "data": "invoice 2026-17 total 42.00",
+              "signature": "c2lnbmF0dXJl",
+              "keyLabel": "payments.signing",
+              "kekVersion": 7,
+              "prehash": true
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/verify",
+        "json": {
+          "key_label": "payments.signing",
+          "data_b64": "aW52b2ljZSAyMDI2LTE3IHRvdGFsIDQyLjAw",
+          "signature_b64": "c2lnbmF0dXJl",
+          "kek_version": 7,
+          "prehash": true
+        }
+      }
+    },
+    {
+      "id": "verify:defaults",
+      "python": [
+        {
+          "method": "verify",
+          "args": [],
+          "kwargs": {
+            "data": "invoice 2026-17 total 42.00",
+            "signature": "c2lnbmF0dXJl",
+            "key_label": "payments.signing"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "verify",
+          "args": [
+            {
+              "data": "invoice 2026-17 total 42.00",
+              "signature": "c2lnbmF0dXJl",
+              "keyLabel": "payments.signing"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/verify",
+        "json": {
+          "key_label": "payments.signing",
+          "data_b64": "aW52b2ljZSAyMDI2LTE3IHRvdGFsIDQyLjAw",
+          "signature_b64": "c2lnbmF0dXJl"
+        }
+      }
+    },
+    {
+      "id": "verify_password",
+      "python": [
+        {
+          "method": "verify_password",
+          "args": [],
+          "kwargs": {
+            "password": "correct horse battery staple",
+            "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "verifyPassword",
+          "args": [
+            {
+              "password": "correct horse battery staple",
+              "passwordHash": "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/crypto/v1/password-verify",
+        "json": {
+          "password": "correct horse battery staple",
+          "encoded": "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
+        }
+      }
+    }
+  ]
+}

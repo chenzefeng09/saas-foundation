@@ -1,0 +1,68 @@
+# =============================================================================
+# SDK CI — both hand-written SDKs against the golden requests in contracts/sdk/
+#
+# Each SDK method must send exactly the request its case pins. The service side
+# of the same files (route and contract accept the request) runs in each
+# service's own suite: packages/<svc>/tests/unit/test_sdk_requests.py (ci.yml).
+# =============================================================================
+name: SDK CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdks/**'
+      - 'contracts/sdk/**'
+      - '.github/workflows/sdk-ci.yml'
+  pull_request:
+    paths:
+      - 'sdks/**'
+      - 'contracts/sdk/**'
+      - '.github/workflows/sdk-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: sdks/python/poetry.lock
+      - name: Install Poetry
+        run: pip install "poetry==2.4.1"
+      - name: Install deps
+        run: poetry install --no-interaction
+      - name: Run tests
+        run: poetry run pytest tests/ -v
+
+  typescript:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: sdks/typescript/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Type-check sources and tests
+        run: npx tsc -p tsconfig.test.json --noEmit
+      - name: Run tests
+        run: npm test

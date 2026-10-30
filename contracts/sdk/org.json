@@ -1,0 +1,387 @@
+{
+  "service": "org",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "add_member",
+      "python": [
+        {
+          "method": "add_member",
+          "args": [],
+          "kwargs": {
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "team_id": "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "role": "LEAD"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "addMember",
+          "args": [
+            {
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "teamId": "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "role": "LEAD"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/teams/tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/members",
+        "json": {
+          "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "role_in_team": "LEAD"
+        }
+      }
+    },
+    {
+      "id": "add_member:defaults",
+      "python": [
+        {
+          "method": "add_member",
+          "args": [],
+          "kwargs": {
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "team_id": "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "addMember",
+          "args": [
+            {
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "teamId": "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/teams/tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/members",
+        "json": {
+          "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "role_in_team": "MEMBER"
+        }
+      }
+    },
+    {
+      "id": "create_org_unit",
+      "python": [
+        {
+          "method": "create_org_unit",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "parent_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9",
+            "description": "Payments engineering"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createOrgUnit",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "parentId": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9",
+              "description": "Payments engineering"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/org-units",
+        "json": {
+          "name": "invoice_reader",
+          "parent_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9",
+          "description": "Payments engineering"
+        }
+      }
+    },
+    {
+      "id": "create_org_unit:defaults",
+      "python": [
+        {
+          "method": "create_org_unit",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createOrgUnit",
+          "args": [
+            {
+              "name": "invoice_reader"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/org-units",
+        "json": {
+          "name": "invoice_reader",
+          "parent_id": null,
+          "description": ""
+        }
+      }
+    },
+    {
+      "id": "create_team",
+      "python": [
+        {
+          "method": "create_team",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "code": "payments-squad",
+            "org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "description": "Payments engineering"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createTeam",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "code": "payments-squad",
+              "orgUnitId": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "description": "Payments engineering"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/teams",
+        "json": {
+          "name": "invoice_reader",
+          "code": "payments-squad",
+          "org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "description": "Payments engineering"
+        }
+      }
+    },
+    {
+      "id": "create_team:defaults",
+      "python": [
+        {
+          "method": "create_team",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "code": "payments-squad",
+            "org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createTeam",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "code": "payments-squad",
+              "orgUnitId": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/org/v1/teams",
+        "json": {
+          "name": "invoice_reader",
+          "code": "payments-squad",
+          "org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "description": ""
+        }
+      }
+    },
+    {
+      "id": "get_org_unit",
+      "python": [
+        {
+          "method": "get_org_unit",
+          "args": [
+            "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getOrgUnit",
+          "args": [
+            "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/org-units/ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+      }
+    },
+    {
+      "id": "list_members",
+      "python": [
+        {
+          "method": "list_members",
+          "args": [
+            "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listMembers",
+          "args": [
+            "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/teams/tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/members"
+      }
+    },
+    {
+      "id": "list_org_units",
+      "python": [
+        {
+          "method": "list_org_units",
+          "args": [],
+          "kwargs": {
+            "parent_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listOrgUnits",
+          "args": [
+            {
+              "parentId": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/org-units",
+        "query": {
+          "filter.parent_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N9"
+        }
+      }
+    },
+    {
+      "id": "list_org_units:defaults",
+      "python": [
+        {
+          "method": "list_org_units",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listOrgUnits",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/org-units"
+      }
+    },
+    {
+      "id": "list_teams",
+      "python": [
+        {
+          "method": "list_teams",
+          "args": [],
+          "kwargs": {
+            "org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listTeams",
+          "args": [
+            {
+              "orgUnitId": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/teams",
+        "query": {
+          "filter.org_unit_id": "ou_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+        }
+      }
+    },
+    {
+      "id": "list_teams:defaults",
+      "python": [
+        {
+          "method": "list_teams",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listTeams",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/org/v1/teams"
+      }
+    },
+    {
+      "id": "remove_member",
+      "python": [
+        {
+          "method": "remove_member",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "removeMember",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "path": "/api/org/v1/teams/tm_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/members/usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+      }
+    }
+  ]
+}

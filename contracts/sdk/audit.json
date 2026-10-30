@@ -1,0 +1,214 @@
+{
+  "service": "audit",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "export",
+      "python": [
+        {
+          "method": "export",
+          "args": [],
+          "kwargs": {
+            "format": "csv",
+            "event_type": "user.login",
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "resource_id": "doc_42",
+            "since": "2026-01-01T00:00:00Z",
+            "until": "2026-02-01T00:00:00Z"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "export",
+          "args": [
+            {
+              "eventType": "user.login",
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "resourceId": "doc_42",
+              "since": "2026-01-01T00:00:00Z",
+              "until": "2026-02-01T00:00:00Z",
+              "format": "csv"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:export",
+        "query": {
+          "format": "csv"
+        },
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "event_type": "user.login",
+          "actor_user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "resource_id": "doc_42",
+          "occurred_from": "2026-01-01T00:00:00Z",
+          "occurred_to": "2026-02-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "export:defaults",
+      "python": [
+        {
+          "method": "export",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "export",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:export",
+        "query": {
+          "format": "csv"
+        },
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+        }
+      }
+    },
+    {
+      "id": "query",
+      "python": [
+        {
+          "method": "query",
+          "args": [],
+          "kwargs": {
+            "event_type": "user.login",
+            "user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            "resource_id": "doc_42",
+            "since": "2026-01-01T00:00:00Z",
+            "until": "2026-02-01T00:00:00Z",
+            "limit": 25,
+            "cursor": "c_2"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "query",
+          "args": [
+            {
+              "eventType": "user.login",
+              "userId": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+              "resourceId": "doc_42",
+              "since": "2026-01-01T00:00:00Z",
+              "until": "2026-02-01T00:00:00Z",
+              "limit": 25,
+              "cursor": "c_2"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:query",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "event_type": "user.login",
+          "actor_user_id": "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+          "resource_id": "doc_42",
+          "occurred_from": "2026-01-01T00:00:00Z",
+          "occurred_to": "2026-02-01T00:00:00Z",
+          "limit": 25,
+          "cursor": "c_2"
+        }
+      }
+    },
+    {
+      "id": "query:defaults",
+      "python": [
+        {
+          "method": "query",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "query",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:query",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "limit": 100
+        }
+      }
+    },
+    {
+      "id": "verify_chain",
+      "python": [
+        {
+          "method": "verify_chain",
+          "args": [],
+          "kwargs": {
+            "service": "identity",
+            "from_event_id": "evt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "limit": 25
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "verifyChain",
+          "args": [
+            {
+              "service": "identity",
+              "fromEventId": "evt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "limit": 25
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:verify-integrity",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "limit": 25,
+          "service": "identity",
+          "from_event_id": "evt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+        }
+      }
+    },
+    {
+      "id": "verify_chain:defaults",
+      "python": [
+        {
+          "method": "verify_chain",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "verifyChain",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/audit/v1/events:verify-integrity",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "limit": 1000
+        }
+      }
+    }
+  ]
+}

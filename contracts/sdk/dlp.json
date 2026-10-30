@@ -1,0 +1,272 @@
+{
+  "service": "dlp",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "add_sensitive_word",
+      "python": [
+        {
+          "method": "add_sensitive_word",
+          "args": [],
+          "kwargs": {
+            "word": "v_word",
+            "category": "v_category"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "addSensitiveWord",
+          "args": [
+            {
+              "word": "v_word",
+              "category": "v_category"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/sensitive-words",
+        "json": {
+          "word": "v_word",
+          "category": "v_category"
+        }
+      }
+    },
+    {
+      "id": "check_download",
+      "python": [
+        {
+          "method": "check_download",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id",
+            "destination": "v_destination"
+          }
+        },
+        {
+          "method": "check_download_async",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id",
+            "destination": "v_destination"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "checkDownload",
+          "args": [
+            {
+              "fileId": "v_file_id",
+              "destination": "v_destination"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/check-download",
+        "json": {
+          "file_id": "v_file_id",
+          "destination": "v_destination"
+        }
+      }
+    },
+    {
+      "id": "check_download:defaults",
+      "python": [
+        {
+          "method": "check_download",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id"
+          }
+        },
+        {
+          "method": "check_download_async",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "checkDownload",
+          "args": [
+            {
+              "fileId": "v_file_id"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/check-download",
+        "json": {
+          "file_id": "v_file_id",
+          "destination": "laptop"
+        }
+      }
+    },
+    {
+      "id": "classify_file",
+      "python": [
+        {
+          "method": "classify_file",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id",
+            "sensitivity": "L3",
+            "reason": "litigation hold for case 2026-17"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "classifyFile",
+          "args": [
+            {
+              "fileId": "v_file_id",
+              "sensitivity": "L3",
+              "reason": "litigation hold for case 2026-17"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/classify",
+        "json": {
+          "file_id": "v_file_id",
+          "sensitivity": "L3",
+          "reason": "litigation hold for case 2026-17"
+        }
+      }
+    },
+    {
+      "id": "classify_file:defaults",
+      "python": [
+        {
+          "method": "classify_file",
+          "args": [],
+          "kwargs": {
+            "file_id": "v_file_id",
+            "sensitivity": "L3"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "classifyFile",
+          "args": [
+            {
+              "fileId": "v_file_id",
+              "sensitivity": "L3"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/classify",
+        "json": {
+          "file_id": "v_file_id",
+          "sensitivity": "L3",
+          "reason": ""
+        }
+      }
+    },
+    {
+      "id": "get_sensitive_words",
+      "python": [
+        {
+          "method": "get_sensitive_words",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getSensitiveWords",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/dlp/v1/sensitive-words"
+      }
+    },
+    {
+      "id": "scan_content",
+      "python": [
+        {
+          "method": "scan_content",
+          "args": [],
+          "kwargs": {
+            "content": "v_content",
+            "content_type": "v_content_type",
+            "sensitivity_threshold": "L3"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "scanContent",
+          "args": [
+            {
+              "content": "v_content",
+              "contentType": "v_content_type",
+              "sensitivityThreshold": "L3"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/scan",
+        "json": {
+          "content": "v_content",
+          "content_type": "v_content_type",
+          "sensitivity_threshold": "L3"
+        }
+      }
+    },
+    {
+      "id": "scan_content:defaults",
+      "python": [
+        {
+          "method": "scan_content",
+          "args": [],
+          "kwargs": {
+            "content": "v_content"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "scanContent",
+          "args": [
+            {
+              "content": "v_content"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/dlp/v1/scan",
+        "json": {
+          "content": "v_content",
+          "content_type": "text",
+          "sensitivity_threshold": "L4"
+        }
+      }
+    }
+  ]
+}

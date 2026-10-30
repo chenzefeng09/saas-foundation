@@ -1,0 +1,398 @@
+{
+  "service": "api-platform",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "create_api_key",
+      "python": [
+        {
+          "method": "create_api_key",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "scopes": [
+              "v_scopes[]"
+            ],
+            "ip_whitelist": [
+              "v_ip_whitelist[]"
+            ],
+            "rate_limit_rpm": 7,
+            "expires_in_days": 7
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createApiKey",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "scopes": [
+                "v_scopes[]"
+              ],
+              "ipWhitelist": [
+                "v_ip_whitelist[]"
+              ],
+              "rateLimitRpm": 7,
+              "expiresInDays": 7
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/keys",
+        "json": {
+          "name": "invoice_reader",
+          "scopes": [
+            "v_scopes[]"
+          ],
+          "ip_whitelist": [
+            "v_ip_whitelist[]"
+          ],
+          "rate_limit_rpm": 7,
+          "expires_in_days": 7
+        }
+      }
+    },
+    {
+      "id": "create_api_key:defaults",
+      "python": [
+        {
+          "method": "create_api_key",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "scopes": [
+              "v_scopes[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createApiKey",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "scopes": [
+                "v_scopes[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/keys",
+        "json": {
+          "name": "invoice_reader",
+          "scopes": [
+            "v_scopes[]"
+          ],
+          "ip_whitelist": null,
+          "rate_limit_rpm": 60,
+          "expires_in_days": null
+        }
+      }
+    },
+    {
+      "id": "delete_webhook",
+      "python": [
+        {
+          "method": "delete_webhook",
+          "args": [
+            "v_webhook_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "deleteWebhook",
+          "args": [
+            "v_webhook_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "path": "/api/api-platform/v1/webhooks/v_webhook_id"
+      }
+    },
+    {
+      "id": "list_api_keys",
+      "python": [
+        {
+          "method": "list_api_keys",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listApiKeys",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/api-platform/v1/keys"
+      }
+    },
+    {
+      "id": "list_oauth_apps",
+      "python": [
+        {
+          "method": "list_oauth_apps",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listOAuthApps",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/api-platform/v1/oauth-apps"
+      }
+    },
+    {
+      "id": "list_webhooks",
+      "python": [
+        {
+          "method": "list_webhooks",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listWebhooks",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/api-platform/v1/webhooks"
+      }
+    },
+    {
+      "id": "register_oauth_app",
+      "python": [
+        {
+          "method": "register_oauth_app",
+          "args": [],
+          "kwargs": {
+            "name": "invoice_reader",
+            "redirect_uris": [
+              "v_redirect_uris[]"
+            ],
+            "scopes": [
+              "v_scopes[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "registerOAuthApp",
+          "args": [
+            {
+              "name": "invoice_reader",
+              "redirectUris": [
+                "v_redirect_uris[]"
+              ],
+              "scopes": [
+                "v_scopes[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/oauth-apps",
+        "json": {
+          "name": "invoice_reader",
+          "redirect_uris": [
+            "v_redirect_uris[]"
+          ],
+          "scopes": [
+            "v_scopes[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "revoke_api_key",
+      "python": [
+        {
+          "method": "revoke_api_key",
+          "args": [
+            "v_key_id"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "revokeApiKey",
+          "args": [
+            "v_key_id"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/keys/v_key_id/revoke"
+      }
+    },
+    {
+      "id": "subscribe_webhook",
+      "python": [
+        {
+          "method": "subscribe_webhook",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "event_types": [
+              "v_event_types[]"
+            ],
+            "secret": "v_secret"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "subscribeWebhook",
+          "args": [
+            {
+              "url": "v_url",
+              "eventTypes": [
+                "v_event_types[]"
+              ],
+              "secret": "v_secret"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/webhooks",
+        "json": {
+          "url": "v_url",
+          "event_types": [
+            "v_event_types[]"
+          ],
+          "secret": "v_secret"
+        }
+      }
+    },
+    {
+      "id": "subscribe_webhook:defaults",
+      "python": [
+        {
+          "method": "subscribe_webhook",
+          "args": [],
+          "kwargs": {
+            "url": "v_url",
+            "event_types": [
+              "v_event_types[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "subscribeWebhook",
+          "args": [
+            {
+              "url": "v_url",
+              "eventTypes": [
+                "v_event_types[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/webhooks",
+        "json": {
+          "url": "v_url",
+          "event_types": [
+            "v_event_types[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "validate_api_key",
+      "python": [
+        {
+          "method": "validate_api_key",
+          "args": [],
+          "kwargs": {
+            "key_hash": "v_key_hash",
+            "required_scope": "v_required_scope"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "validateApiKey",
+          "args": [
+            {
+              "keyHash": "v_key_hash",
+              "requiredScope": "v_required_scope"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/keys/validate",
+        "json": {
+          "key_hash": "v_key_hash",
+          "required_scope": "v_required_scope"
+        }
+      }
+    },
+    {
+      "id": "validate_api_key:defaults",
+      "python": [
+        {
+          "method": "validate_api_key",
+          "args": [],
+          "kwargs": {
+            "key_hash": "v_key_hash"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "validateApiKey",
+          "args": [
+            {
+              "keyHash": "v_key_hash"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/api-platform/v1/keys/validate",
+        "json": {
+          "key_hash": "v_key_hash"
+        }
+      }
+    }
+  ]
+}

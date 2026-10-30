@@ -1,0 +1,172 @@
+{
+  "service": "feature-flag",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "evaluate_batch",
+      "python": [
+        {
+          "method": "evaluate_batch",
+          "args": [
+            [
+              "v_flags[]"
+            ]
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "evaluateBatch",
+          "args": [
+            [
+              "v_flags[]"
+            ]
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/feature-flag/v1/evaluate-batch",
+        "json": {
+          "flags": [
+            "v_flags[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "is_enabled",
+      "python": [
+        {
+          "method": "is_enabled",
+          "args": [
+            "v_flag"
+          ],
+          "kwargs": {}
+        },
+        {
+          "method": "is_enabled_async",
+          "args": [
+            "v_flag"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "isEnabled",
+          "args": [
+            "v_flag"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/feature-flag/v1/evaluate",
+        "json": {
+          "flag": "v_flag"
+        }
+      }
+    },
+    {
+      "id": "list_flags",
+      "python": [
+        {
+          "method": "list_flags",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listFlags",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/feature-flag/v1/flags"
+      }
+    },
+    {
+      "id": "set_flag",
+      "python": [
+        {
+          "method": "set_flag",
+          "args": [],
+          "kwargs": {
+            "flag": "v_flag",
+            "enabled": true,
+            "rollout_percentage": 7,
+            "tenant_whitelist": [
+              "v_tenant_whitelist[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "setFlag",
+          "args": [
+            {
+              "flag": "v_flag",
+              "enabled": true,
+              "rolloutPercentage": 7,
+              "tenantWhitelist": [
+                "v_tenant_whitelist[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "path": "/api/feature-flag/v1/flags/v_flag",
+        "json": {
+          "enabled": true,
+          "rollout_percentage": 7,
+          "tenant_whitelist": [
+            "v_tenant_whitelist[]"
+          ]
+        }
+      }
+    },
+    {
+      "id": "set_flag:defaults",
+      "python": [
+        {
+          "method": "set_flag",
+          "args": [],
+          "kwargs": {
+            "flag": "v_flag",
+            "enabled": true
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "setFlag",
+          "args": [
+            {
+              "flag": "v_flag",
+              "enabled": true
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "path": "/api/feature-flag/v1/flags/v_flag",
+        "json": {
+          "enabled": true,
+          "rollout_percentage": 100,
+          "tenant_whitelist": []
+        }
+      }
+    }
+  ]
+}

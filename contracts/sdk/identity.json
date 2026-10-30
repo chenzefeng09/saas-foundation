@@ -1,0 +1,423 @@
+{
+  "service": "identity",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "create_user",
+      "python": [
+        {
+          "method": "create_user",
+          "args": [],
+          "kwargs": {
+            "email": "ada@example.com",
+            "display_name": "Ada Lovelace",
+            "roles": [
+              "member"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createUser",
+          "args": [
+            {
+              "email": "ada@example.com",
+              "displayName": "Ada Lovelace",
+              "roles": [
+                "member"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/identity/v1/users",
+        "json": {
+          "email": "ada@example.com",
+          "display_name": "Ada Lovelace",
+          "roles": [
+            "member"
+          ]
+        }
+      }
+    },
+    {
+      "id": "create_user:defaults",
+      "python": [
+        {
+          "method": "create_user",
+          "args": [],
+          "kwargs": {
+            "email": "ada@example.com",
+            "display_name": "Ada Lovelace"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "createUser",
+          "args": [
+            {
+              "email": "ada@example.com",
+              "displayName": "Ada Lovelace"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/identity/v1/users",
+        "json": {
+          "email": "ada@example.com",
+          "display_name": "Ada Lovelace"
+        }
+      }
+    },
+    {
+      "id": "freeze_user",
+      "python": [
+        {
+          "method": "freeze_user",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          ],
+          "kwargs": {
+            "reason": "litigation hold for case 2026-17"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "freezeUser",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2",
+            {
+              "reason": "litigation hold for case 2026-17"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/identity/v1/users/usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2/freeze",
+        "json": {
+          "reason": "litigation hold for case 2026-17"
+        }
+      }
+    },
+    {
+      "id": "get_password_policy",
+      "python": [
+        {
+          "method": "get_password_policy",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getPasswordPolicy",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/policies/password"
+      }
+    },
+    {
+      "id": "get_user",
+      "python": [
+        {
+          "method": "get_user",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          ],
+          "kwargs": {}
+        },
+        {
+          "method": "get_user_async",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getUser",
+          "args": [
+            "usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/users/usr_01J9Z8Y7X6W5V4T3S2R2Q2P2N2"
+      }
+    },
+    {
+      "id": "healthz",
+      "python": [
+        {
+          "method": "healthz",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "healthz",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/healthz"
+      }
+    },
+    {
+      "id": "issue_service_account_token",
+      "python": [
+        {
+          "method": "issue_service_account_token",
+          "args": [],
+          "kwargs": {
+            "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "subject": "v_subject",
+            "scopes": [
+              "v_scopes[]"
+            ],
+            "audience": "foundation",
+            "ttl_seconds": 600
+          }
+        },
+        {
+          "method": "issue_service_account_token_async",
+          "args": [],
+          "kwargs": {
+            "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "subject": "v_subject",
+            "scopes": [
+              "v_scopes[]"
+            ],
+            "audience": "foundation",
+            "ttl_seconds": 600
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "issueServiceAccountToken",
+          "args": [
+            {
+              "tenantId": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "subject": "v_subject",
+              "scopes": [
+                "v_scopes[]"
+              ],
+              "audience": "foundation",
+              "ttlSeconds": 600
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/identity/v1/sessions/service-account-token",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "subject": "v_subject",
+          "scopes": [
+            "v_scopes[]"
+          ],
+          "audience": "foundation",
+          "ttl_seconds": 600
+        }
+      }
+    },
+    {
+      "id": "issue_service_account_token:defaults",
+      "python": [
+        {
+          "method": "issue_service_account_token",
+          "args": [],
+          "kwargs": {
+            "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "subject": "v_subject",
+            "scopes": [
+              "v_scopes[]"
+            ]
+          }
+        },
+        {
+          "method": "issue_service_account_token_async",
+          "args": [],
+          "kwargs": {
+            "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+            "subject": "v_subject",
+            "scopes": [
+              "v_scopes[]"
+            ]
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "issueServiceAccountToken",
+          "args": [
+            {
+              "tenantId": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+              "subject": "v_subject",
+              "scopes": [
+                "v_scopes[]"
+              ]
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/identity/v1/sessions/service-account-token",
+        "json": {
+          "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+          "subject": "v_subject",
+          "scopes": [
+            "v_scopes[]"
+          ],
+          "audience": "foundation",
+          "ttl_seconds": 3600
+        }
+      }
+    },
+    {
+      "id": "list_sessions",
+      "python": [
+        {
+          "method": "list_sessions",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listSessions",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/sessions"
+      }
+    },
+    {
+      "id": "list_users",
+      "python": [
+        {
+          "method": "list_users",
+          "args": [],
+          "kwargs": {
+            "limit": 25,
+            "cursor": "c_2"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listUsers",
+          "args": [
+            {
+              "limit": 25,
+              "cursor": "c_2"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/users",
+        "query": {
+          "limit": "25",
+          "cursor": "c_2"
+        }
+      }
+    },
+    {
+      "id": "list_users:defaults",
+      "python": [
+        {
+          "method": "list_users",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listUsers",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/users",
+        "query": {
+          "limit": "50"
+        }
+      }
+    },
+    {
+      "id": "me",
+      "python": [
+        {
+          "method": "me",
+          "args": [],
+          "kwargs": {}
+        },
+        {
+          "method": "me_async",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "me",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/identity/v1/sessions/me"
+      }
+    },
+    {
+      "id": "revoke_session",
+      "python": [
+        {
+          "method": "revoke_session",
+          "args": [
+            "sess_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "revokeSession",
+          "args": [
+            "sess_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "path": "/api/identity/v1/sessions/sess_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+      }
+    }
+  ]
+}

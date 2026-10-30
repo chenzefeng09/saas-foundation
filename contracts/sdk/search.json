@@ -1,0 +1,246 @@
+{
+  "service": "search",
+  "context": {
+    "tenant_id": "tnt_01J9Z8Y7X6W5V4T3S2R1Q0P9N8",
+    "user_id": "usr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+  },
+  "cases": [
+    {
+      "id": "deindex",
+      "python": [
+        {
+          "method": "deindex",
+          "args": [
+            "document",
+            "doc_42"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "deindex",
+          "args": [
+            "document",
+            "doc_42"
+          ]
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "path": "/api/search/v1/index/document/doc_42"
+      }
+    },
+    {
+      "id": "index",
+      "python": [
+        {
+          "method": "index",
+          "args": [],
+          "kwargs": {
+            "resource_type": "document",
+            "resource_id": "doc_42",
+            "title": "v_title",
+            "content": "v_content",
+            "tags": [
+              "v_tags[]"
+            ],
+            "acl_user_ids": [
+              "v_acl_user_ids[]"
+            ],
+            "metadata": {
+              "k": "v"
+            }
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "index",
+          "args": [
+            {
+              "resourceType": "document",
+              "resourceId": "doc_42",
+              "title": "v_title",
+              "content": "v_content",
+              "tags": [
+                "v_tags[]"
+              ],
+              "aclUserIds": [
+                "v_acl_user_ids[]"
+              ],
+              "metadata": {
+                "k": "v"
+              }
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/search/v1/index",
+        "json": {
+          "resource_type": "document",
+          "resource_id": "doc_42",
+          "title": "v_title",
+          "content": "v_content",
+          "tags": [
+            "v_tags[]"
+          ],
+          "acl_user_ids": [
+            "v_acl_user_ids[]"
+          ],
+          "metadata": {
+            "k": "v"
+          }
+        }
+      }
+    },
+    {
+      "id": "index:defaults",
+      "python": [
+        {
+          "method": "index",
+          "args": [],
+          "kwargs": {
+            "resource_type": "document",
+            "resource_id": "doc_42",
+            "title": "v_title",
+            "content": "v_content"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "index",
+          "args": [
+            {
+              "resourceType": "document",
+              "resourceId": "doc_42",
+              "title": "v_title",
+              "content": "v_content"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/search/v1/index",
+        "json": {
+          "resource_type": "document",
+          "resource_id": "doc_42",
+          "title": "v_title",
+          "content": "v_content",
+          "tags": [],
+          "acl_user_ids": [],
+          "metadata": {}
+        }
+      }
+    },
+    {
+      "id": "query",
+      "python": [
+        {
+          "method": "query",
+          "args": [],
+          "kwargs": {
+            "q": "v_q",
+            "resource_types": [
+              "v_resource_types[]"
+            ],
+            "tags": [
+              "v_tags[]"
+            ],
+            "cursor": "c_2",
+            "limit": 25
+          }
+        },
+        {
+          "method": "query_async",
+          "args": [],
+          "kwargs": {
+            "q": "v_q",
+            "resource_types": [
+              "v_resource_types[]"
+            ],
+            "tags": [
+              "v_tags[]"
+            ],
+            "cursor": "c_2",
+            "limit": 25
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "query",
+          "args": [
+            {
+              "q": "v_q",
+              "resourceTypes": [
+                "v_resource_types[]"
+              ],
+              "tags": [
+                "v_tags[]"
+              ],
+              "cursor": "c_2",
+              "limit": 25
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/search/v1/query",
+        "json": {
+          "q": "v_q",
+          "limit": 25,
+          "resource_types": [
+            "v_resource_types[]"
+          ],
+          "tags": [
+            "v_tags[]"
+          ],
+          "cursor": "c_2"
+        }
+      }
+    },
+    {
+      "id": "query:defaults",
+      "python": [
+        {
+          "method": "query",
+          "args": [],
+          "kwargs": {
+            "q": "v_q"
+          }
+        },
+        {
+          "method": "query_async",
+          "args": [],
+          "kwargs": {
+            "q": "v_q"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "query",
+          "args": [
+            {
+              "q": "v_q"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/search/v1/query",
+        "json": {
+          "q": "v_q",
+          "limit": 20
+        }
+      }
+    }
+  ]
+}
