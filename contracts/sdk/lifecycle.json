@@ -6,6 +6,115 @@
   },
   "cases": [
     {
+      "id": "approve_request",
+      "python": [
+        {
+          "method": "approve_request",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "approveRequest",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/lifecycle/v1/approval-requests/apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/approve"
+      }
+    },
+    {
+      "id": "get_approval_request",
+      "python": [
+        {
+          "method": "get_approval_request",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "getApprovalRequest",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/lifecycle/v1/approval-requests/apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+      }
+    },
+    {
+      "id": "list_approval_requests",
+      "python": [
+        {
+          "method": "list_approval_requests",
+          "args": [],
+          "kwargs": {
+            "status": "PENDING",
+            "operation": "HARD_DELETE",
+            "limit": 25,
+            "cursor": "c_2"
+          }
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listApprovalRequests",
+          "args": [
+            {
+              "status": "PENDING",
+              "operation": "HARD_DELETE",
+              "limit": 25,
+              "cursor": "c_2"
+            }
+          ]
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/lifecycle/v1/approval-requests",
+        "query": {
+          "filter.status": "PENDING",
+          "filter.operation": "HARD_DELETE",
+          "limit": "25",
+          "cursor": "c_2"
+        }
+      }
+    },
+    {
+      "id": "list_approval_requests:defaults",
+      "python": [
+        {
+          "method": "list_approval_requests",
+          "args": [],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "listApprovalRequests",
+          "args": []
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/lifecycle/v1/approval-requests",
+        "query": {
+          "limit": "50"
+        }
+      }
+    },
+    {
       "id": "list_legal_holds",
       "python": [
         {
@@ -169,6 +278,30 @@
       "request": {
         "method": "POST",
         "path": "/api/lifecycle/v1/recycle-bin/rb_01J9Z8Y7X6W5V4T3S2R1Q0P9N8:hard-delete"
+      }
+    },
+    {
+      "id": "reject_request",
+      "python": [
+        {
+          "method": "reject_request",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ],
+          "kwargs": {}
+        }
+      ],
+      "typescript": [
+        {
+          "method": "rejectRequest",
+          "args": [
+            "apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+          ]
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/lifecycle/v1/approval-requests/apr_01J9Z8Y7X6W5V4T3S2R1Q0P9N8/reject"
       }
     },
     {
