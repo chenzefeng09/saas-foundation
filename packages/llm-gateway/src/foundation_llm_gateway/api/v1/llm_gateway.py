@@ -238,10 +238,11 @@ class MintEphemeralKeyRequest(BaseModel):
     long-lived tenant key. ``ttl_seconds`` is derived from the sandbox timeout
     (+ grace) so the key expires at/after the run; the gateway clamps it to a
     sane window. ``provider_id`` is optional — when omitted the gateway binds
-    the key to the tenant's first enabled provider (the same provider the
-    long-lived key would have routed to).
+    the key to the tenant's oldest enabled provider.
     """
-    run_id: str
+    # Bounded by the llm_tenant_key.run_id column (String(64)): a longer value
+    # used to reach the INSERT and fail there as a 500.
+    run_id: str = Field(min_length=1, max_length=64)
     ttl_seconds: int
     provider_id: str | None = None
     rate_limit_rpm: int = 60
@@ -328,23 +329,31 @@ async def mint_ephemeral_tenant_key(
     indefinitely. Backwards compatible — long-lived keys (NULL expiry) are
     unaffected.
     """
-    provider_id = body.provider_id
-    if not provider_id:
-        # Bind to the tenant's first enabled provider — the same provider the
-        # long-lived tenant key would have routed through. Fail closed (404)
+    from sqlalchemy import select
+    from foundation_llm_gateway.domain.models import LLMProvider
+    usable = select(LLMProvider).where(
+        LLMProvider.tenant_id == ctx.tenant_id,
+        LLMProvider.enabled.is_(True),
+    )
+    if body.provider_id:
+        # An explicit provider must be one of the tenant's enabled providers;
+        # otherwise the minted key would be bound to a provider it cannot use.
+        provider = await session.scalar(usable.where(LLMProvider.id == body.provider_id).limit(1))
+        if provider is None:
+            raise FoundationError(PROVIDER_NOT_FOUND,
+                detail=f"Provider {body.provider_id!r} not found or disabled")
+    else:
+        # Bind to the tenant's oldest enabled provider, ordered so the choice
+        # is stable when a tenant has several (resolve_provider routes by
+        # model first; the bound provider is its fallback). Fail closed (404)
         # if the tenant has no usable provider rather than minting a dud key.
-        from sqlalchemy import select
-        from foundation_llm_gateway.domain.models import LLMProvider
         provider = await session.scalar(
-            select(LLMProvider).where(
-                LLMProvider.tenant_id == ctx.tenant_id,
-                LLMProvider.enabled.is_(True),
-            ).limit(1)
+            usable.order_by(LLMProvider.created_at, LLMProvider.id).limit(1)
         )
         if provider is None:
             raise FoundationError(PROVIDER_NOT_FOUND,
                 detail=f"No enabled provider to bind ephemeral key for tenant={ctx.tenant_id!r}")
-        provider_id = provider.id
+    provider_id = provider.id
 
     key = await svc.mint_ephemeral_key(
         session, tenant_id=ctx.tenant_id,
