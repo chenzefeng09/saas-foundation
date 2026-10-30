@@ -225,10 +225,10 @@ async def insert_events(events: list[dict[str, Any]]) -> None:
     log.debug("clickhouse.events.inserted", count=len(rows))
 
 
-async def insert_merkle_batch(batch: dict[str, Any]) -> None:
-    """Insert a single merkle_batch row."""
+def _merkle_batch_to_row(batch: dict[str, Any]) -> list[Any]:
+    """Convert merkle_batch dict → list aligned with MERKLE_BATCH_COLUMNS."""
     tsa_ts = batch.get("tsa_timestamp")
-    row = [
+    return [
         batch.get("batch_id", ""),
         batch.get("tenant_id", ""),
         batch.get("service") or "",
@@ -245,8 +245,18 @@ async def insert_merkle_batch(batch: dict[str, Any]) -> None:
         _utc(tsa_ts) if tsa_ts else None,
         batch.get("external_anchor"),
     ]
-    await _insert("audit.merkle_batch", [row], MERKLE_BATCH_COLUMNS)
-    log.debug("clickhouse.merkle_batch.inserted", batch_id=batch.get("batch_id"))
+
+
+async def insert_merkle_batches(batches: list[dict[str, Any]]) -> None:
+    """Insert merkle_batch rows, all in one insert.
+
+    That is one part for ClickHouse to merge, however many chains a run seals.
+    """
+    if not batches:
+        return
+    rows = [_merkle_batch_to_row(batch) for batch in batches]
+    await _insert("audit.merkle_batch", rows, MERKLE_BATCH_COLUMNS)
+    log.debug("clickhouse.merkle_batch.inserted", count=len(rows))
 
 
 async def get_chain_head(tenant_id: str, service: str) -> str | None:

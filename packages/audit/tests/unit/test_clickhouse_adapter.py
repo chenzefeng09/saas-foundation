@@ -20,7 +20,7 @@ from foundation_audit.adapters.clickhouse import (
     _insert,
     get_events_for_verification,
     insert_events,
-    insert_merkle_batch,
+    insert_merkle_batches,
     query_events,
 )
 
@@ -390,7 +390,7 @@ class TestInsertedInstants:
     async def test_merkle_batch_times(self, value: datetime | str) -> None:
         times = {"created_at": value, "sealed_at": value, "tsa_timestamp": value}
 
-        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1", **times}))
+        (row,) = await _inserted(lambda: insert_merkle_batches([{"batch_id": "mrk_1", **times}]))
 
         assert _stored_ms(row["created_at"]) == _epoch_ms(_INSTANT)
         assert _stored_ms(row["sealed_at"]) == _epoch_ms(_INSTANT)
@@ -398,7 +398,7 @@ class TestInsertedInstants:
 
     @pytest.mark.asyncio
     async def test_merkle_batch_without_tsa(self) -> None:
-        (row,) = await _inserted(lambda: insert_merkle_batch({"batch_id": "mrk_1"}))
+        (row,) = await _inserted(lambda: insert_merkle_batches([{"batch_id": "mrk_1"}]))
 
         assert row["tsa_timestamp"] is None
         now = _epoch_ms(datetime.now(UTC))
@@ -413,6 +413,34 @@ class TestInsertedInstants:
         (row,) = await _inserted(lambda: _insert("audit.events", [[naive]], ["occurred_at"]))
 
         assert _stored_ms(row["occurred_at"]) == _epoch_ms(_INSTANT)
+
+
+class TestInsertMerkleBatches:
+    @pytest.mark.asyncio
+    async def test_a_run_s_batches_go_in_one_insert(self) -> None:
+        """One insert is one part for ClickHouse to merge, however many chains a run seals."""
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await insert_merkle_batches([{"batch_id": "mrk_1"}, {"batch_id": "mrk_2"}])
+
+        client.insert.assert_called_once()
+        (table, data), _ = client.insert.call_args
+        assert table == "audit.merkle_batch"
+        assert [row[MERKLE_BATCH_COLUMNS.index("batch_id")] for row in data] == ["mrk_1", "mrk_2"]
+
+    @pytest.mark.asyncio
+    async def test_no_batches_insert_nothing(self) -> None:
+        client = MagicMock()
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await insert_merkle_batches([])
+
+        client.insert.assert_not_called()
 
 
 class TestMerkleBatchColumns:

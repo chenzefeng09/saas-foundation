@@ -85,7 +85,7 @@ class TestHashChainContinuity:
             patch.object(proc._ingest, "mark_delivered", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.ch.get_chain_head", new_callable=AsyncMock, return_value=existing_head),
             patch("foundation_audit.worker.batch_processor.ch.insert_events", new_callable=AsyncMock),
-            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batch", new_callable=AsyncMock),
+            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batches", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root",
                   new_callable=AsyncMock, return_value=("sig_b64==", "key_v1")),
         ):
@@ -117,7 +117,7 @@ class TestHashChainContinuity:
             patch.object(proc._ingest, "mark_delivered", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.ch.get_chain_head", new_callable=AsyncMock, return_value=None),
             patch("foundation_audit.worker.batch_processor.ch.insert_events", new_callable=AsyncMock),
-            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batch", new_callable=AsyncMock),
+            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batches", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root",
                   new_callable=AsyncMock, return_value=("sig==", "k1")),
         ):
@@ -147,7 +147,7 @@ class TestHashChainContinuity:
             patch("foundation_audit.worker.batch_processor.system_session_scope") as mock_scope,
             patch("foundation_audit.worker.batch_processor.ch.get_chain_head", new_callable=AsyncMock, return_value=None),
             patch("foundation_audit.worker.batch_processor.ch.insert_events", side_effect=fake_insert_events),
-            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batch", new_callable=AsyncMock),
+            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batches", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root",
                   new_callable=AsyncMock, return_value=("s==", "k1")),
         ):
@@ -196,7 +196,7 @@ class TestCHInsertColumns:
             patch.object(proc._ingest, "mark_delivered", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.ch.get_chain_head", new_callable=AsyncMock, return_value=None),
             patch("foundation_audit.worker.batch_processor.ch.insert_events", side_effect=capture),
-            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batch", new_callable=AsyncMock),
+            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batches", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root",
                   new_callable=AsyncMock, return_value=("s==", "k1")),
         ):
@@ -233,7 +233,7 @@ class TestCHInsertColumns:
             patch.object(proc._ingest, "mark_delivered", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.ch.get_chain_head", new_callable=AsyncMock, return_value=None),
             patch("foundation_audit.worker.batch_processor.ch.insert_events", side_effect=capture),
-            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batch", new_callable=AsyncMock),
+            patch("foundation_audit.worker.batch_processor.ch.insert_merkle_batches", new_callable=AsyncMock),
             patch("foundation_audit.worker.batch_processor.crypto_client.sign_merkle_root",
                   new_callable=AsyncMock, return_value=("s==", "k1")),
         ):
@@ -244,6 +244,84 @@ class TestCHInsertColumns:
         assert len(inserted) == 3
         for i, ev in enumerate(inserted):
             assert ev["merkle_leaf_idx"] == i
+
+
+# ---------------------------------------------------------------------------
+# Tests: one Merkle batch per chain
+# ---------------------------------------------------------------------------
+
+class TestMerkleBatchPerChain:
+    """A run seals each chain's events in a batch of their own, signed under its tenant."""
+
+    @pytest.mark.asyncio
+    async def test_each_chain_is_sealed_in_its_own_batch(self) -> None:
+        proc = _make_batch_processor()
+        chains = [
+            ("tnt_A", "identity"), ("tnt_B", "identity"), ("tnt_A", "billing"),
+            ("tnt_A", "identity"), ("tnt_B", "identity"),
+        ]
+        rows = [
+            (i + 1, _make_event(tenant_id=tenant_id, service=service, event_id=f"evt_{i}"))
+            for i, (tenant_id, service) in enumerate(chains)
+        ]
+        inserted: list[dict] = []
+        batch_rows: list[dict] = []
+
+        async def insert_events(events: list[dict]) -> None:
+            inserted.extend(events)
+
+        async def insert_merkle_batches(batches: list[dict]) -> None:
+            batch_rows.extend(batches)
+
+        async def sign(root_hex: str, *, tenant_id: str) -> tuple[str, str]:
+            return f"sig({tenant_id}:{root_hex})", "k1"
+
+        worker = "foundation_audit.worker.batch_processor"
+        with (
+            patch(f"{worker}.system_session_scope") as mock_scope,
+            patch.object(proc._ingest, "fetch_pending", new_callable=AsyncMock, return_value=rows),
+            patch.object(proc._ingest, "mark_delivered", new_callable=AsyncMock),
+            patch(f"{worker}.ch.get_chain_head", new_callable=AsyncMock, return_value=None),
+            patch(f"{worker}.ch.insert_events", side_effect=insert_events),
+            patch(f"{worker}.ch.insert_merkle_batches", side_effect=insert_merkle_batches),
+            patch(f"{worker}.crypto_client.sign_merkle_root", side_effect=sign),
+        ):
+            mock_scope.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_scope.return_value.__aexit__ = AsyncMock(return_value=False)
+            assert await proc.run_once() == 5
+
+        by_chain: dict[tuple[str, str], list[dict]] = {}
+        for ev in inserted:
+            by_chain.setdefault((ev["tenant_id"], ev["service"]), []).append(ev)
+        # Each chain's events: leaves 0, 1, … of one batch, in outbox order
+        assert {
+            chain: [(ev["event_id"], ev["merkle_leaf_idx"]) for ev in evs]
+            for chain, evs in by_chain.items()
+        } == {
+            ("tnt_A", "identity"): [("evt_0", 0), ("evt_3", 1)],
+            ("tnt_B", "identity"): [("evt_1", 0), ("evt_4", 1)],
+            ("tnt_A", "billing"): [("evt_2", 0)],
+        }
+        batch_ids = [{ev["merkle_batch_id"] for ev in evs} for evs in by_chain.values()]
+        assert all(len(ids) == 1 for ids in batch_ids)
+        assert len(set().union(*batch_ids)) == 3
+
+        # One merkle_batch row per chain, naming it, signed under its own tenant
+        assert len(batch_rows) == 3
+        for row in batch_rows:
+            evs = by_chain[(row["tenant_id"], row["service"])]
+            root = compute_merkle_root([ev["curr_hash"] for ev in evs])
+            assert row == {
+                **row,
+                "batch_id": evs[0]["merkle_batch_id"],
+                "event_count": len(evs),
+                "first_event_id": evs[0]["event_id"],
+                "last_event_id": evs[-1]["event_id"],
+                "merkle_root": root,
+                "signature": f"sig({row['tenant_id']}:{root})",
+            }
+        # Each chain's head: the last event of its batch
+        assert proc._chain_heads == {chain: evs[-1]["curr_hash"] for chain, evs in by_chain.items()}
 
 
 # ---------------------------------------------------------------------------

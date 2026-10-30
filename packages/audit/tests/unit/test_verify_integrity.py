@@ -44,6 +44,7 @@ _SCHEMA_SQL = (
     / "deploy/docker-compose/config/clickhouse/audit-schema.sql"
 )
 _TENANT = "tnt_01J0000000000000000000TNT1"
+_OTHER_TENANT = "tnt_01J0000000000000000000TNT2"
 _SETTINGS = Settings(tsa_enabled=False, worm_enabled=False)
 
 # clickhouse-connect 0.7.19 reads DateTime64 columns with datetime.utcfromtimestamp.
@@ -233,16 +234,21 @@ async def _deliver(
         return await worker.run_once()
 
 
-async def _verify(clickhouse: _ClickHouse) -> VerifyIntegrityResponse:
+async def _verify(
+    clickhouse: _ClickHouse, *, tenant_id: str = _TENANT, **request: Any,
+) -> VerifyIntegrityResponse:
+    """verify-integrity as ``tenant_id`` asks it, with the rest of its ``request`` body."""
     ctx = FoundationContext(
-        tenant_id=_TENANT, user_id=None, actor="ADMIN", request_id="req_01J0000000000000000000REQ1",
+        tenant_id=tenant_id, user_id=None, actor="ADMIN",
+        request_id="req_01J0000000000000000000REQ1",
     )
     with (
         patch("foundation_audit.config.get_settings", return_value=_SETTINGS),
         patch("foundation_audit.api.v1.events.crypto_client.verify_signature", _signature_valid),
         _serving(clickhouse),
     ):
-        return await verify_integrity(VerifyIntegrityRequest(tenant_id=_TENANT), ctx=ctx)
+        body = VerifyIntegrityRequest(tenant_id=tenant_id, **request)
+        return await verify_integrity(body, ctx=ctx)
 
 
 def _evt(n: int) -> str:
@@ -288,23 +294,45 @@ def _emitted() -> list[AuditEvent]:
     ]
 
 
-def _logins(*ns: int) -> list[AuditEvent]:
+def _logins(*ns: int, tenant_id: str = _TENANT) -> list[AuditEvent]:
     """identity events with ids _evt(n), emitted a second apart in the order given."""
     return [
         AuditEvent(
-            event_id=_evt(n), occurred_at=datetime(2026, 10, 30, 12, 0, i), tenant_id=_TENANT,
+            event_id=_evt(n), occurred_at=datetime(2026, 10, 30, 12, 0, i), tenant_id=tenant_id,
             service="identity", event_type="user.login", actor_kind="USER", payload={"n": n},
         )
         for i, n in enumerate(ns)
     ]
 
 
+def _interleaved(*runs: list[AuditEvent]) -> list[AuditEvent]:
+    """The events of ``runs`` taken in turn, as emitters reach the outbox side by side."""
+    return [event for turn in itertools.zip_longest(*runs) for event in turn if event]
+
+
 async def _sealed() -> _ClickHouse:
-    """The tables once a worker delivered _emitted() in two batches (3 and 2 events)."""
+    """The tables once a worker delivered _emitted() in two runs (3 and 2 events).
+
+    Each run seals a batch per service: identity [1, 3] and lifecycle [2], then
+    identity [4] and lifecycle [5].
+    """
     clickhouse, worker = _ClickHouse(), _worker()
     outbox = await _outbox(_emitted())
     assert await _deliver(worker, outbox[:3], clickhouse) == 3
     assert await _deliver(worker, outbox[3:], clickhouse) == 2
+    return clickhouse
+
+
+async def _two_tenants_in_one_run() -> _ClickHouse:
+    """The tables once a worker delivered _emitted() and another tenant's logins in one run.
+
+    The run seals identity [1, 3, 4] and lifecycle [2, 5], and the other tenant's
+    identity [11, 12, 13].
+    """
+    clickhouse = _ClickHouse()
+    theirs = _logins(11, 12, 13, tenant_id=_OTHER_TENANT)
+    outbox = await _outbox(_interleaved(_emitted(), theirs))
+    assert await _deliver(_worker(), outbox, clickhouse) == 8
     return clickhouse
 
 
@@ -328,11 +356,46 @@ class TestVerifyIntegrity:
             "valid": True,
             "events_checked": 5,
             "first_break_event_id": None,
-            "signatures_verified": 2,
+            "signatures_verified": 4,
             "signatures_failed": 0,
             "tsa_present": 0,
             "message": "OK",
         }
+
+    @pytest.mark.asyncio
+    async def test_tenants_delivered_in_one_run_each_verify(self) -> None:
+        """A run seals each tenant's chains apart, so each tenant verifies its own."""
+        clickhouse = await _two_tenants_in_one_run()
+
+        for tenant_id, events, chains in ((_TENANT, 5, 2), (_OTHER_TENANT, 3, 1)):
+            result = await _verify(clickhouse, tenant_id=tenant_id)
+
+            assert (result.valid, result.first_break_event_id) == (True, None), tenant_id
+            assert result.events_checked == events
+            assert (result.signatures_verified, result.signatures_failed) == (chains, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_tenant_s_tampered_batch_fails_that_tenant_only(self) -> None:
+        clickhouse = await _two_tenants_in_one_run()
+        batches = clickhouse.rows["audit.merkle_batch"]
+        (theirs,) = (batch for batch in batches if batch["tenant_id"] == _OTHER_TENANT)
+        theirs["merkle_root"] = _flip(theirs["merkle_root"])
+
+        mine, others = await _verify(clickhouse), await _verify(clickhouse, tenant_id=_OTHER_TENANT)
+
+        assert (mine.valid, mine.signatures_verified, mine.signatures_failed) == (True, 2, 0)
+        assert (others.valid, others.signatures_verified, others.signatures_failed) == (False, 0, 1)
+        assert others.first_break_event_id == _evt(11)
+
+    @pytest.mark.asyncio
+    async def test_a_service_filter_verifies_that_service_s_chain(self) -> None:
+        clickhouse = await _sealed()
+
+        result = await _verify(clickhouse, service="identity")
+
+        assert (result.valid, result.first_break_event_id) == (True, None)
+        assert result.events_checked == 3  # 1, 3 and 4
+        assert (result.signatures_verified, result.signatures_failed) == (2, 0)
 
     @pytest.mark.asyncio
     async def test_a_chain_verifies_in_the_order_it_was_chained(self) -> None:
@@ -463,22 +526,33 @@ class TestVerifyIntegrity:
     @pytest.mark.asyncio
     async def test_a_changed_merkle_root_fails_its_batch(self) -> None:
         clickhouse = await _sealed()
-        batch = clickhouse.rows["audit.merkle_batch"][0]
+        batch = clickhouse.rows["audit.merkle_batch"][0]  # identity [1, 3]
         batch["merkle_root"] = _flip(batch["merkle_root"])
 
         result = await _verify(clickhouse)
 
         assert not result.valid
         assert result.first_break_event_id == _evt(1)  # the batch's first event
-        assert (result.signatures_verified, result.signatures_failed) == (1, 1)
+        assert (result.signatures_verified, result.signatures_failed) == (3, 1)
 
     @pytest.mark.asyncio
     async def test_a_signature_that_does_not_verify_fails_its_batch(self) -> None:
         clickhouse = await _sealed()
-        clickhouse.rows["audit.merkle_batch"][1]["signature"] = "sig(forged)"
+        clickhouse.rows["audit.merkle_batch"][1]["signature"] = "sig(forged)"  # lifecycle [2]
 
         result = await _verify(clickhouse)
 
         assert not result.valid
         assert result.first_break_event_id is None  # the chain itself holds
-        assert (result.signatures_verified, result.signatures_failed) == (1, 1)
+        assert (result.signatures_verified, result.signatures_failed) == (3, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_signature_by_another_tenant_s_key_fails_its_batch(self) -> None:
+        clickhouse = await _sealed()
+        batch = clickhouse.rows["audit.merkle_batch"][2]  # identity [4]
+        batch["signature"], _ = await _sign(batch["merkle_root"], tenant_id=_OTHER_TENANT)
+
+        result = await _verify(clickhouse)
+
+        assert not result.valid
+        assert (result.signatures_verified, result.signatures_failed) == (3, 1)
