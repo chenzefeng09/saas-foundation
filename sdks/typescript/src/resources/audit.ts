@@ -5,52 +5,77 @@
 
 import type { Transport } from "../transport.js";
 
+interface EventFilter {
+  eventType?: string;
+  /** Actor user id. */
+  userId?: string;
+  resourceId?: string;
+  /** ISO-8601 lower bound on `occurred_at`. */
+  since?: string;
+  /** ISO-8601 upper bound on `occurred_at`. */
+  until?: string;
+}
+
+function contextTenant(t: Transport): string {
+  const tenantId = t.resolveContext()?.tenantId;
+  if (!tenantId) throw new Error("audit calls need a FoundationContext with a tenantId");
+  return tenantId;
+}
+
+/** An `AuditQuery` for the context tenant (the routes reject any other tenant). */
+function queryBody(t: Transport, filter: EventFilter): Record<string, unknown> {
+  const body: Record<string, unknown> = { tenant_id: contextTenant(t) };
+  const fields: Array<[string, string | undefined]> = [
+    ["event_type", filter.eventType],
+    ["actor_user_id", filter.userId],
+    ["resource_id", filter.resourceId],
+    ["occurred_from", filter.since],
+    ["occurred_to", filter.until],
+  ];
+  for (const [key, value] of fields) {
+    if (value) body[key] = value;
+  }
+  return body;
+}
+
 export class AuditResource {
   constructor(private readonly t: Transport) {}
 
-  async query(params?: {
-    eventType?: string;
-    userId?: string;
-    resourceId?: string;
-    since?: string;
-    until?: string;
+  /** Events of the context tenant. Returns `{items, next_cursor, total_estimate}`. */
+  async query(params?: EventFilter & {
     limit?: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
-    return this.t.request("GET", "/api/audit/v1/events", {
-      params: {
-        limit: params?.limit ?? 100,
-        event_type: params?.eventType,
-        user_id: params?.userId,
-        resource_id: params?.resourceId,
-        since: params?.since,
-        until: params?.until,
-        cursor: params?.cursor,
-      },
-    });
+    const body = queryBody(this.t, params ?? {});
+    body["limit"] = params?.limit ?? 100;
+    if (params?.cursor) body["cursor"] = params.cursor;
+    return this.t.request("POST", "/api/audit/v1/events:query", { json: body });
   }
 
-  async getEvent(eventId: string): Promise<Record<string, unknown>> {
-    return this.t.request("GET", `/api/audit/v1/events/${eventId}`);
-  }
-
-  /** Verify the hash chain and Merkle root for a set of events. */
-  async verifyChain(eventIds: string[]): Promise<Record<string, unknown>> {
-    return this.t.request("POST", "/api/audit/v1/verify", {
-      json: { event_ids: eventIds },
-    });
-  }
-
-  async export(params?: {
-    format?: string;
-    eventType?: string;
-    since?: string;
-    until?: string;
+  /**
+   * Re-verify the hash chain and Merkle roots of the context tenant's events,
+   * oldest first from `fromEventId` (or the start), at most `limit` (≤ 10000).
+   */
+  async verifyChain(params?: {
+    service?: string;
+    fromEventId?: string;
+    limit?: number;
   }): Promise<Record<string, unknown>> {
-    const body: Record<string, unknown> = { format: params?.format ?? "csv" };
-    if (params?.eventType != null) body["event_type"] = params.eventType;
-    if (params?.since != null) body["since"] = params.since;
-    if (params?.until != null) body["until"] = params.until;
-    return this.t.request("POST", "/api/audit/v1/export", { json: body });
+    const body: Record<string, unknown> = {
+      tenant_id: contextTenant(this.t),
+      limit: params?.limit ?? 1000,
+    };
+    if (params?.service) body["service"] = params.service;
+    if (params?.fromEventId) body["from_event_id"] = params.fromEventId;
+    return this.t.request("POST", "/api/audit/v1/events:verify-integrity", { json: body });
+  }
+
+  /** The matching events (at most 10000) as the content of a CSV or JSON file. */
+  async export(params?: EventFilter & { format?: "csv" | "json" }): Promise<string> {
+    return this.t.request<string>("POST", "/api/audit/v1/events:export", {
+      params: { format: params?.format ?? "csv" },
+      json: queryBody(this.t, params ?? {}),
+      responseType: "text",
+    });
   }
 }

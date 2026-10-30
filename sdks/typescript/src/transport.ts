@@ -59,7 +59,11 @@ export class Transport {
     this.stickyContext = undefined;
   }
 
-  private resolveContext(explicit?: FoundationContext): FoundationContext | undefined {
+  /**
+   * The context a request made now would carry (explicit > sticky > AsyncLocalStorage).
+   * Resources read it for routes that also want the tenant or user in the body.
+   */
+  resolveContext(explicit?: FoundationContext): FoundationContext | undefined {
     return explicit ?? this.stickyContext ?? currentContext();
   }
 
@@ -92,6 +96,8 @@ export class Transport {
       json?: unknown;
       params?: Record<string, string | number | boolean | undefined | null>;
       ctx?: FoundationContext;
+      /** "text" for routes that answer with a file (CSV, NDJSON): resolves to the raw body. */
+      responseType?: "json" | "text";
     },
   ): Promise<T> {
     const ctx = this.resolveContext(options?.ctx);
@@ -122,7 +128,7 @@ export class Transport {
           headers,
           ...(bodyStr !== null ? { body: bodyStr } : {}),
         });
-        return (await this.handleResponse(resp)) as T;
+        return (await this.handleResponse(resp, options?.responseType ?? "json")) as T;
       } catch (err) {
         if (!this.retry.shouldRetry(err, attempt)) throw err;
         const delay = this.retry.delayFor(attempt, err);
@@ -142,8 +148,11 @@ export class Transport {
     }
   }
 
-  private async handleResponse(resp: Response): Promise<unknown> {
+  private async handleResponse(resp: Response, responseType: "json" | "text"): Promise<unknown> {
     if (resp.status >= 200 && resp.status < 300) {
+      if (responseType === "text") {
+        return await resp.text();
+      }
       if (resp.status === 204 || resp.headers.get("content-length") === "0") {
         return {};
       }

@@ -252,15 +252,20 @@ describe("AuditResource — query", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it("calls GET /api/audit/v1/events with limit", async () => {
+  it("POSTs an AuditQuery for the context tenant to /api/audit/v1/events:query", async () => {
     fetchMock.mockResolvedValue(makeResponse(200, { items: [] }));
 
     await client.audit.query({ limit: 50, eventType: "user.login" });
 
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/api/audit/v1/events");
-    expect(url).toContain("limit=50");
-    expect(url).toContain("event_type=user.login");
+    // There is no GET /events: the filters travel in the body, scoped to one tenant.
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/api/audit/v1/events:query");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      tenant_id: "tnt_001",
+      event_type: "user.login",
+      limit: 50,
+    });
   });
 });
 
