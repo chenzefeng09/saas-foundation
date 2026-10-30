@@ -269,7 +269,7 @@ The Foundation is **contract-first**: the OpenAPI specs are the source of truth,
 
 ### The six machine-enforced spec rules
 
-These are enforced by `.spectral.yaml`; any spec PR must pass `make lint` (all green):
+These are enforced by `contracts/openapi/.spectral.yaml`; any spec PR must pass `make lint` without errors (warnings are advice). CI's contract-check uses the same ruleset, Spectral version and threshold:
 
 1. **The version ends the `servers` URL** (`/api/<service>/v1`) and paths do not repeat it — the version is explicit in the URL; header versioning is forbidden.
 2. **JSON fields are `snake_case`; enums are `UPPER_SNAKE_CASE`** (SCIM resources keep their RFC 7643 attribute names, and compliance-mode identifiers are the documented enum exception).

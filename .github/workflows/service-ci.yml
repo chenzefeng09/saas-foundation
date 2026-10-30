@@ -229,12 +229,18 @@ jobs:
       - name: Spectral lint OpenAPI
         env:
           SERVICE_NAME: ${{ inputs.service-name }}
+        # Same ruleset, CLI version and threshold as `make lint-one`
+        # (contracts/openapi/Makefile): errors block, warnings are advice.
         run: |
-          npx -y @stoplight/spectral-cli lint \
-            "contracts/openapi/${SERVICE_NAME}.yaml" \
-            --ruleset .spectral.yaml \
-            --fail-severity=warn || \
-          (echo "::warning::No OpenAPI spec for ${SERVICE_NAME} yet" && exit 0)
+          spec="contracts/openapi/${SERVICE_NAME}.yaml"
+          if [ ! -f "$spec" ]; then
+            echo "::warning::No OpenAPI spec for ${SERVICE_NAME} yet"
+            exit 0
+          fi
+          npx -y @stoplight/spectral-cli@6.17.0 lint \
+            contracts/openapi/_common.yaml "$spec" \
+            --ruleset contracts/openapi/.spectral.yaml \
+            --fail-severity=error
 
   # ===========================================================================
   # 5) Docker 构建（不推；推由 release workflow 做）

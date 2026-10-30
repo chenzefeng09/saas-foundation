@@ -8,7 +8,7 @@
 #   4. 错误响应、通用参数 / header、ID 类型都直接 $ref ./_common.yaml，不要复制进来；
 #      本地只声明 securitySchemes（security 按名字引用）
 #
-# 强制要求（CI 用 spectral 校验）：
+# 强制要求（CI 与 make lint 用 contracts/openapi/.spectral.yaml 校验）：
 #   - 版本只写在 servers URL 末尾（/api/<service>/v1），path 不带版本
 #   - 根级 security 覆盖所有端点；公开端点显式写 security: []
 #   - 4xx/5xx 响应 $ref ./_common.yaml 的 responses；要自定义描述就内联，

@@ -3,6 +3,8 @@
 # =============================================================================
 # 跑法：make lint（或 make lint-one SVC=<service>）
 # CI 强制：任何规则触发 error → 阻断合并
+# CI's contract-check and the repo-root .spectral.yaml use this file too, so a
+# spec that passes `make lint` passes CI.
 # =============================================================================
 
 extends:

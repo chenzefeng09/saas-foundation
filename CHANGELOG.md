@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`/scim/v2/Users`, not `/scim/v2/v1/Users`).
 - Contracts: `_common.yaml`'s `Error.code` pattern accepts the shared
   `FOUNDATION._.<CAT>.<NAME>` codes that errors.md §12 registers.
+- Contract lint: CI's contract-check could not fail (its missing-spec fallback
+  also swallowed every Spectral error), and it used a second ruleset whose
+  `/vN`-in-path rule contradicted CONVENTIONS §2.2. It now runs
+  `contracts/openapi/.spectral.yaml`, as `make lint` does (that ruleset did
+  not load), with Spectral 6.17.0 pinned, and fails on errors.
 
 [Unreleased]: https://github.com/chenzefeng09/saas-foundation/compare/v0.1.0...HEAD
 

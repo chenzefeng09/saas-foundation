@@ -269,7 +269,7 @@ Foundation 是**契约优先（contract-first）**：OpenAPI spec 是真相源�
 
 ### 六条机器强制的 spec 铁律
 
-由 `.spectral.yaml` 强制；任何 spec PR 都必须 `make lint` 全绿：
+由 `contracts/openapi/.spectral.yaml` 强制；任何 spec PR 都必须 `make lint` 无 error（warning 只提示）。CI 的 contract-check 用同一份 ruleset、同一版 Spectral 和同一阈值：
 
 1. **版本写在 `servers` URL 末尾**（`/api/<service>/v1`），path 不再重复——版本在 URL 中显式声明；禁止 header 版本。
 2. **JSON 字段 `snake_case`；枚举 `UPPER_SNAKE_CASE`**（SCIM 资源沿用 RFC 7643 字段名；合规模式标识符为已声明的枚举例外）。
