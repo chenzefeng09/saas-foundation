@@ -9,11 +9,12 @@ Covers:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect as sa_inspect
 
 from foundation_lifecycle.api import dependencies
 from foundation_lifecycle.domain.models import (
@@ -26,8 +27,25 @@ from foundation_lifecycle.main import create_app
 # --------------------------------------------------------------------------- #
 # Fakes                                                                       #
 # --------------------------------------------------------------------------- #
+# What the database's now() returns while a fake session is in use.
+_DB_NOW = datetime(2026, 6, 13, tzinfo=UTC)
+
+
+def _column_values(obj: Any) -> dict[str, Any]:
+    return {
+        attr.key: getattr(obj, attr.key)
+        for attr in sa_inspect(type(obj)).column_attrs
+    }
+
+
 class _FakeAdminSession:
-    """Just enough surface for the admin services."""
+    """Just enough surface for the admin services.
+
+    Quota rows are also kept as plain column dicts — the database.  ``flush``
+    writes pending attribute changes there and ``refresh`` reloads an
+    instance from it, so, as with a real session, a change that was never
+    flushed does not survive a refresh.
+    """
 
     def __init__(
         self,
@@ -37,6 +55,7 @@ class _FakeAdminSession:
     ) -> None:
         self._quotas = list(quotas or [])
         self._reports = list(reports or [])
+        self._quota_rows = {q.id: _column_values(q) for q in self._quotas}
 
     async def scalars(self, stmt: Any) -> Any:
         compiled = str(stmt)
@@ -64,7 +83,26 @@ class _FakeAdminSession:
         return None
 
     async def flush(self) -> None:
-        pass
+        # Write pending changes to the stored rows; an UPDATE also stamps
+        # updated_at, as onupdate=func.now() does.
+        for quota in self._quotas:
+            row = self._quota_rows[quota.id]
+            changes = {
+                key: value
+                for key, value in _column_values(quota).items()
+                if value != row[key]
+            }
+            if changes:
+                row.update(changes, updated_at=_DB_NOW)
+
+    async def refresh(
+        self, obj: Any, attribute_names: Iterable[str] | None = None
+    ) -> None:
+        # Like the real refresh (a SELECT by primary key), overwrite the
+        # instance with its stored row: changes never flushed are lost.
+        row = self._quota_rows[obj.id]
+        for key in attribute_names or row:
+            setattr(obj, key, row[key])
 
 
 class _FakeScalars:
@@ -181,6 +219,9 @@ def test_admin_patch_updates_existing() -> None:
     # used_bytes is NOT touched by the admin patch — reconcile owns it.
     assert body["used_bytes"] == 500
     assert body["used_pct"] == round(500 * 100 / 5_000, 2)
+    # The body is the row as stored after the UPDATE, server-side
+    # updated_at included.
+    assert body["updated_at"] == _DB_NOW.isoformat()
 
 
 # --------------------------------------------------------------------------- #
