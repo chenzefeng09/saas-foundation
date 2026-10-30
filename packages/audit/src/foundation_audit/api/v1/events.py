@@ -20,6 +20,7 @@ from foundation_audit.domain.base import FoundationContext
 from foundation_audit.schemas.event import AuditEvent, AuditQuery, AuditQueryResult, AuditEventStored
 from foundation_audit.services.hash_chain import compute_chain_hash, compute_merkle_root
 from foundation_audit.services.ingest_service import IngestService
+from foundation_audit.services.pagination import decode_cursor, encode_cursor
 
 router = APIRouter()
 
@@ -126,6 +127,9 @@ async def query_events(
     tenant_id is ALWAYS enforced from the authenticated context — the query
     body tenant_id must match the context tenant_id to prevent cross-tenant reads.
     ClickHouse has no RLS; all filtering is done via SQL WHERE clauses.
+
+    Events come oldest first; ``next_cursor`` resumes right after the last event
+    returned, keyset-paged on ``(occurred_at, event_id)`` (services.pagination).
     """
     # Security: enforce tenant from context, not just from body
     if query.tenant_id != ctx.tenant_id:
@@ -134,6 +138,8 @@ async def query_events(
             detail="query.tenant_id must match authenticated tenant context",
         )
 
+    # A cursor this query did not hand out is a 422 before ClickHouse is asked.
+    after = decode_cursor(query.cursor) if query.cursor else None
     try:
         rows = await ch.query_events(
             tenant_id=ctx.tenant_id,
@@ -149,16 +155,21 @@ async def query_events(
             request_id=query.request_id,
             occurred_from=query.occurred_from,
             occurred_to=query.occurred_to,
-            cursor=query.cursor,
-            limit=query.limit,
+            after=after,
+            limit=query.limit + 1,  # one row more than the page: is there a next page?
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"ClickHouse unavailable: {exc}") from exc
 
-    items = [_row_to_stored(r) for r in rows]
-    next_cursor = items[-1].event_id if len(items) == query.limit else None
+    page = rows[: query.limit]
+    # The cursor is the sort key of the last event *returned*, as ClickHouse stored it.
+    next_cursor = (
+        encode_cursor(page[-1]["occurred_at"], page[-1]["event_id"])
+        if len(rows) > query.limit
+        else None
+    )
     return AuditQueryResult(
-        items=items,
+        items=[_row_to_stored(r) for r in page],
         next_cursor=next_cursor,
         total_estimate=None,  # CH count(*) is expensive; skip for now
     )
@@ -220,9 +231,10 @@ async def export_events(
             detail="query.tenant_id must match authenticated tenant context",
         )
 
-    # Cursor-loop fetch up to EXPORT_MAX_ROWS rows.
+    # Keyset-loop fetch up to EXPORT_MAX_ROWS rows, each page resuming right
+    # after the last event of the one before.
     rows: list[dict[str, Any]] = []
-    cursor: str | None = None
+    after: tuple[datetime, str] | None = None
     try:
         while len(rows) < EXPORT_MAX_ROWS:
             page_limit = min(EXPORT_PAGE_SIZE, EXPORT_MAX_ROWS - len(rows))
@@ -240,7 +252,7 @@ async def export_events(
                 request_id=query.request_id,
                 occurred_from=query.occurred_from,
                 occurred_to=query.occurred_to,
-                cursor=cursor,
+                after=after,
                 limit=page_limit,
             )
             if not page:
@@ -248,7 +260,7 @@ async def export_events(
             rows.extend(page)
             if len(page) < page_limit:
                 break
-            cursor = page[-1]["event_id"]
+            after = (page[-1]["occurred_at"], page[-1]["event_id"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"ClickHouse unavailable: {exc}") from exc
 

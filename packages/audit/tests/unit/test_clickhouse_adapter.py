@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +14,7 @@ from foundation_audit.adapters.clickhouse import (
     MERKLE_BATCH_COLUMNS,
     _event_to_row,
     get_events_for_verification,
+    query_events,
 )
 
 
@@ -213,6 +214,65 @@ class TestGetEventsForVerification:
             )
 
         assert out == []
+
+
+_TENANT = "tnt_01J0000000000000000000TNT1"
+_EVT = "evt_01JC0000000000000000000001"
+# Everything after the tenant filter of a page that resumes after a cursor: the
+# keyset follows the ORDER BY (same columns, same direction).
+_KEYSET_TAIL = (
+    "AND occurred_at >= {after_ts:DateTime64(3, 'UTC')} "
+    "AND (occurred_at, event_id) > ({after_ts:DateTime64(3, 'UTC')}, {after_id:String}) "
+    "ORDER BY tenant_id, occurred_at, event_id LIMIT {limit:UInt32}"
+)
+
+
+@pytest.mark.usefixtures("local_time_not_utc")
+class TestQueryEventsKeyset:
+    """query_events resumes after the full sort key (occurred_at, event_id)."""
+
+    async def _query(self, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        result = MagicMock()
+        result.result_rows = []
+        client = MagicMock()
+        client.query = MagicMock(return_value=result)
+        with patch(
+            "foundation_audit.adapters.clickhouse.get_clickhouse_client",
+            new=AsyncMock(return_value=client),
+        ):
+            await query_events(tenant_id=_TENANT, **kwargs)
+        (sql,), call_kwargs = client.query.call_args
+        return sql, call_kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_resumes_after_the_full_sort_key(self) -> None:
+        stored = datetime(2026, 10, 30, 12, 0, 0, 250000)  # naive UTC, as CH hands it back
+
+        sql, params = await self._query(after=(stored, _EVT), limit=3)
+
+        assert sql.endswith("WHERE tenant_id = {tenant_id:String} " + _KEYSET_TAIL)
+        # Bound as text: clickhouse-connect would drop the milliseconds of a datetime.
+        assert params["after_ts"] == "2026-10-30 12:00:00.250"
+        assert params["after_id"] == _EVT
+        assert params["limit"] == 3
+
+    @pytest.mark.asyncio
+    async def test_keyset_bound_is_the_utc_instant(self) -> None:
+        ts = datetime(2026, 10, 30, 20, 0, 0, 250000, tzinfo=timezone(timedelta(hours=8)))
+
+        _, params = await self._query(after=(ts, _EVT))
+
+        assert params["after_ts"] == "2026-10-30 12:00:00.250"
+
+    @pytest.mark.asyncio
+    async def test_first_page_has_no_keyset_bound(self) -> None:
+        sql, params = await self._query(limit=3)
+
+        assert sql.endswith(
+            "WHERE tenant_id = {tenant_id:String} "
+            "ORDER BY tenant_id, occurred_at, event_id LIMIT {limit:UInt32}"
+        )
+        assert "after_ts" not in params
 
 
 class TestMerkleBatchColumns:
