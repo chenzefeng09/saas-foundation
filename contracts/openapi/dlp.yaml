@@ -154,6 +154,53 @@ paths:
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
 
+  /core/scan:
+    post:
+      tags: [check]
+      summary: 按规则扫描内容，返回判定；仅 SERVICE/ADMIN 调用会写资源标签
+      operationId: scanContent
+      description: |
+        任何带租户上下文（`X-Tenant-Id`）的调用方都可扫描；命中一律记 DLP 事件
+        （check_type=SCAN）。只有可信 SERVICE/ADMIN 调用才会把命中的最高级别写入或
+        升级为 (resource_type, resource_id) 的分级标签（只升不降，新标签不低于未分级
+        默认级别）。其他 actor（如经 tool-broker 扫描自身工具调用的沙箱 worker）只拿
+        判定、不改标签。`action`：无命中 ALLOW；最高 L2/L3 为 SCAN_REQUIRED；L4 及以上
+        为 QUARANTINE。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [content, resource_type, resource_id]
+              properties:
+                content: { type: string }
+                resource_type: { type: string }
+                resource_id: { type: string }
+      responses:
+        '200':
+          description: 扫描判定
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hits, max_sensitivity, action]
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rule_id: { type: string }
+                        rule_name: { type: string }
+                        keyword: { type: string }
+                        sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                  max_sensitivity: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+                  action: { type: string, enum: [ALLOW, SCAN_REQUIRED, QUARANTINE] }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
   # --------------------------- Rules ----------------------------------------
   /rules:
     get:

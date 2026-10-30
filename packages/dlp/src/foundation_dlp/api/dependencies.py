@@ -85,11 +85,20 @@ async def trusted_user_clearance(
     return TrustedUserClearance(user_id=ctx.user_id, clearance=clearance)
 
 
+#: Actors trusted to administer classification labels and DLP rules.
+MANAGEMENT_ACTORS = frozenset({"SERVICE", "ADMIN"})
+
+
+def is_management_actor(ctx: FoundationContext) -> bool:
+    """Whether ``ctx`` may write classification labels / DLP rules."""
+    return ctx.actor in MANAGEMENT_ACTORS
+
+
 def require_management_actor(
     ctx: FoundationContext = Depends(current_context),
 ) -> FoundationContext:
     """Restrict classification/rule administration to trusted platform actors."""
-    if ctx.actor not in {"SERVICE", "ADMIN"}:
+    if not is_management_actor(ctx):
         raise FoundationError(
             DLP_DENIED,
             detail="Classification and DLP-rule management requires SERVICE or ADMIN authority.",

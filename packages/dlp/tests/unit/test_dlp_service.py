@@ -397,6 +397,39 @@ class TestScanClassification:
         assert result["max_sensitivity"] == "L4"
         assert not [obj for obj in fake_session.added if isinstance(obj, Classification)]
 
+    async def test_verdict_only_scan_audits_resource_but_never_labels_it(
+        self, svc: DLPService, fake_session, tenant_id: str, request_id: str
+    ) -> None:
+        # The path a non-management /core/scan caller takes (e.g. a sandboxed
+        # worker's tool call): real resource identity for the audit trail, but
+        # no classification row is created or raised.
+        from foundation_dlp.domain.models import Classification, DLPEvent
+
+        rule = make_dlp_rule(
+            tenant_id=tenant_id,
+            rule_type="KEYWORD",
+            pattern='["身份证"]',
+            min_sensitivity="L4",
+        )
+        fake_session.queue_scalars([rule])
+
+        result = await svc.scan_content(
+            session=fake_session,
+            tenant_id=tenant_id,
+            content="包含身份证",
+            resource_type="tool_call",
+            resource_id="Bash:toolu_1",
+            request_id=request_id,
+            persist_classification=False,
+        )
+
+        assert result["action"] == "QUARANTINE"
+        assert not [obj for obj in fake_session.added if isinstance(obj, Classification)]
+        event = next(obj for obj in fake_session.added if isinstance(obj, DLPEvent))
+        assert event.check_type == "SCAN"
+        assert event.resource_type == "tool_call"
+        assert event.resource_id == "Bash:toolu_1"
+
 
 def _default_rules() -> list:
     """Mirror of the built-in global rules seeded by migration 0002_dlp_default_rules.
