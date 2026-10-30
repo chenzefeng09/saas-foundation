@@ -123,21 +123,69 @@ paths:
       tags: [elevations]
       summary: 紧急回收提权（管理员）
       operationId: revokeElevation
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [reason]
-              properties:
-                reason: { type: string, minLength: 5 }
       responses:
         '200':
           description: ok
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Elevation' }
+
+  /elevations/{elevation_id}/approve:
+    parameters:
+      - name: elevation_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [elevations]
+      summary: Approve Elevation
+      operationId: approveElevation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                justification: { type: string, default: '' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /elevations/history:
+    get:
+      tags: [elevations]
+      summary: Get Elevation History
+      operationId: listElevationHistory
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /elevations/pending:
+    get:
+      tags: [elevations]
+      summary: List Pending Elevations
+      operationId: listPendingElevations
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
 
   # --------------------------- Approvals ------------------------------------
   /approvals/{approval_id}/decide:
@@ -174,15 +222,6 @@ paths:
     get:
       tags: [sessions]
       operationId: listPrivilegedSessions
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - $ref: './_common.yaml#/components/parameters/Limit'
-        - name: filter.status
-          in: query
-          schema: { type: string, enum: [ACTIVE, ENDED, KILLED] }
-        - name: filter.elevation_id
-          in: query
-          schema: { type: string }
       responses:
         '200':
           description: ok
@@ -370,16 +409,14 @@ components:
 
     RequestElevationRequest:
       type: object
-      required: [target_role, reason, duration_minutes]
+      required: [reason]
       properties:
-        target_role: { type: string }
-        target_resource:
-          type: object
-          properties:
-            type: { type: string }
-            id: { type: string }
         reason: { type: string, minLength: 20 }
         duration_minutes: { type: integer, minimum: 30, maximum: 240 }
+        target_resources:
+          type: array
+          items: { type: string }
+          default: []
 
     PrivilegedSession:
       type: object

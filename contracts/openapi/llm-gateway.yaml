@@ -87,6 +87,41 @@ paths:
         '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
         '504': { $ref: './_common.yaml#/components/responses/GatewayTimeout' }
 
+  /chat:
+    post:
+      tags: [chat]
+      summary: Legacy simplified chat endpoint. Delegates to /chat/completions logic (non-streaming only)
+      operationId: chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, messages]
+              properties:
+                model: { type: string }
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role: { type: string }
+                      content: { type: string }
+                temperature: { type: number, default: 0.7 }
+                max_tokens: { type: integer, nullable: true }
+                stream: { type: boolean, default: false }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
   /messages:
     post:
       tags: [messages]
@@ -303,6 +338,46 @@ paths:
                   deleted: { type: integer }
         '403': { description: actor 不是 ADMIN / SERVICE }
 
+  /pricing:
+    get:
+      tags: [providers]
+      summary: Get Model Pricing
+      operationId: getModelPricing
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
+  /probe:
+    post:
+      tags: [capabilities]
+      summary: Probe Endpoint
+      operationId: probeEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, api_key]
+              properties:
+                url: { type: string }
+                api_key: { type: string }
+                provider_type: { type: string, default: openai_compatible }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
 # =============================================================================
 components:
   securitySchemes:
@@ -479,19 +554,25 @@ components:
 
     RegisterProviderRequest:
       type: object
-      required: [kind, name, endpoint, protocol, api_key_secret_ref]
+      required: [name, api_base, api_key, provider_type]
       properties:
-        kind: { type: string, enum: [ANTHROPIC, OPENAI, AZURE_OPENAI, BEDROCK, VERTEX, VLLM, LLAMA_CPP, OLLAMA, QWEN, DEEPSEEK] }
         name: { type: string }
-        endpoint: { type: string, format: uri }
-        protocol: { type: string, enum: [OPENAI, ANTHROPIC] }
-        api_key_secret_ref:
-          type: string
-          description: Vault path（不传明文）
-        cross_border:
+        api_base: { type: string }
+        api_key: { type: string }
+        provider_type: { type: string }
+        models:
+          type: array
+          items: { type: string }
+          default: []
+        model_type_map:
           type: object
-          additionalProperties: true
-        training_opt_out: { type: boolean }
+          additionalProperties:
+            type: array
+            items: { type: string }
+        model_settings:
+          type: object
+          additionalProperties: { type: object, additionalProperties: true }
+        capabilities_extra: { type: object, additionalProperties: true }
 
     CapabilityProbeReport:
       type: object

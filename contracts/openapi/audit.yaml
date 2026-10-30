@@ -47,45 +47,6 @@ paths:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
   /events:
-    get:
-      tags: [events]
-      summary: 查询审计事件
-      operationId: queryAuditEvents
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - $ref: './_common.yaml#/components/parameters/Limit'
-        - name: filter.event_type
-          in: query
-          schema: { type: string, example: 'foundation.identity.user.frozen' }
-        - name: filter.actor_id
-          in: query
-          schema: { type: string }
-        - name: filter.resource_id
-          in: query
-          schema: { type: string }
-        - name: filter.severity
-          in: query
-          schema: { $ref: './_common.yaml#/components/schemas/Severity' }
-        - name: time_start
-          in: query
-          schema: { type: string, format: date-time }
-        - name: time_end
-          in: query
-          schema: { type: string, format: date-time }
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: './_common.yaml#/components/schemas/CursorPage'
-                  - type: object
-                    properties:
-                      items:
-                        type: array
-                        items: { $ref: '#/components/schemas/AuditEvent' }
-        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
     post:
       tags: [events]
       summary: 直接写入审计事件（业务通常用 SDK + outbox）
@@ -103,6 +64,36 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuditEvent' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /events:query:
+    post:
+      tags: [events]
+      summary: Query the caller's tenant's audit events
+      description: |
+        `tenant_id` in the body must be the authenticated tenant (403 otherwise).
+      operationId: queryAuditEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuditQuery' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_common.yaml#/components/schemas/CursorPage'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AuditEvent' }
+                      total_estimate: { type: integer, nullable: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /events/{event_id}:
@@ -136,23 +127,7 @@ paths:
         description: 复用 /events:query 的过滤条件（body 中的 cursor 字段被忽略，分页由服务端内部处理）
         content:
           application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [tenant_id]
-              properties:
-                tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
-                service: { type: string, nullable: true }
-                event_type: { type: string, nullable: true }
-                severity: { $ref: './_common.yaml#/components/schemas/Severity' }
-                outcome: { type: string, nullable: true }
-                actor_user_id: { type: string, nullable: true }
-                resource_type: { type: string, nullable: true }
-                resource_id: { type: string, nullable: true }
-                session_id: { type: string, nullable: true }
-                request_id: { type: string, nullable: true }
-                occurred_from: { type: string, format: date-time, nullable: true }
-                occurred_to: { type: string, format: date-time, nullable: true }
+            schema: { $ref: '#/components/schemas/AuditQuery' }
       responses:
         '200':
           description: '导出文件（附带 Content-Disposition: attachment）'
@@ -168,10 +143,13 @@ paths:
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '503': { $ref: './_common.yaml#/components/responses/ServiceUnavailable' }
 
-  /chain/verify:
+  /events:verify-integrity:
     post:
       tags: [chain]
-      summary: 校验 hash chain 区段完整性
+      summary: Verify the hash chain and Merkle batch signatures of the caller's tenant's events
+      description: |
+        Oldest first from `from_event_id` (or the start), at most `limit` events.
+        `tenant_id` must be the authenticated tenant (403 otherwise).
       operationId: verifyChainRange
       requestBody:
         required: true
@@ -179,11 +157,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [time_start, time_end]
+              required: [tenant_id]
               properties:
-                time_start: { type: string, format: date-time }
-                time_end: { type: string, format: date-time }
-                shard: { type: string, description: 分片维度（tenant_id / global） }
+                tenant_id: { type: string }
+                service: { type: string, nullable: true }
+                from_event_id: { type: string, nullable: true }
+                limit: { type: integer, minimum: 1, maximum: 10000, default: 1000 }
       responses:
         '200':
           description: ok
@@ -191,14 +170,24 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [valid, events_checked]
+                required:
+                  - valid
+                  - events_checked
+                  - signatures_verified
+                  - signatures_failed
+                  - tsa_present
+                  - message
                 properties:
                   valid: { type: boolean }
                   events_checked: { type: integer }
                   first_break_event_id: { type: string, nullable: true }
-                  merkle_root: { type: string }
                   signatures_verified: { type: integer }
-                  tsa_verified: { type: integer }
+                  signatures_failed: { type: integer }
+                  tsa_present: { type: integer }
+                  message: { type: string }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /export:
     post:
@@ -284,6 +273,33 @@ components:
       $ref: './_common.yaml#/components/securitySchemes/bearerAuth'
 
   schemas:
+
+    AuditQuery:
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        service: { type: string, nullable: true }
+        event_type: { type: string, nullable: true }
+        event_types:
+          type: array
+          items: { type: string }
+          nullable: true
+        severity:
+          allOf:
+            - $ref: './_common.yaml#/components/schemas/Severity'
+          nullable: true
+        outcome: { type: string, nullable: true }
+        actor_user_id: { type: string, nullable: true }
+        resource_type: { type: string, nullable: true }
+        resource_id: { type: string, nullable: true }
+        session_id: { type: string, nullable: true }
+        request_id: { type: string, nullable: true }
+        occurred_from: { type: string, format: date-time, nullable: true }
+        occurred_to: { type: string, format: date-time, nullable: true }
+        limit: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        cursor: { type: string, nullable: true }
 
     AuditEvent:
       type: object

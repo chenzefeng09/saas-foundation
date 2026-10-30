@@ -354,6 +354,124 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DowngradeRequest' }
 
+  /check-download:
+    post:
+      tags: [check]
+      summary: Check Download
+      operationId: checkFileDownload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_id]
+              properties:
+                file_id: { type: string }
+                destination: { type: string, default: laptop }
+              additionalProperties: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /classify:
+    post:
+      tags: [labels]
+      summary: Classify File
+      operationId: classifyFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_id, sensitivity]
+              properties:
+                file_id: { type: string }
+                sensitivity: { type: string, enum: [L1, L2, L3, L4, L5] }
+                reason: { type: string, default: '' }
+              additionalProperties: false
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /scan:
+    post:
+      tags: [check]
+      summary: Scan Content
+      operationId: scanText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+                content_type: { type: string, default: text }
+                sensitivity_threshold: { type: string, enum: [L1, L2, L3, L4, L5], default: L4 }
+              additionalProperties: false
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /sensitive-words:
+    post:
+      tags: [rules]
+      summary: Add Sensitive Word
+      operationId: addSensitiveWord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [word, category]
+              properties:
+                word: { type: string }
+                category: { type: string }
+              additionalProperties: false
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+    get:
+      tags: [rules]
+      summary: Get Sensitive Words
+      operationId: listSensitiveWords
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+
 # =============================================================================
 components:
   securitySchemes:

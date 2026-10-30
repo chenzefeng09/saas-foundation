@@ -43,12 +43,6 @@ paths:
     get:
       tags: [flags]
       operationId: listFlags
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - $ref: './_common.yaml#/components/parameters/Limit'
-        - name: filter.enabled
-          in: query
-          schema: { type: boolean }
       responses:
         '200':
           description: ok
@@ -110,10 +104,11 @@ paths:
                 tenant_whitelist:
                   type: array
                   items: { type: string }
-                description: { type: string }
+                description: { type: string, nullable: true }
                 fail_open: { type: boolean, default: false }
-                owner_team: { type: string }
-                tags: { type: object, additionalProperties: true }
+                user_overridable: { type: boolean, default: false }
+                owner_team: { type: string, nullable: true }
+                tags: { type: object, additionalProperties: true, nullable: true }
       responses:
         '200':
           description: ok
@@ -184,13 +179,16 @@ paths:
               properties:
                 flag:
                   type: string
+                  nullable: true
                   description: Flag key (SDK default field name)
                 flag_key:
                   type: string
+                  nullable: true
                   description: Flag key (alias for flag — for spec compatibility)
                 context:
                   type: object
                   additionalProperties: true
+                  nullable: true
                   description: Additional evaluation context (e.g. tier, region)
       responses:
         '200':
@@ -216,9 +214,7 @@ paths:
                   type: array
                   items: { type: string }
                   description: List of flag keys to evaluate
-                context:
-                  type: object
-                  additionalProperties: true
+                context: { type: object, additionalProperties: true, nullable: true }
       responses:
         '200':
           description: ok

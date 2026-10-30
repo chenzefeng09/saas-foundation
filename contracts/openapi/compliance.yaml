@@ -125,15 +125,6 @@ paths:
     get:
       tags: [ropa]
       operationId: listRopaEntries
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
-        - $ref: './_common.yaml#/components/parameters/Limit'
-        - name: filter.source
-          in: query
-          schema: { type: string, enum: [STATIC_SCAN, RUNTIME_PROBE, MANUAL] }
-        - name: filter.processing_purpose
-          in: query
-          schema: { type: string }
       responses:
         '200':
           description: ok
@@ -154,7 +145,42 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/RopaEntry' }
+            schema:
+              type: object
+              required: [service, data_category, purpose, legal_basis, data_subjects, recipients]
+              properties:
+                service: { type: string }
+                data_category: { type: string }
+                purpose: { type: string }
+                legal_basis:
+                  type: string
+                  enum:
+                    - CONSENT
+                    - CONTRACT
+                    - LEGAL_OBLIGATION
+                    - VITAL_INTEREST
+                    - PUBLIC_TASK
+                    - LEGITIMATE_INTEREST
+                    - PIPL_CONSENT
+                    - PIPL_SEPARATE_CONSENT
+                    - PIPL_CONTRACT
+                    - PIPL_HR_MANAGEMENT
+                    - PIPL_LEGAL_DUTY
+                    - PIPL_PUBLIC_HEALTH
+                    - PIPL_PUBLIC_INTEREST
+                    - PIPL_PUBLIC_DATA
+                data_subjects:
+                  type: array
+                  items: { type: string }
+                recipients:
+                  type: array
+                  items: { type: string }
+                retention_days: { type: integer, default: 365 }
+                cross_border: { type: boolean, default: false }
+                destination_countries:
+                  type: array
+                  items: { type: string }
+                  default: []
       responses:
         '201':
           description: ok
@@ -200,20 +226,44 @@ paths:
                       items:
                         type: array
                         items: { $ref: '#/components/schemas/DpiaAssessment' }
+
+  /dpia:
     post:
       tags: [dpia]
+      summary: Assess Dpia
       operationId: createDpiaAssessment
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/DpiaAssessment' }
+            schema:
+              type: object
+              required: [project_name, description, data_categories, risks, mitigations]
+              properties:
+                project_name: { type: string }
+                description: { type: string }
+                data_categories:
+                  type: array
+                  items: { type: string }
+                risks:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: { type: string }
+                mitigations:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: { type: string }
       responses:
         '201':
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DpiaAssessment' }
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /dpia/assessments/{assessment_id}:
     parameters:
@@ -231,6 +281,37 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DpiaAssessment' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+
+  /dpia/{dpia_id}/complete:
+    parameters:
+      - name: dpia_id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [dpia]
+      summary: Complete Dpia
+      operationId: completeDpia
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conclusion, residual_risks]
+              properties:
+                conclusion: { type: string }
+                residual_risks: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   # --------------------------- DSAR Orchestration ---------------------------
   /dsar/orchestrate:
@@ -256,6 +337,62 @@ paths:
                 type: object
                 properties:
                   orchestration_id: { type: string }
+
+  /dsar:
+    post:
+      tags: [dsar]
+      summary: Request Dsar
+      operationId: requestDsar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, request_type, details]
+              properties:
+                user_id: { type: string }
+                request_type:
+                  type: string
+                  enum:
+                    - ACCESS
+                    - RECTIFICATION
+                    - ERASURE
+                    - RESTRICTION
+                    - PORTABILITY
+                    - OBJECTION
+                    - AUTOMATED_DECISION
+                  description: Type of a Data Subject Access Request (GDPR Art.15-22 / PIPL ch.IV).
+                details: { type: string }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+
+  /dsar/{dsar_id}:
+    parameters:
+      - name: dsar_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [dsar]
+      summary: Get Dsar Status
+      operationId: getDsarStatus
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
 
   # --------------------------- Equal Protection -----------------------------
   /equal-protection/controls:
@@ -379,6 +516,55 @@ paths:
                   status: { type: string, enum: [QUEUED, RUNNING, READY, FAILED] }
                   download_url: { type: string, format: uri, nullable: true }
                   signature_url: { type: string, format: uri, nullable: true }
+
+  /reports:
+    post:
+      tags: [reports]
+      summary: Generate Report
+      operationId: generateReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [report_type, compliance_modes]
+              properties:
+                report_type: { type: string }
+                compliance_modes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - equal_protection_3
+                      - equal_protection_4
+                      - finance_jrt0071
+                      - pipl
+                      - gdpr
+                      - hipaa
+                      - soc2
+                      - iso27001
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
+    get:
+      tags: [reports]
+      summary: List Reports
+      operationId: listReports
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
 
 # =============================================================================
 components:

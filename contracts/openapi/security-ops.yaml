@@ -287,7 +287,6 @@ paths:
       tags: [scans]
       operationId: listScanRuns
       parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
         - name: filter.type
           in: query
           schema: { type: string, enum: [SAST, SCA, DAST, IMAGE_VULN, IAC, SECRET, LICENSE] }
@@ -315,7 +314,23 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ScanRun' }
+            schema:
+              type: object
+              required: [type, tool, target, started_at, status]
+              properties:
+                id: { type: string, nullable: true }
+                type: { type: string, enum: [SAST, SCA, DAST, IMAGE_VULN, IAC, SECRET, LICENSE] }
+                tool: { type: string }
+                target: { type: string }
+                commit_sha: { type: string, nullable: true }
+                pipeline_id: { type: string, nullable: true }
+                started_at: { type: string, format: date-time }
+                finished_at: { type: string, format: date-time, nullable: true }
+                status: { type: string, enum: [RUNNING, PASSED, FAILED, ERRORED] }
+                sarif_s3_key: { type: string, nullable: true }
+                findings_count:
+                  type: object
+                  additionalProperties: { type: integer }
       responses:
         '201':
           description: ok
@@ -333,13 +348,14 @@ paths:
       tags: [vulnerabilities]
       operationId: listVulnerabilities
       parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
         - name: filter.severity
           in: query
           schema: { $ref: './_common.yaml#/components/schemas/Severity' }
         - name: filter.status
           in: query
-          schema: { type: string, enum: [OPEN, TRIAGED, IN_FIX, AWAITING_VERIFY, CLOSED, RISK_ACCEPTED, EXEMPTED] }
+          schema:
+            type: string
+            enum: [OPEN, TRIAGED, IN_FIX, AWAITING_VERIFY, CLOSED, RISK_ACCEPTED, EXEMPTED]
         - name: filter.package_affected
           in: query
           schema: { type: string }
@@ -382,8 +398,14 @@ paths:
       requestBody:
         required: true
         content:
-          application/merge-patch+json:
-            schema: { $ref: '#/components/schemas/Vulnerability' }
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, nullable: true }
+                assignee: { type: string, nullable: true }
+                fix_pr_url: { type: string, nullable: true }
+                notes_md: { type: string, nullable: true }
       responses:
         '200':
           description: ok
@@ -412,7 +434,7 @@ paths:
                 mitigations:
                   type: array
                   items: { type: string }
-                expires_at: { type: string, format: date-time }
+                expires_at: { type: string, format: date-time, nullable: true }
       responses:
         '202':
           description: ok（已提 CTO 审批）
@@ -510,13 +532,14 @@ paths:
       tags: [incidents]
       operationId: listIncidents
       parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
         - name: filter.severity
           in: query
           schema: { $ref: './_common.yaml#/components/schemas/Severity' }
         - name: filter.status
           in: query
-          schema: { type: string, enum: [DETECTED, INVESTIGATING, CONTAINED, RESOLVED, POST_MORTEM] }
+          schema:
+            type: string
+            enum: [DETECTED, INVESTIGATING, CONTAINED, RESOLVED, POST_MORTEM]
       responses:
         '200':
           description: ok
@@ -568,8 +591,14 @@ paths:
       requestBody:
         required: true
         content:
-          application/merge-patch+json:
-            schema: { $ref: '#/components/schemas/Incident' }
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, nullable: true }
+                ic: { type: string, nullable: true }
+                customers_notified: { type: boolean, nullable: true }
+                regulators_notified: { type: boolean, nullable: true }
       responses:
         '200':
           description: ok
@@ -609,7 +638,6 @@ paths:
       tags: [drills]
       operationId: listDrills
       parameters:
-        - $ref: './_common.yaml#/components/parameters/Cursor'
         - name: filter.kind
           in: query
           schema: { type: string, enum: [TABLETOP, PLAYBOOK_DRILL, RED_BLUE_TEAM] }
@@ -633,7 +661,18 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Drill' }
+            schema:
+              type: object
+              required: [kind, scheduled_at]
+              properties:
+                id: { type: string, nullable: true }
+                kind: { type: string, enum: [TABLETOP, PLAYBOOK_DRILL, RED_BLUE_TEAM] }
+                scheduled_at: { type: string, format: date-time }
+                status: { type: string, enum: [SCHEDULED, RUNNING, COMPLETED, CANCELED] }
+                participants:
+                  type: array
+                  items: { type: string }
+                scenario_runbook: { type: string, nullable: true }
       responses:
         '201':
           description: ok
@@ -842,7 +881,7 @@ components:
         severity: { $ref: './_common.yaml#/components/schemas/Severity' }
         category: { type: string, enum: [DATA_BREACH, RANSOMWARE, DDOS, INSIDER, OUTAGE, OTHER] }
         title: { type: string }
-        ic: { type: string }
+        ic: { type: string, nullable: true }
         affected_tenants:
           type: array
           items: { type: string }

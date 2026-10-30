@@ -88,9 +88,6 @@ paths:
       parameters:
         - $ref: './_common.yaml#/components/parameters/Cursor'
         - $ref: './_common.yaml#/components/parameters/Limit'
-        - name: filter.resource_type
-          in: query
-          schema: { type: string }
       responses:
         '200':
           description: ok
@@ -105,37 +102,53 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/RecycledItem' }
 
-  /recycle-bin/{item_id}/restore:
+  /recycle-bin/{bin_id}:restore:
     parameters:
-      - name: item_id
+      - name: bin_id
         in: path
         required: true
         schema: { type: string }
     post:
       tags: [recycle-bin]
+      summary: Restore a recycle-bin entry
+      description: |
+        Without a body (or without `restored_by`) the caller is recorded as the restorer.
       operationId: restoreItem
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                restored_by: { type: string, nullable: true }
       responses:
         '200':
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RecycledItem' }
+              schema:
+                type: object
+                required: [restored]
+                properties:
+                  restored: { type: boolean }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: './_common.yaml#/components/responses/NotFound' }
-        '409':
-          description: 已硬删除 / 已被 legal hold
-          content:
-            application/problem+json:
-              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
-  /recycle-bin/{item_id}/purge:
+  /recycle-bin/{bin_id}:hard-delete:
     parameters:
-      - name: item_id
+      - name: bin_id
         in: path
         required: true
         schema: { type: string }
     post:
       tags: [recycle-bin]
-      summary: 立即硬删除（生成销毁证明）
+      summary: Hard-delete a recycle-bin entry now
+      description: |
+        Refused with 409 while a legal hold covers the resource. Issues a destruction
+        certificate when the resource type requires one. Idempotent: an entry that is
+        already destroyed returns 200.
       operationId: purgeItem
       requestBody:
         required: true
@@ -143,29 +156,25 @@ paths:
           application/json:
             schema:
               type: object
-              required: [destruction_method]
+              required: [destroyed_by]
               properties:
-                destruction_method:
-                  type: string
-                  enum: [CRYPTO_KEY_DESTROY, DOD_5220_22_M, NIST_800_88_CLEAR, NIST_800_88_PURGE]
-                witness_id:
-                  type: string
-                  description: 第二人见证（强制 4 眼场景）
+                destroyed_by: { type: string }
+                witness_user_id: { type: string, nullable: true }
       responses:
-        '202':
-          description: 已入队
+        '200':
+          description: ok
           content:
             application/json:
               schema:
                 type: object
+                required: [destroyed]
                 properties:
-                  certificate_id: { type: string }
+                  destroyed: { type: boolean }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
-        '409':
-          description: Legal hold 阻断
-          content:
-            application/problem+json:
-              schema: { $ref: './_common.yaml#/components/schemas/Error' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '409': { $ref: './_common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   # --------------------------- Legal Hold -----------------------------------
   /legal-holds:
@@ -173,9 +182,6 @@ paths:
       tags: [legal-hold]
       operationId: listLegalHolds
       parameters:
-        - name: filter.status
-          in: query
-          schema: { type: string, enum: [ACTIVE, RELEASED] }
         - name: filter.resource_type
           in: query
           description: Only holds on resources of this type (exact match; ANDed with the other filters)
@@ -185,6 +191,7 @@ paths:
           description: Only holds on this resource (exact match; ANDed with the other filters)
           schema: { type: string }
         - $ref: './_common.yaml#/components/parameters/Cursor'
+        - $ref: './_common.yaml#/components/parameters/Limit'
       responses:
         '200':
           description: ok
@@ -211,10 +218,16 @@ paths:
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/LegalHold' }
+              schema:
+                type: object
+                required: [hold_id, status]
+                properties:
+                  hold_id: { type: string }
+                  status: { type: string, enum: [ACTIVE] }
         '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
-  /legal-holds/{hold_id}/release:
+  /legal-holds/{hold_id}:release:
     parameters:
       - name: hold_id
         in: path
@@ -222,6 +235,7 @@ paths:
         schema: { type: string }
     post:
       tags: [legal-hold]
+      summary: Release a legal hold
       operationId: releaseLegalHold
       requestBody:
         required: true
@@ -229,16 +243,23 @@ paths:
           application/json:
             schema:
               type: object
-              required: [reason, witness_id]
+              required: [released_by]
               properties:
-                reason: { type: string, minLength: 10 }
-                witness_id: { type: string, description: 4 眼审批的第二人 }
+                released_by: { type: string }
       responses:
         '200':
           description: ok
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/LegalHold' }
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released: { type: boolean }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   # --------------------------- Backups --------------------------------------
   /backups:
@@ -390,58 +411,35 @@ components:
 
     RecycledItem:
       type: object
-      required: [id, tenant_id, resource_type, resource_id, deleted_at, scheduled_purge_at, status]
+      required: [id, resource_type, resource_id, deleted_at, expires_at]
       properties:
-        id: { type: string }
-        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
+        id: { type: string, description: 'bin_id: what :restore and :hard-delete take' }
         resource_type: { type: string }
         resource_id: { type: string }
-        deleted_by: { $ref: './_common.yaml#/components/schemas/UserId' }
         deleted_at: { type: string, format: date-time }
-        scheduled_purge_at: { type: string, format: date-time }
-        status:
+        expires_at:
           type: string
-          enum: [PENDING_PURGE, PURGED, RESTORED, ON_LEGAL_HOLD]
-        legal_hold_id: { type: string, nullable: true }
+          format: date-time
+          description: when the retention sweep hard-deletes it
 
     LegalHold:
       type: object
-      required: [id, tenant_id, scope, created_at, status]
+      required: [id, resource_type, resource_id, reason, placed_at]
       properties:
         id: { type: string }
-        tenant_id: { $ref: './_common.yaml#/components/schemas/TenantId' }
-        scope:
-          type: object
-          properties:
-            resource_ids:
-              type: array
-              items: { type: string }
-            user_ids:
-              type: array
-              items: { type: string }
-            resource_type_filter: { type: string }
-        case_reference: { type: string, description: 法务案件号 }
-        created_by: { $ref: './_common.yaml#/components/schemas/UserId' }
-        created_at: { type: string, format: date-time }
-        released_at: { type: string, format: date-time, nullable: true }
-        released_by: { type: string, nullable: true }
-        status: { type: string, enum: [ACTIVE, RELEASED] }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        reason: { type: string }
+        placed_at: { type: string, format: date-time }
 
     CreateLegalHoldRequest:
       type: object
-      required: [scope, case_reference]
+      required: [resource_type_id, resource_id, reason]
       properties:
-        scope:
-          type: object
-          properties:
-            resource_ids:
-              type: array
-              items: { type: string }
-            user_ids:
-              type: array
-              items: { type: string }
-            resource_type_filter: { type: string }
-        case_reference: { type: string, minLength: 3 }
+        resource_type_id: { type: string }
+        resource_id: { type: string }
+        reason: { type: string, minLength: 10 }
+        case_reference: { type: string, minLength: 3, nullable: true }
 
     Backup:
       type: object

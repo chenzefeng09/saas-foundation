@@ -43,33 +43,24 @@ paths:
             application/json:
               schema: { $ref: './_common.yaml#/components/schemas/HealthStatus' }
 
-  /index/{resource_type}:
-    parameters:
-      - name: resource_type
-        in: path
-        required: true
-        schema: { type: string }
+  /index:
     post:
       tags: [index]
       summary: 入库（业务用 SDK 通常走 outbox 异步）
       operationId: indexDocument
-      parameters:
-        - $ref: './_common.yaml#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/IndexRequest' }
       responses:
-        '202':
-          description: 已入队
+        '201':
+          description: ok
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  doc_id: { type: string }
-                  shard: { type: string }
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: './_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_common.yaml#/components/responses/Forbidden' }
         '422': { $ref: './_common.yaml#/components/responses/ValidationFailed' }
 
   /index/{resource_type}/{doc_id}:
@@ -146,48 +137,46 @@ components:
 
     IndexRequest:
       type: object
-      required: [doc_id, body]
+      required: [resource_type, resource_id, title, content]
       properties:
-        doc_id: { type: string }
-        body:
+        resource_type: { type: string }
+        resource_id: { type: string }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+          default: []
+        acl_user_ids:
+          type: array
+          items: { type: string }
+          default: []
+        acl_team_ids:
+          type: array
+          items: { type: string }
+          default: []
+        owner_id: { type: string, nullable: true }
+        visibility: { type: string, nullable: true }
+        metadata:
           type: object
           additionalProperties: true
-        acl:
-          type: object
-          properties:
-            owner_user_id: { type: string }
-            visible_to_user_ids:
-              type: array
-              items: { type: string }
-            visible_to_team_ids:
-              type: array
-              items: { type: string }
-            visible_to_role_names:
-              type: array
-              items: { type: string }
-            sensitivity_level: { $ref: './_common.yaml#/components/schemas/SensitivityLevel' }
+          default: {}
 
     QueryRequest:
       type: object
-      required: [resource_types, q]
+      required: [q]
       properties:
+        q: { type: string, description: 查询语句（DSL 或自然语言） }
         resource_types:
           type: array
           items: { type: string }
-        q:
-          type: string
-          description: 查询语句（DSL 或自然语言）
-        filter:
-          type: object
-          additionalProperties: true
-        sort:
+          nullable: true
+        tags:
           type: array
-          items:
-            type: object
-            additionalProperties: true
-        page_size: { type: integer, default: 20, maximum: 100 }
-        cursor: { type: string }
-        highlight: { type: boolean, default: false }
+          items: { type: string }
+          nullable: true
+        cursor: { type: string, nullable: true }
+        limit: { type: integer, default: 20 }
 
     QueryResponse:
       type: object
